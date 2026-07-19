@@ -35,6 +35,7 @@ from mirabox_sdk import (
     RegistrationPluginInfo,
     SendToPluginEvent,
     SendToPropertyInspectorCommand,
+    SetGlobalSettingsCommand,
     SetSettingsCommand,
     SetTitleCommand,
     StreamDockConnection,
@@ -641,16 +642,49 @@ class WebSocketStreamDockConnectionTests(unittest.TestCase):
                 "payload": {"title": "Микрофон", "target": 0},
             },
         )
-        self.assertIn(
-            "INFO:mirabox_sdk.connection:Stream Dock -> Plugin: " + incoming,
+        self.assertEqual(
             logs.output,
+            [
+                "INFO:mirabox_sdk.connection:Stream Dock -> Plugin: "
+                "event='keyDown' context='button'",
+                "INFO:mirabox_sdk.connection:Plugin -> Stream Dock: "
+                "event='setTitle' context='button'",
+            ],
         )
-        self.assertIn(
-            "INFO:mirabox_sdk.connection:Plugin -> Stream Dock: "
-            '{"event": "setTitle", "context": "button", '
-            '"payload": {"title": "Микрофон", "target": 0}}',
-            logs.output,
-        )
+        self.assertNotIn("channelId", "\n".join(logs.output))
+        self.assertNotIn("Микрофон", "\n".join(logs.output))
+
+    @patch("mirabox_sdk.connection.websocket.WebSocketApp")
+    def test_redacts_sensitive_fields_from_debug_protocol_logs(self, app_factory: Mock) -> None:
+        web_socket = app_factory.return_value
+        connection = WebSocketStreamDockConnection(12345)
+        connection.set_listener(Mock())
+        incoming_secret = "incoming-secret-value"
+        outgoing_secret = "outgoing-secret-value"
+        property_secret = "property-secret-value"
+
+        with self.assertLogs("mirabox_sdk.connection", level="DEBUG") as logs:
+            connection._on_message(
+                web_socket,
+                '{"event":"didReceiveGlobalSettings","payload":{"settings":'
+                f'{{"arbitraryName":"{incoming_secret}"}}}}',
+            )
+            connection.send(SetGlobalSettingsCommand("plugin", {"arbitraryName": outgoing_secret}))
+            connection.send(
+                SendToPropertyInspectorCommand(
+                    action="action-uuid",
+                    context="button",
+                    payload={"accessToken": property_secret, "label": "visible"},
+                )
+            )
+
+        output = "\n".join(logs.output)
+        self.assertNotIn(incoming_secret, output)
+        self.assertNotIn(outgoing_secret, output)
+        self.assertNotIn(property_secret, output)
+        self.assertIn('"payload": "<redacted>"', output)
+        self.assertIn('"accessToken": "<redacted>"', output)
+        self.assertIn('"label": "visible"', output)
 
     @patch("mirabox_sdk.connection.websocket.WebSocketApp")
     def test_rejects_invalid_inbound_messages(self, app_factory: Mock) -> None:

@@ -13,6 +13,69 @@ from .protocols import StreamDockConnection, StreamDockListener
 
 logger = logging.getLogger(__name__)
 
+_REDACTED = "<redacted>"
+_GLOBAL_SETTINGS_EVENTS = frozenset({"didReceiveGlobalSettings", "setGlobalSettings"})
+_SENSITIVE_KEY_SUFFIXES = (
+    "apikey",
+    "authorization",
+    "cookie",
+    "credential",
+    "credentials",
+    "password",
+    "passwd",
+    "privatekey",
+    "secret",
+    "secretkey",
+    "token",
+)
+
+
+def _is_sensitive_key(key: str) -> bool:
+    normalized = "".join(character for character in key.casefold() if character.isalnum())
+    return normalized == "globalsettings" or normalized.endswith(_SENSITIVE_KEY_SUFFIXES)
+
+
+def _redact_sensitive_fields(value: object) -> object:
+    if isinstance(value, dict):
+        return {
+            key: (
+                _REDACTED
+                if isinstance(key, str) and _is_sensitive_key(key)
+                else _redact_sensitive_fields(item)
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_sensitive_fields(item) for item in value]
+    return value
+
+
+def _redact_protocol_message(message: object) -> object:
+    redacted = _redact_sensitive_fields(message)
+    if not isinstance(message, dict) or not isinstance(redacted, dict):
+        return redacted
+    event = message.get("event")
+    if isinstance(event, str) and event in _GLOBAL_SETTINGS_EVENTS and "payload" in redacted:
+        redacted["payload"] = _REDACTED
+    return redacted
+
+
+def _log_protocol_message(direction: str, message: object) -> None:
+    event = message.get("event") if isinstance(message, dict) else None
+    context = message.get("context") if isinstance(message, dict) else None
+    logger.info(
+        "%s: event=%r context=%r",
+        direction,
+        event if isinstance(event, str) else None,
+        context if isinstance(context, str) else None,
+    )
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(
+            "%s message: %s",
+            direction,
+            json.dumps(_redact_protocol_message(message), ensure_ascii=False),
+        )
+
 
 class WebSocketStreamDockConnection(StreamDockConnection):
     """Translate between Stream Dock WebSocket frames and plugin messages."""
@@ -37,8 +100,9 @@ class WebSocketStreamDockConnection(StreamDockConnection):
         self._ws.close()
 
     def send(self, command: StreamDockCommand) -> None:
-        raw_message = json.dumps(command.to_wire(), ensure_ascii=False)
-        logger.info("Plugin -> Stream Dock: %s", raw_message)
+        message = command.to_wire()
+        raw_message = json.dumps(message, ensure_ascii=False)
+        _log_protocol_message("Plugin -> Stream Dock", message)
         self._ws.send(raw_message)
 
     def _on_open(self, _ws: websocket.WebSocket) -> None:
@@ -48,12 +112,12 @@ class WebSocketStreamDockConnection(StreamDockConnection):
             listener.on_stream_dock_connected()
 
     def _on_message(self, _ws: websocket.WebSocket, message: Any) -> None:
-        logger.info("Stream Dock -> Plugin: %s", message)
         try:
             data = json.loads(message)
         except (json.JSONDecodeError, TypeError) as exc:
             logger.warning("Ignoring invalid JSON from Stream Dock: %s", exc)
             return
+        _log_protocol_message("Stream Dock -> Plugin", data)
         try:
             event = parse_stream_dock_event(data)
         except StreamDockProtocolError as exc:
