@@ -114,14 +114,13 @@ class Action(Generic[SettingsT, DependenciesT]):
         self.settings = self.decode_settings(settings)
 
     def set_settings(self, settings: SettingsT) -> None:
-        self.settings = settings
-        self._send(
-            SetSettingsCommand.from_settings(
-                context=self.context,
-                settings=settings,
-                codec=cast(JsonCodec[SettingsT], self.settings_codec),
-            )
+        command = SetSettingsCommand.from_settings(
+            context=self.context,
+            settings=settings,
+            codec=cast(JsonCodec[SettingsT], self.settings_codec),
         )
+        self.settings = settings
+        self._send(command)
 
     def get_settings(self) -> None:
         self._send(GetSettingsCommand(self.context))

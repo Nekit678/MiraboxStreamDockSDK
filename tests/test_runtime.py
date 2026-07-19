@@ -14,6 +14,7 @@ from mirabox_sdk import (
     DidReceiveGlobalSettingsEvent,
     GetGlobalSettingsCommand,
     InvalidPluginLaunchArgumentsError,
+    JsonCodecEncodeError,
     JsonObject,
     KeyDownEvent,
     PluginLaunchArguments,
@@ -127,6 +128,24 @@ def will_appear_event() -> WillAppearEvent:
         controller=Controller.KEYPAD,
         is_in_multi_action=False,
     )
+
+
+class ActionTests(unittest.TestCase):
+    def test_set_settings_preserves_state_when_encoding_fails(self) -> None:
+        stream_dock = Mock()
+        action = RecordingAction(
+            ACTION_UUID,
+            "button",
+            {"count": 1},
+            ExampleDependencies(stream_dock),
+        )
+        invalid_settings = {"count": object()}
+
+        with self.assertRaises(JsonCodecEncodeError):
+            action.set_settings(invalid_settings)  # type: ignore[arg-type]
+
+        self.assertEqual(action.settings, {"count": 1})
+        stream_dock.send.assert_not_called()
 
 
 class ActionRegistryTests(unittest.TestCase):
