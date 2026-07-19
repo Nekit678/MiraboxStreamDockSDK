@@ -1,0 +1,37 @@
+name: Feature request
+description: Propose a focused SDK, protocol, or tooling improvement
+title: "[Feature]: "
+body:
+  - type: textarea
+    id: use-case
+    attributes:
+      label: Use case
+      description: What plugin are you trying to build, and what is currently difficult or impossible?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed API or behavior
+      description: Describe the smallest change that would address the use case.
+    validations:
+      required: true
+  - type: textarea
+    id: upstream
+    attributes:
+      label: Upstream protocol evidence
+      description: Link the official documentation or provide the Stream Dock version and sanitized wire message if this extends the protocol.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Describe any workaround or existing SDK API you considered.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues for a similar request.
+          required: true
+        - label: This request belongs in the reusable SDK rather than one specific plugin.
+          required: true

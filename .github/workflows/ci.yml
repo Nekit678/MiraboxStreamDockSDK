@@ -29,10 +29,11 @@ jobs:
           - "3.11"
           - "3.12"
           - "3.13"
+          - "3.14"
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -66,7 +67,7 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -84,6 +85,9 @@ jobs:
       - name: Verify distribution contents
         run: python scripts/verify_distribution.py dist
 
+      - name: Check package metadata and README rendering
+        run: python -m twine check dist/*
+
       - name: Test installation from wheel
         run: |
           python -m pip uninstall -y mirabox-stream-dock-sdk
@@ -92,7 +96,7 @@ jobs:
           mirabox-sdk copy-property-inspector build/property-inspector
 
       - name: Upload distributions
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: python-package-distributions
           path: dist/*

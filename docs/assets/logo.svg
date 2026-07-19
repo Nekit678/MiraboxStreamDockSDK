@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160" role="img" aria-labelledby="title description">
+  <title id="title">MiraBox Stream Dock SDK</title>
+  <desc id="description">A stylized Stream Dock with a highlighted code key</desc>
+  <defs>
+    <linearGradient id="background" x1="18" y1="14" x2="142" y2="146" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0B63CE"/>
+      <stop offset="1" stop-color="#6E3DEB"/>
+    </linearGradient>
+    <linearGradient id="key" x1="61" y1="59" x2="101" y2="101" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#20C9FF"/>
+      <stop offset="1" stop-color="#087DEA"/>
+    </linearGradient>
+  </defs>
+  <rect width="160" height="160" rx="36" fill="url(#background)"/>
+  <path d="M36 28h88a12 12 0 0 1 12 12v80a12 12 0 0 1-12 12H36a12 12 0 0 1-12-12V40a12 12 0 0 1 12-12Z" fill="#101827" stroke="#FFFFFF" stroke-opacity=".8" stroke-width="4"/>
+  <g fill="#26354B" stroke="#FFFFFF" stroke-opacity=".48" stroke-width="2">
+    <rect x="38" y="42" width="30" height="30" rx="7"/>
+    <rect x="92" y="42" width="30" height="30" rx="7"/>
+    <rect x="38" y="88" width="30" height="30" rx="7"/>
+    <rect x="92" y="88" width="30" height="30" rx="7"/>
+  </g>
+  <rect x="61" y="59" width="38" height="42" rx="9" fill="url(#key)" stroke="#FFFFFF" stroke-width="3"/>
+  <path d="m77 71-7 9 7 9M84 89l7-9-7-9" fill="none" stroke="#FFFFFF" stroke-linecap="round" stroke-linejoin="round" stroke-width="4"/>
+  <circle cx="131" cy="80" r="5" fill="#42E8A0" stroke="#101827" stroke-width="3"/>
+  <path d="M125 80h-16" fill="none" stroke="#42E8A0" stroke-linecap="round" stroke-width="4"/>
+</svg>

@@ -13,7 +13,15 @@ license-files = ["LICENSE"]
 authors = [
   { name = "Nekit678" },
 ]
-keywords = ["mirabox", "stream-dock", "plugin", "sdk", "websocket"]
+keywords = [
+  "mirabox",
+  "plugin",
+  "property-inspector",
+  "sdk",
+  "stream-controller",
+  "stream-dock",
+  "websocket",
+]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Developers",
@@ -22,6 +30,7 @@ classifiers = [
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
   "Typing :: Typed",
 ]
 dependencies = [
@@ -32,6 +41,7 @@ dependencies = [
 dev = [
   "build>=1.2,<2",
   "ruff==0.15.21",
+  "twine>=6,<7",
 ]
 
 [project.urls]
@@ -40,6 +50,8 @@ Documentation = "https://github.com/Nekit678/MiraboxStreamDockSDK#readme"
 Repository = "https://github.com/Nekit678/MiraboxStreamDockSDK.git"
 Issues = "https://github.com/Nekit678/MiraboxStreamDockSDK/issues"
 Changelog = "https://github.com/Nekit678/MiraboxStreamDockSDK/blob/main/CHANGELOG.md"
+Examples = "https://github.com/Nekit678/MiraboxStreamDockSDK/tree/main/examples"
+Protocol = "https://github.com/Nekit678/MiraboxStreamDockSDK/blob/main/docs/PROTOCOL.md"
 
 [project.scripts]
 mirabox-sdk = "mirabox_sdk.resource_cli:main"

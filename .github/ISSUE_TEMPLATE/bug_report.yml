@@ -1,0 +1,63 @@
+name: Bug report
+description: Report reproducible SDK or protocol behavior
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a problem. Please remove secrets and personal data from logs and protocol payloads.
+  - type: input
+    id: sdk-version
+    attributes:
+      label: SDK version
+      description: Output of `python -m pip show mirabox-stream-dock-sdk`, or the commit SHA.
+      placeholder: 0.1.0
+    validations:
+      required: true
+  - type: input
+    id: stream-dock-version
+    attributes:
+      label: Stream Dock version
+      placeholder: 2.10.179.426
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Python version, operating system, and packaging mode.
+      placeholder: Python 3.13.2, Windows 11, PyInstaller executable
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: Problem
+      description: What happened, and what did you expect instead?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Include the smallest plugin code, event JSON, or command that reproduces the problem.
+      render: python
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs or wire messages
+      description: Paste only the relevant, sanitized output.
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues for this problem.
+          required: true
+        - label: I removed credentials, private URLs, and personal data.
+          required: true
+        - label: I can reproduce the issue with the information above.
+          required: true

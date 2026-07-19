@@ -1,4 +1,8 @@
 include CHANGELOG.md
+include CONTRIBUTING.md
+include README.ru.md
+include RELEASING.md
+recursive-include docs *.md *.svg
 recursive-include examples *.html *.js *.json *.md *.py *.spec *.svg
 recursive-include scripts *.py
 recursive-include tests *.py

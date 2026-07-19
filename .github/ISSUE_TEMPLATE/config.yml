@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Official Stream Dock SDK documentation
+    url: https://sdk.key123.vip/en/
+    about: Check the upstream protocol, manifest, and Property Inspector documentation.
+  - name: Official StreamDock Plugin SDK
+    url: https://github.com/MiraboxSpace/StreamDock-Plugin-SDK
+    about: Report issues with the official templates or Stream Dock documentation upstream.

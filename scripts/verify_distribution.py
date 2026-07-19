@@ -17,8 +17,13 @@ WHEEL_REQUIRED_SUFFIXES = {
 }
 SDIST_REQUIRED_SUFFIXES = {
     "CHANGELOG.md",
+    "CONTRIBUTING.md",
     "LICENSE",
     "README.md",
+    "README.ru.md",
+    "RELEASING.md",
+    "docs/PROTOCOL.md",
+    "docs/assets/logo.svg",
     "examples/counter_plugin/com.example.counter.sdPlugin/manifest.json",
     "examples/counter_plugin/src/counter_plugin/__main__.py",
     "pyproject.toml",

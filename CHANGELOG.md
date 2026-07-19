@@ -6,6 +6,22 @@ change public APIs between minor versions.
 
 ## [Unreleased]
 
+### Added
+
+- Added comprehensive English and Russian guides, project artwork, and the
+  project's extraction history and development status.
+- Added a protocol map linking the SDK surface to the official MiraBox Stream
+  Dock documentation, templates, events, commands, manifest, and Property
+  Inspector API.
+- Added contributor and release guides, issue forms, and a pull request
+  checklist.
+
+### Changed
+
+- Added Python 3.14 to package metadata and the Linux/Windows CI matrix.
+- Updated GitHub Actions to their current major releases and added package
+  metadata and README rendering validation with Twine.
+
 ## [0.1.0] - 2026-07-19
 
 - Added typed models for Stream Dock registration, events, and commands.

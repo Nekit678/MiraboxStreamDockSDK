@@ -26,10 +26,11 @@
   "Icon": "assets/icon.svg",
   "CategoryIcon": "assets/icon.svg",
   "Category": "Examples",
-  "Description": "Minimal counter plugin built with mirabox-stream-dock-sdk",
+  "Description": "Counter example built with mirabox-stream-dock-sdk",
   "CodePath": "CounterPlugin.exe",
   "SDKVersion": 1,
-  "Author": "Example Author",
+  "Author": "Nekit678",
+  "URL": "https://github.com/Nekit678/MiraboxStreamDockSDK/tree/main/examples/counter_plugin",
   "OS": [
     {
       "Platform": "windows",
