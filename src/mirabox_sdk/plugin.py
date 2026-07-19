@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable
+from copy import deepcopy
 from typing import Any, Generic, TypeVar
 
 from .action import Action
@@ -145,9 +146,11 @@ class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
             return
 
         if isinstance(event, DidReceiveGlobalSettingsEvent):
-            self.global_settings = event.settings
+            self.global_settings = deepcopy(event.settings)
             self._global_settings_loaded = True
-            self._last_global_settings_event = event
+            self._last_global_settings_event = DidReceiveGlobalSettingsEvent(
+                settings=deepcopy(event.settings)
+            )
             self._dispatch_broadcast_event(event)
             return
 
@@ -280,8 +283,9 @@ class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
             action.on_system_did_wake_up(event)
 
     def set_global_settings(self, settings: JsonObject) -> None:
-        self.global_settings = settings
-        self.stream_dock.send(SetGlobalSettingsCommand(self.plugin_uuid, settings))
+        command = SetGlobalSettingsCommand(self.plugin_uuid, deepcopy(settings))
+        self.global_settings = deepcopy(command.settings)
+        self.stream_dock.send(command)
 
     def set_typed_global_settings(
         self,
@@ -291,7 +295,7 @@ class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
         """Encode and persist plugin-owned global settings."""
 
         command = SetGlobalSettingsCommand.from_settings(self.plugin_uuid, settings, codec)
-        self.global_settings = command.settings
+        self.global_settings = deepcopy(command.settings)
         self.stream_dock.send(command)
 
     def get_global_settings(self) -> None:

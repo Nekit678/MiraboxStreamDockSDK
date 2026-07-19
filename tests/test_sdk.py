@@ -16,6 +16,7 @@ from mirabox_sdk import (
     DeviceInfo,
     DeviceSize,
     DialRotateEvent,
+    DidReceiveGlobalSettingsEvent,
     FunctionalJsonCodec,
     GetSettingsCommand,
     InvalidFieldError,
@@ -291,6 +292,23 @@ class JsonCodecTests(unittest.TestCase):
 
 
 class StreamDockEventParsingTests(unittest.TestCase):
+    def test_isolates_nested_event_data_from_parser_input(self) -> None:
+        settings: JsonObject = {"audio": {"threshold": 0.5}}
+        message: JsonObject = {
+            "event": "didReceiveGlobalSettings",
+            "payload": {"settings": settings},
+        }
+
+        event = parse_stream_dock_event(message)
+        audio = settings["audio"]
+        assert isinstance(audio, dict)
+        audio["threshold"] = 0.75
+
+        self.assertEqual(
+            event,
+            DidReceiveGlobalSettingsEvent(settings={"audio": {"threshold": 0.5}}),
+        )
+
     def test_builds_dial_event_with_typed_payload_fields(self) -> None:
         event = parse_stream_dock_event(
             {
@@ -603,6 +621,17 @@ class StreamDockEventParsingTests(unittest.TestCase):
 class WebSocketStreamDockConnectionTests(unittest.TestCase):
     def test_declares_stream_dock_contract(self) -> None:
         self.assertIn(StreamDockConnection, WebSocketStreamDockConnection.__mro__)
+
+    @patch("mirabox_sdk.connection.websocket.WebSocketApp")
+    def test_rejects_non_json_command_before_sending(self, app_factory: Mock) -> None:
+        web_socket = app_factory.return_value
+        connection = WebSocketStreamDockConnection(12345)
+        command = SetSettingsCommand("button", {"threshold": float("nan")})
+
+        with self.assertRaisesRegex(ValueError, "non-JSON value"):
+            connection.send(command)
+
+        web_socket.send.assert_not_called()
 
     @patch("mirabox_sdk.connection.websocket.WebSocketApp")
     def test_translates_messages_across_websocket_boundary(self, app_factory: Mock) -> None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import NoReturn
 
 from .errors import InvalidFieldError, MalformedEventError, UnsupportedEventError
@@ -394,7 +395,7 @@ def parse_stream_dock_event(
         raise MalformedEventError("message contains a non-JSON value")
     if not isinstance(value, dict):
         raise MalformedEventError("expected event object")
-    data = value
+    data = deepcopy(value)
     raw_event = _require_string(data, "event", None)
     try:
         event_type = StreamDockEventType(raw_event)

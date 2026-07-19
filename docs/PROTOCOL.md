@@ -99,7 +99,8 @@ The `Action` and `StreamDockPlugin` helpers cover the common cases.
 | `sendToPropertyInspector` | `SendToPropertyInspectorCommand` | `Action.send_to_property_inspector()` / `send_typed_to_property_inspector()` |
 
 All command models expose `to_wire()` for the exact JSON object sent through
-the WebSocket.
+the WebSocket. The transport validates that this object contains only JSON
+values and rejects non-finite numbers such as `NaN` before sending.
 
 ## Property Inspector API
 

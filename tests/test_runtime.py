@@ -325,6 +325,38 @@ class StreamDockPluginRuntimeTests(unittest.TestCase):
         self.assertEqual(action.received_events, [appear, latest])
         self.assertEqual(runtime.global_settings, {"theme": "dark"})
 
+    def test_isolates_saved_global_settings_from_event_mutation(self) -> None:
+        runtime, _stream_dock = self.build_runtime()
+        event = DidReceiveGlobalSettingsEvent(settings={"audio": {"threshold": 0.5}})
+
+        runtime.on_stream_dock_event(event)
+        audio = event.settings["audio"]
+        assert isinstance(audio, dict)
+        audio["threshold"] = 0.75
+        runtime.on_stream_dock_event(will_appear_event())
+
+        self.assertEqual(runtime.global_settings, {"audio": {"threshold": 0.5}})
+        action = runtime.actions["button"]
+        self.assertEqual(
+            action.received_events[-1],
+            DidReceiveGlobalSettingsEvent(settings={"audio": {"threshold": 0.5}}),
+        )
+
+    def test_isolates_saved_global_settings_from_setter_input(self) -> None:
+        runtime, stream_dock = self.build_runtime()
+        settings: JsonObject = {"audio": {"threshold": 0.5}}
+
+        runtime.set_global_settings(settings)
+        settings["audio"] = {"threshold": 0.75}
+
+        self.assertEqual(runtime.global_settings, {"audio": {"threshold": 0.5}})
+        sent_command = stream_dock.send.call_args.args[0]
+        self.assertEqual(sent_command.settings, {"audio": {"threshold": 0.5}})
+        sent_audio = sent_command.settings["audio"]
+        assert isinstance(sent_audio, dict)
+        sent_audio["threshold"] = 0.25
+        self.assertEqual(runtime.global_settings, {"audio": {"threshold": 0.5}})
+
 
 class PluginCliTests(unittest.TestCase):
     def test_parses_standard_plugin_launch_arguments(self) -> None:

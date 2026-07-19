@@ -8,6 +8,7 @@ import websocket
 
 from .commands import StreamDockCommand
 from .errors import StreamDockProtocolError
+from .json_types import is_json_value
 from .parser import parse_stream_dock_event
 from .protocols import StreamDockConnection, StreamDockListener
 
@@ -101,7 +102,9 @@ class WebSocketStreamDockConnection(StreamDockConnection):
 
     def send(self, command: StreamDockCommand) -> None:
         message = command.to_wire()
-        raw_message = json.dumps(message, ensure_ascii=False)
+        if not is_json_value(message):
+            raise ValueError("Stream Dock command contains a non-JSON value")
+        raw_message = json.dumps(message, ensure_ascii=False, allow_nan=False)
         _log_protocol_message("Plugin -> Stream Dock", message)
         self._ws.send(raw_message)
 
