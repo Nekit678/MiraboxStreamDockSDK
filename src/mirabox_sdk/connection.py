@@ -15,48 +15,19 @@ from .protocols import StreamDockConnection, StreamDockListener
 logger = logging.getLogger(__name__)
 
 _REDACTED = "<redacted>"
-_GLOBAL_SETTINGS_EVENTS = frozenset({"didReceiveGlobalSettings", "setGlobalSettings"})
-_SENSITIVE_KEY_SUFFIXES = (
-    "apikey",
-    "authorization",
-    "cookie",
-    "credential",
-    "credentials",
-    "password",
-    "passwd",
-    "privatekey",
-    "secret",
-    "secretkey",
-    "token",
-)
-
-
-def _is_sensitive_key(key: str) -> bool:
-    normalized = "".join(character for character in key.casefold() if character.isalnum())
-    return normalized == "globalsettings" or normalized.endswith(_SENSITIVE_KEY_SUFFIXES)
-
-
-def _redact_sensitive_fields(value: object) -> object:
-    if isinstance(value, dict):
-        return {
-            key: (
-                _REDACTED
-                if isinstance(key, str) and _is_sensitive_key(key)
-                else _redact_sensitive_fields(item)
-            )
-            for key, item in value.items()
-        }
-    if isinstance(value, list):
-        return [_redact_sensitive_fields(item) for item in value]
-    return value
+_LOGGABLE_PROTOCOL_FIELDS = ("event", "action", "context", "device", "uuid")
 
 
 def _redact_protocol_message(message: object) -> object:
-    redacted = _redact_sensitive_fields(message)
-    if not isinstance(message, dict) or not isinstance(redacted, dict):
-        return redacted
-    event = message.get("event")
-    if isinstance(event, str) and event in _GLOBAL_SETTINGS_EVENTS and "payload" in redacted:
+    if not isinstance(message, dict):
+        return _REDACTED
+
+    redacted = {
+        field: value if isinstance(value, str) else _REDACTED
+        for field in _LOGGABLE_PROTOCOL_FIELDS
+        if (value := message.get(field)) is not None
+    }
+    if "payload" in message:
         redacted["payload"] = _REDACTED
     return redacted
 

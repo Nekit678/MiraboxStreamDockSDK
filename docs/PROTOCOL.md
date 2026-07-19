@@ -50,7 +50,7 @@ model is dispatched to the corresponding `Action` callback where applicable.
 | Wire event | Python model | `Action` callback or runtime effect |
 |---|---|---|
 | `willAppear` | `WillAppearEvent` | Creates the context, then `on_will_appear()` |
-| `willDisappear` | `WillDisappearEvent` | `on_will_disappear()`, then removes the context |
+| `willDisappear` | `WillDisappearEvent` | Removes the context, then calls `on_will_disappear()` |
 | `didReceiveSettings` | `DidReceiveSettingsEvent` | Updates typed settings, then `on_did_receive_settings()` |
 | `didReceiveGlobalSettings` | `DidReceiveGlobalSettingsEvent` | Updates runtime state, broadcasts `on_did_receive_global_settings()`, and replays the latest event to actions created later |
 | `titleParametersDidChange` | `TitleParametersDidChangeEvent` | Updates title state, then `on_title_parameters_did_change()` |
@@ -101,6 +101,10 @@ The `Action` and `StreamDockPlugin` helpers cover the common cases.
 All command models expose `to_wire()` for the exact JSON object sent through
 the WebSocket. The transport validates that this object contains only JSON
 values and rejects non-finite numbers such as `NaN` before sending.
+
+Protocol logs contain routing metadata such as the event and context. Message
+payloads are always redacted, including at DEBUG level, because settings and
+Property Inspector messages may contain secrets under plugin-defined field names.
 
 ## Property Inspector API
 

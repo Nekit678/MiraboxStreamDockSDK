@@ -684,7 +684,7 @@ class WebSocketStreamDockConnectionTests(unittest.TestCase):
         self.assertNotIn("Микрофон", "\n".join(logs.output))
 
     @patch("mirabox_sdk.connection.websocket.WebSocketApp")
-    def test_redacts_sensitive_fields_from_debug_protocol_logs(self, app_factory: Mock) -> None:
+    def test_redacts_payloads_from_debug_protocol_logs(self, app_factory: Mock) -> None:
         web_socket = app_factory.return_value
         connection = WebSocketStreamDockConnection(12345)
         connection.set_listener(Mock())
@@ -711,9 +711,10 @@ class WebSocketStreamDockConnectionTests(unittest.TestCase):
         self.assertNotIn(incoming_secret, output)
         self.assertNotIn(outgoing_secret, output)
         self.assertNotIn(property_secret, output)
+        self.assertNotIn('"label": "visible"', output)
         self.assertIn('"payload": "<redacted>"', output)
-        self.assertIn('"accessToken": "<redacted>"', output)
-        self.assertIn('"label": "visible"', output)
+        self.assertIn('"action": "action-uuid"', output)
+        self.assertIn('"context": "button"', output)
 
     @patch("mirabox_sdk.connection.websocket.WebSocketApp")
     def test_rejects_invalid_inbound_messages(self, app_factory: Mock) -> None:

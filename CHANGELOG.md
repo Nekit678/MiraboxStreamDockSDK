@@ -8,9 +8,17 @@ change public APIs between minor versions.
 
 ### Fixed
 
-- Reject non-finite numbers and other non-JSON global settings before sending,
-  preserve the previous runtime state when sending fails, replay the latest state,
-  and isolate each action callback with defensive copies.
+- Reject non-finite numbers and other non-JSON values at the WebSocket boundary.
+- Preserve action and global settings state when encoding or sending an update
+  fails.
+- Replay the latest global settings to actions created later, including settings
+  set before the first response, and isolate action callbacks with defensive
+  copies.
+
+### Security
+
+- Redact all protocol payloads from INFO and DEBUG logs while retaining routing
+  metadata useful for diagnostics.
 
 ## [0.1.1] - 2026-07-19
 
