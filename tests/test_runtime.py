@@ -371,6 +371,32 @@ class StreamDockPluginRuntimeTests(unittest.TestCase):
             DidReceiveGlobalSettingsEvent(settings={"theme": "dark"}),
         )
 
+    def test_replays_global_settings_set_before_first_response(self) -> None:
+        runtime, _stream_dock = self.build_runtime()
+        appear = will_appear_event()
+
+        runtime.set_global_settings({"theme": "dark"})
+        runtime.on_stream_dock_event(appear)
+
+        action = runtime.actions["button"]
+        self.assertEqual(
+            action.received_events,
+            [appear, DidReceiveGlobalSettingsEvent(settings={"theme": "dark"})],
+        )
+
+    def test_replays_typed_global_settings_set_before_first_response(self) -> None:
+        runtime, _stream_dock = self.build_runtime()
+        appear = will_appear_event()
+
+        runtime.set_typed_global_settings({"theme": "dark"}, JSON_OBJECT_CODEC)
+        runtime.on_stream_dock_event(appear)
+
+        action = runtime.actions["button"]
+        self.assertEqual(
+            action.received_events,
+            [appear, DidReceiveGlobalSettingsEvent(settings={"theme": "dark"})],
+        )
+
     def test_isolates_global_settings_broadcasts_between_actions(self) -> None:
         runtime, stream_dock = self.build_runtime()
         dependencies = ExampleDependencies(stream_dock)

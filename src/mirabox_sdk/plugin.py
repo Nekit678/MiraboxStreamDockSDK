@@ -303,6 +303,7 @@ class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
         next_settings = deepcopy(command.settings)
         self.stream_dock.send(command)
         self.global_settings = next_settings
+        self._global_settings_loaded = True
 
     def get_global_settings(self) -> None:
         self.stream_dock.send(GetGlobalSettingsCommand(self.plugin_uuid))
