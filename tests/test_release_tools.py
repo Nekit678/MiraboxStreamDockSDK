@@ -11,9 +11,9 @@ from scripts.verify_version import verify_version
 
 class VersionVerificationTests(unittest.TestCase):
     def test_current_project_version_is_consistent(self) -> None:
-        version = verify_version(tag="v0.1.1")
+        version = verify_version(tag="v0.1.2")
 
-        self.assertEqual(version, "0.1.1")
+        self.assertEqual(version, "0.1.2")
 
     def test_rejects_mismatched_release_tag(self) -> None:
         with self.assertRaisesRegex(ValueError, "must match"):
