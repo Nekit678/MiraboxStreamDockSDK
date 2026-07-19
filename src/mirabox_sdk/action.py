@@ -119,8 +119,8 @@ class Action(Generic[SettingsT, DependenciesT]):
             settings=settings,
             codec=cast(JsonCodec[SettingsT], self.settings_codec),
         )
-        self.settings = settings
         self._send(command)
+        self.settings = settings
 
     def get_settings(self) -> None:
         self._send(GetSettingsCommand(self.context))

@@ -148,6 +148,21 @@ class ActionTests(unittest.TestCase):
         self.assertEqual(action.settings, {"count": 1})
         stream_dock.send.assert_not_called()
 
+    def test_set_settings_preserves_state_when_send_fails(self) -> None:
+        stream_dock = Mock()
+        stream_dock.send.side_effect = RuntimeError("send failed")
+        action = RecordingAction(
+            ACTION_UUID,
+            "button",
+            {"count": 1},
+            ExampleDependencies(stream_dock),
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "send failed"):
+            action.set_settings({"count": 2})
+
+        self.assertEqual(action.settings, {"count": 1})
+
 
 class ActionRegistryTests(unittest.TestCase):
     def test_registrations_are_isolated_per_plugin(self) -> None:
