@@ -13,6 +13,7 @@ _DEFAULT_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 _DEFAULT_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 _DEFAULT_MAX_BYTES = 5 * 1024 * 1024
 _DEFAULT_BACKUP_COUNT = 3
+_include_protocol_payload = False
 
 
 def _normalize_level(level: int | str) -> int:
@@ -40,10 +41,20 @@ def _replace_managed_handler(
 
 
 def _silence_sdk_logging(logger: logging.Logger) -> None:
+    _set_protocol_payload_logging(False)
     _replace_managed_handler(logger, logging.NullHandler())
     logger.disabled = False
     logger.propagate = False
     logger.setLevel(logging.CRITICAL + 1)
+
+
+def _set_protocol_payload_logging(enabled: bool) -> None:
+    global _include_protocol_payload
+    _include_protocol_payload = enabled
+
+
+def _protocol_payload_logging_enabled() -> bool:
+    return _include_protocol_payload
 
 
 def _validate_rotation(max_bytes: int, backup_count: int) -> None:
@@ -65,18 +76,23 @@ def configure_logging(
     log_file: str | Path | None = None,
     stream: TextIO | None = None,
     enabled: bool = True,
+    include_payload: bool = False,
     max_bytes: int = _DEFAULT_MAX_BYTES,
     backup_count: int = _DEFAULT_BACKUP_COUNT,
 ) -> logging.Logger:
     """Configure isolated SDK logging without changing the root logger.
 
     Repeated calls replace the handler previously installed by this function.
-    Set ``enabled=False`` to silence that output. Handlers installed directly by
+    Set ``enabled=False`` to silence that output. Protocol payloads remain
+    redacted unless ``include_payload=True`` is explicitly requested; full
+    payloads are emitted only by DEBUG records. Handlers installed directly by
     the application remain under application control.
     """
 
     if not isinstance(enabled, bool):
         raise TypeError("enabled must be a boolean")
+    if not isinstance(include_payload, bool):
+        raise TypeError("include_payload must be a boolean")
     if log_file is not None and stream is not None:
         raise ValueError("log_file and stream are mutually exclusive")
 
@@ -103,6 +119,7 @@ def configure_logging(
     handler.setLevel(normalized_level)
     handler.setFormatter(logging.Formatter(_DEFAULT_FORMAT, _DEFAULT_DATE_FORMAT))
     _replace_managed_handler(logger, handler)
+    _set_protocol_payload_logging(include_payload)
     logger.disabled = False
     logger.propagate = False
     logger.setLevel(normalized_level)

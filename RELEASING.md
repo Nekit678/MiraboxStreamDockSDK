@@ -49,8 +49,8 @@ long-lived PyPI token is required.
 Create the tag from the verified `main` commit and push it:
 
 ```bash
-git tag -a v0.2.0 -m "Release v0.2.0"
-git push origin v0.2.0
+git tag -a v0.3.0 -m "Release v0.3.0"
+git push origin v0.3.0
 ```
 
 `scripts/verify_version.py` rejects a tag that does not exactly match both
@@ -67,7 +67,7 @@ new patch release instead.
 
    ```bash
    python -m venv release-check
-   release-check/bin/python -m pip install mirabox-stream-dock-sdk==0.2.0
+   release-check/bin/python -m pip install mirabox-stream-dock-sdk==0.3.0
    release-check/bin/mirabox-sdk copy-property-inspector release-check/pi
    ```
 

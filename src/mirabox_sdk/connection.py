@@ -9,6 +9,7 @@ import websocket
 from .commands import StreamDockCommand
 from .errors import StreamDockProtocolError
 from .json_types import is_json_value
+from .logging_config import _protocol_payload_logging_enabled
 from .parser import parse_stream_dock_event
 from .protocols import StreamDockConnection, StreamDockListener
 
@@ -42,10 +43,13 @@ def _log_protocol_message(direction: str, message: object) -> None:
         context if isinstance(context, str) else None,
     )
     if logger.isEnabledFor(logging.DEBUG):
+        log_message = (
+            message if _protocol_payload_logging_enabled() else _redact_protocol_message(message)
+        )
         logger.debug(
             "%s message: %s",
             direction,
-            json.dumps(_redact_protocol_message(message), ensure_ascii=False),
+            json.dumps(log_message, ensure_ascii=False),
         )
 
 

@@ -6,6 +6,7 @@ import ast
 import json
 import unittest
 from dataclasses import dataclass
+from io import StringIO
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -48,6 +49,7 @@ from mirabox_sdk import (
     UnsupportedEventError,
     WebSocketStreamDockConnection,
     WillAppearEvent,
+    configure_logging,
     parse_plugin_launch_arguments,
     parse_registration_info,
     parse_stream_dock_event,
@@ -695,8 +697,12 @@ class WebSocketStreamDockConnectionTests(unittest.TestCase):
         with self.assertLogs("mirabox_sdk.connection", level="DEBUG") as logs:
             connection._on_message(
                 web_socket,
-                '{"event":"didReceiveGlobalSettings","payload":{"settings":'
-                f'{{"arbitraryName":"{incoming_secret}"}}}}',
+                json.dumps(
+                    {
+                        "event": "didReceiveGlobalSettings",
+                        "payload": {"settings": {"arbitraryName": incoming_secret}},
+                    }
+                ),
             )
             connection.send(SetGlobalSettingsCommand("plugin", {"arbitraryName": outgoing_secret}))
             connection.send(
@@ -715,6 +721,53 @@ class WebSocketStreamDockConnectionTests(unittest.TestCase):
         self.assertIn('"payload": "<redacted>"', output)
         self.assertIn('"action": "action-uuid"', output)
         self.assertIn('"context": "button"', output)
+
+    @patch("mirabox_sdk.connection.websocket.WebSocketApp")
+    def test_logs_full_payloads_only_when_explicitly_enabled(self, app_factory: Mock) -> None:
+        web_socket = app_factory.return_value
+        connection = WebSocketStreamDockConnection(12345)
+        connection.set_listener(Mock())
+        incoming_secret = "incoming-secret-value"
+        outgoing_secret = "outgoing-secret-value"
+        stream = StringIO()
+        redacted_stream = StringIO()
+
+        try:
+            configure_logging(level="DEBUG", stream=stream, include_payload=True)
+            connection._on_message(
+                web_socket,
+                json.dumps(
+                    {
+                        "event": "didReceiveGlobalSettings",
+                        "payload": {"settings": {"accessToken": incoming_secret}},
+                    }
+                ),
+            )
+            connection.send(
+                SendToPropertyInspectorCommand(
+                    action="action-uuid",
+                    context="button",
+                    payload={"accessToken": outgoing_secret, "label": "visible"},
+                )
+            )
+            configure_logging(level="DEBUG", stream=redacted_stream)
+            connection.send(
+                SendToPropertyInspectorCommand(
+                    action="action-uuid",
+                    context="button",
+                    payload={"accessToken": outgoing_secret},
+                )
+            )
+        finally:
+            configure_logging(enabled=False)
+
+        output = stream.getvalue()
+        self.assertIn(incoming_secret, output)
+        self.assertIn(outgoing_secret, output)
+        self.assertIn('"label": "visible"', output)
+        self.assertNotIn('"payload": "<redacted>"', output)
+        self.assertNotIn(outgoing_secret, redacted_stream.getvalue())
+        self.assertIn('"payload": "<redacted>"', redacted_stream.getvalue())
 
     @patch("mirabox_sdk.connection.websocket.WebSocketApp")
     def test_rejects_invalid_inbound_messages(self, app_factory: Mock) -> None:

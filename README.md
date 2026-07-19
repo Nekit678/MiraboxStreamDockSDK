@@ -432,6 +432,20 @@ configure_logging(
 Adjust `max_bytes` and `backup_count` for the plugin's needs. Set
 `max_bytes=0` only when intentionally requesting an unbounded file.
 
+`include_payload=True` adds the complete inbound and outbound protocol message
+to `DEBUG` records. Payloads may contain tokens, settings, and other secrets, so
+enable this option only temporarily in a trusted development environment. Omit
+the option (its default is `False`) to return to redacted payloads while keeping
+other diagnostics enabled.
+
+```python
+configure_logging(
+    level="DEBUG",
+    log_file=Path.home() / ".mirabox-counter" / "plugin.log",
+    include_payload=True,
+)
+```
+
 Repeated calls replace the handler previously installed by
 `configure_logging()`, so the level or destination can be changed without
 duplicating messages. Return the SDK to its default silent state with:
@@ -441,7 +455,8 @@ configure_logging(enabled=False)
 ```
 
 `INFO` records contain protocol direction, event, and context. `DEBUG` adds
-routing metadata, but message payloads remain redacted at every level.
+routing metadata. Message payloads remain redacted unless `include_payload=True`
+is explicitly configured.
 Handlers installed manually by the application remain its responsibility.
 
 ## Project structure

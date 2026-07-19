@@ -1,6 +1,6 @@
 """Public API for the typed MiraBox Stream Dock SDK."""
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 from .action import Action
 from .action_registry import ActionRegistry

@@ -52,6 +52,7 @@ assert any(isinstance(handler, logging.NullHandler) for handler in sdk_logger.ha
             self.sdk_logger.removeHandler(handler)
 
     def tearDown(self) -> None:
+        configure_logging(enabled=False)
         for handler in tuple(self.sdk_logger.handlers):
             self.sdk_logger.removeHandler(handler)
             handler.close()
@@ -141,6 +142,8 @@ assert any(isinstance(handler, logging.NullHandler) for handler in sdk_logger.ha
             configure_logging(log_file="plugin.log", stream=StringIO())
         with self.assertRaisesRegex(TypeError, "enabled must be a boolean"):
             configure_logging(enabled=1)  # type: ignore[arg-type]
+        with self.assertRaisesRegex(TypeError, "include_payload must be a boolean"):
+            configure_logging(include_payload=1)  # type: ignore[arg-type]
         with self.assertRaisesRegex(ValueError, "max_bytes must not be negative"):
             configure_logging(max_bytes=-1)
         with self.assertRaisesRegex(ValueError, "backup_count must be positive"):
