@@ -1,0 +1,100 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build release distributions
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install SDK and build tools
+        run: python -m pip install -e ".[dev]"
+
+      - name: Verify release version
+        run: python scripts/verify_version.py --tag "${{ github.ref_name }}"
+
+      - name: Run checks
+        run: |
+          ruff format --check src tests scripts examples
+          ruff check src tests scripts examples
+          python -m unittest discover -s tests -v
+          PYTHONPATH=examples/counter_plugin/src python -m unittest discover -s examples/counter_plugin/tests -v
+          python -m compileall -q src tests scripts examples
+
+      - name: Build distributions
+        run: python -m build
+
+      - name: Verify distribution contents
+        run: python scripts/verify_distribution.py dist
+
+      - name: Upload distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+  publish-pypi:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: pypi
+      url: https://pypi.org/p/mirabox-stream-dock-sdk
+    permissions:
+      id-token: write
+
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@v6
+        with:
+          name: python-package-distributions
+          path: dist
+
+      - name: Publish distributions
+        uses: pypa/gh-action-pypi-publish@release/v1
+
+  publish-github:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@v6
+        with:
+          name: python-package-distributions
+          path: dist
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: >-
+          gh release create "${{ github.ref_name }}" dist/*
+          --verify-tag
+          --title "${{ github.ref_name }}"
+          --generate-notes

@@ -1,0 +1,61 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mirabox-stream-dock-sdk"
+version = "0.1.0"
+description = "Typed Python SDK for building MiraBox Stream Dock plugins"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+  { name = "Nekit678" },
+]
+keywords = ["mirabox", "stream-dock", "plugin", "sdk", "websocket"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Typing :: Typed",
+]
+dependencies = [
+  "websocket-client>=1.8,<2",
+]
+
+[project.optional-dependencies]
+dev = [
+  "build>=1.2,<2",
+  "ruff==0.15.21",
+]
+
+[project.urls]
+Homepage = "https://github.com/Nekit678/MiraboxStreamDockSDK"
+Documentation = "https://github.com/Nekit678/MiraboxStreamDockSDK#readme"
+Repository = "https://github.com/Nekit678/MiraboxStreamDockSDK.git"
+Issues = "https://github.com/Nekit678/MiraboxStreamDockSDK/issues"
+Changelog = "https://github.com/Nekit678/MiraboxStreamDockSDK/blob/main/CHANGELOG.md"
+
+[project.scripts]
+mirabox-sdk = "mirabox_sdk.resource_cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+mirabox_sdk = [
+  "py.typed",
+  "property_inspector/*.js",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

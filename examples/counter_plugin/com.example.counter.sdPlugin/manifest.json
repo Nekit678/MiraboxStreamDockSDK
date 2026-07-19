@@ -1,0 +1,42 @@
+{
+  "Actions": [
+    {
+      "UUID": "com.example.counter.increment",
+      "Name": "Counter",
+      "Tooltip": "Increment a persisted counter",
+      "Icon": "assets/icon.svg",
+      "PropertyInspectorPath": "property-inspector/counter.html",
+      "SupportedInMultiActions": true,
+      "UserTitleEnabled": false,
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "assets/icon.svg",
+          "ShowTitle": true,
+          "TitleAlignment": "bottom",
+          "FontSize": "18"
+        }
+      ]
+    }
+  ],
+  "Version": "0.1.0",
+  "Name": "Counter",
+  "Icon": "assets/icon.svg",
+  "CategoryIcon": "assets/icon.svg",
+  "Category": "Examples",
+  "Description": "Minimal counter plugin built with mirabox-stream-dock-sdk",
+  "CodePath": "CounterPlugin.exe",
+  "SDKVersion": 1,
+  "Author": "Example Author",
+  "OS": [
+    {
+      "Platform": "windows",
+      "MinimumVersion": "11"
+    }
+  ],
+  "Software": {
+    "MinimumVersion": "2.10.179.426"
+  }
+}
