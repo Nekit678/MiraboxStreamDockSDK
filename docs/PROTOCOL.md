@@ -52,7 +52,7 @@ model is dispatched to the corresponding `Action` callback where applicable.
 | `willAppear` | `WillAppearEvent` | Creates the context, then `on_will_appear()` |
 | `willDisappear` | `WillDisappearEvent` | `on_will_disappear()`, then removes the context |
 | `didReceiveSettings` | `DidReceiveSettingsEvent` | Updates typed settings, then `on_did_receive_settings()` |
-| `didReceiveGlobalSettings` | `DidReceiveGlobalSettingsEvent` | Updates runtime state and broadcasts `on_did_receive_global_settings()` |
+| `didReceiveGlobalSettings` | `DidReceiveGlobalSettingsEvent` | Updates runtime state, broadcasts `on_did_receive_global_settings()`, and replays the latest event to actions created later |
 | `titleParametersDidChange` | `TitleParametersDidChangeEvent` | Updates title state, then `on_title_parameters_did_change()` |
 | `keyDown` | `KeyDownEvent` | `on_key_down()` |
 | `keyUp` | `KeyUpEvent` | `on_key_up()` |

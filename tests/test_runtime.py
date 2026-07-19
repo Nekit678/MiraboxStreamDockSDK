@@ -300,6 +300,31 @@ class StreamDockPluginRuntimeTests(unittest.TestCase):
         self.assertEqual(runtime.global_settings, {"theme": "dark"})
         self.assertTrue(all("failing-button" in message for message in logs.output))
 
+    def test_replays_empty_global_settings_to_action_created_after_response(self) -> None:
+        runtime, _stream_dock = self.build_runtime()
+        global_settings = DidReceiveGlobalSettingsEvent(settings={})
+        appear = will_appear_event()
+
+        runtime.on_stream_dock_event(global_settings)
+        runtime.on_stream_dock_event(appear)
+
+        action = runtime.actions["button"]
+        self.assertEqual(action.received_events, [appear, global_settings])
+
+    def test_replays_only_latest_global_settings_to_late_action(self) -> None:
+        runtime, _stream_dock = self.build_runtime()
+        first = DidReceiveGlobalSettingsEvent(settings={"theme": "light"})
+        latest = DidReceiveGlobalSettingsEvent(settings={"theme": "dark"})
+        appear = will_appear_event()
+
+        runtime.on_stream_dock_event(first)
+        runtime.on_stream_dock_event(latest)
+        runtime.on_stream_dock_event(appear)
+
+        action = runtime.actions["button"]
+        self.assertEqual(action.received_events, [appear, latest])
+        self.assertEqual(runtime.global_settings, {"theme": "dark"})
+
 
 class PluginCliTests(unittest.TestCase):
     def test_parses_standard_plugin_launch_arguments(self) -> None:

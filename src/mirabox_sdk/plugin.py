@@ -67,6 +67,8 @@ class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
     ) -> None:
         self.actions: dict[str, Action[Any, DependenciesT]] = {}
         self.global_settings: JsonObject = {}
+        self._global_settings_loaded = False
+        self._last_global_settings_event: DidReceiveGlobalSettingsEvent | None = None
         self.launch_arguments = launch_arguments
         self.plugin_uuid = launch_arguments.plugin_uuid
         self.register_event = launch_arguments.register_event
@@ -144,6 +146,8 @@ class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
 
         if isinstance(event, DidReceiveGlobalSettingsEvent):
             self.global_settings = event.settings
+            self._global_settings_loaded = True
+            self._last_global_settings_event = event
             self._dispatch_broadcast_event(event)
             return
 
@@ -206,6 +210,14 @@ class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
                 logger.exception("Failed to roll back action context %s", event.context)
             raise
 
+        if self._global_settings_loaded:
+            global_settings_event = self._last_global_settings_event
+            if global_settings_event is not None:
+                self._dispatch_broadcast_event_to_action_safely(
+                    action,
+                    global_settings_event,
+                )
+
     @staticmethod
     def _dispatch_action_event(
         action: Action[Any, DependenciesT],
@@ -232,15 +244,22 @@ class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
 
     def _dispatch_broadcast_event(self, event: StreamDockEvent) -> None:
         for action in tuple(self.actions.values()):
-            try:
-                self._dispatch_broadcast_event_to_action(action, event)
-            except Exception:
-                logger.exception(
-                    "Failed to process broadcast Stream Dock event %s for action %s context %s",
-                    event.event_name,
-                    action.action,
-                    action.context,
-                )
+            self._dispatch_broadcast_event_to_action_safely(action, event)
+
+    def _dispatch_broadcast_event_to_action_safely(
+        self,
+        action: Action[Any, DependenciesT],
+        event: StreamDockEvent,
+    ) -> None:
+        try:
+            self._dispatch_broadcast_event_to_action(action, event)
+        except Exception:
+            logger.exception(
+                "Failed to process broadcast Stream Dock event %s for action %s context %s",
+                event.event_name,
+                action.action,
+                action.context,
+            )
 
     @staticmethod
     def _dispatch_broadcast_event_to_action(
