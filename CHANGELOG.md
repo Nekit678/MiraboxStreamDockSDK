@@ -6,6 +6,12 @@ change public APIs between minor versions.
 
 ## [Unreleased]
 
+### Added
+
+- Keep SDK logging disabled by default and add `configure_logging()` for
+  isolated console or rotating UTF-8 file diagnostics, repeatable level
+  changes, and explicit suppression.
+
 ### Documentation
 
 - Distinguish the declared minimum Stream Dock version `2.10.179.426` from the

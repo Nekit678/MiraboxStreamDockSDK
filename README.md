@@ -63,6 +63,7 @@ behavior is verified.
 - [Protocol basis](#protocol-basis)
 - [API overview](#api-overview)
 - [Errors and unknown events](#errors-and-unknown-events)
+- [Logging](#logging)
 - [Project structure](#project-structure)
 - [Development](#development)
 - [Releasing](#releasing)
@@ -378,6 +379,7 @@ behavior implemented by this SDK.
 | Application data | `JsonCodec`, `FunctionalJsonCodec`, `JsonObjectCodec`, typed encode/decode helpers |
 | Resources | `copy_property_inspector_client`, `property_inspector_client_bytes`, `mirabox-sdk` CLI |
 | Parsing | `parse_stream_dock_event`, `parse_registration_info`, typed protocol errors |
+| Logging | `configure_logging` with isolated console, file, and disable controls |
 
 The supported public surface is exported from `mirabox_sdk`. Objects from
 individual modules should be treated as implementation details unless they are
@@ -398,6 +400,50 @@ By default, `parse_stream_dock_event()` preserves an unknown but structurally
 valid envelope as `UnknownStreamDockEvent`. This lets the SDK tolerate protocol
 extensions while known events remain strictly validated.
 
+## Logging
+
+SDK logging is disabled by default: it does not propagate to the application's
+root logger and does not create a log file. Enable diagnostics explicitly before
+calling `run_plugin_cli()`:
+
+```python
+from mirabox_sdk import configure_logging
+
+configure_logging(level="INFO")
+```
+
+When enabled without a file, the destination is stderr. To write UTF-8 logs to
+a file, pass a path; missing parent directories are created automatically. File
+logging rotates at 5 MiB with three backups by default:
+
+```python
+from pathlib import Path
+
+from mirabox_sdk import configure_logging
+
+configure_logging(
+    level="DEBUG",
+    log_file=Path.home() / ".mirabox-counter" / "plugin.log",
+    max_bytes=5 * 1024 * 1024,
+    backup_count=3,
+)
+```
+
+Adjust `max_bytes` and `backup_count` for the plugin's needs. Set
+`max_bytes=0` only when intentionally requesting an unbounded file.
+
+Repeated calls replace the handler previously installed by
+`configure_logging()`, so the level or destination can be changed without
+duplicating messages. Return the SDK to its default silent state with:
+
+```python
+configure_logging(enabled=False)
+```
+
+`INFO` records contain protocol direction, event, and context. `DEBUG` adds
+routing metadata, but message payloads remain redacted at every level.
+Handlers installed manually by the application remain its responsibility.
+
 ## Project structure
 
 ```text
@@ -411,6 +457,7 @@ MiraboxStreamDockSDK/
 │   ├── parser.py                      # Strict wire-message parser
 │   ├── plugin.py                      # Runtime and lifecycle dispatcher
 │   ├── connection.py                  # WebSocket transport
+│   ├── logging_config.py              # Isolated SDK logging configuration
 │   └── property_inspector/            # Browser-side SDK resource
 ├── examples/counter_plugin/           # Complete buildable plugin
 ├── tests/                             # SDK and release-tool tests

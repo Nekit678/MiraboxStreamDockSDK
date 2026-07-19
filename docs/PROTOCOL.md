@@ -106,6 +106,9 @@ values and rejects non-finite numbers such as `NaN` before sending.
 Protocol logs contain routing metadata such as the event and context. Message
 payloads are always redacted, including at DEBUG level, because settings and
 Property Inspector messages may contain secrets under plugin-defined field names.
+SDK logging is disabled and isolated from the root logger by default. Use
+`configure_logging()` to select a level and write to stderr or a rotating UTF-8
+file, then call it with `enabled=False` to restore the silent default.
 
 ## Property Inspector API
 

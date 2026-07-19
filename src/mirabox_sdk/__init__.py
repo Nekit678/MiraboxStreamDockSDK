@@ -78,6 +78,7 @@ from .events import (
     WillDisappearEvent,
 )
 from .json_types import JsonObject, JsonValue
+from .logging_config import configure_logging
 from .parser import parse_stream_dock_event
 from .plugin import StreamDockPlugin
 from .protocols import (
@@ -187,6 +188,7 @@ __all__ = [
     "WillAppearEvent",
     "WillDisappearEvent",
     "build_plugin_argument_parser",
+    "configure_logging",
     "copy_property_inspector_client",
     "decode_with_codec",
     "encode_with_codec",
