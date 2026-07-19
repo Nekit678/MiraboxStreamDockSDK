@@ -102,9 +102,12 @@ incoming events to the appropriate action instance.
 ## Requirements
 
 - Python `3.11+`;
-- MiraBox Stream Dock `2.10.179.426` or newer;
+- MiraBox Stream Dock `2.10.179.426` or newer (declared minimum);
 - `websocket-client>=1.8,<2` (installed automatically);
 - Windows to run Stream Dock and package a standalone plugin with PyInstaller.
+
+The SDK's Stream Dock integration has been manually verified with Stream Dock
+`3.10.203.0701`.
 
 The SDK itself and its test suite can be developed on Windows, Linux, or WSL.
 The final `.exe` must be built on Windows because PyInstaller is not a

@@ -6,6 +6,11 @@ change public APIs between minor versions.
 
 ## [Unreleased]
 
+### Documentation
+
+- Distinguish the declared minimum Stream Dock version `2.10.179.426` from the
+  manually verified runtime version `3.10.203.0701`.
+
 ## [0.1.2] - 2026-07-19
 
 ### Fixed

@@ -21,9 +21,10 @@ The [DeepWiki overview](https://deepwiki.com/MiraboxSpace/StreamDock-Plugin-SDK)
 is useful as a generated guide to the upstream repository, but the official
 documentation, repository source, and observed wire behavior take precedence.
 
-The compatibility baseline is Stream Dock `2.10.179.426`, matching the minimum
-software version in the upstream manifest reference and this repository's
-example plugin. Automated tests simulate the protocol and do not require a
+The declared minimum compatible version is Stream Dock `2.10.179.426`, matching
+the upstream manifest reference and this repository's example plugin. The
+latest recorded manual runtime verification was performed with Stream Dock
+`3.10.203.0701`. Automated tests simulate the protocol and do not require a
 physical Stream Dock device.
 
 ## Executable registration
@@ -139,7 +140,8 @@ when creating a plugin bundle.
 The UUID supplied to `ActionRegistry.register()` must exactly match an action
 UUID in the manifest. `CodePath` must point to the packaged executable, and
 `Software.MinimumVersion` should describe the oldest Stream Dock version the
-plugin has actually been tested with.
+plugin intends to support. Test that minimum version before publishing when
+practical.
 
 ## Keeping the map current
 
