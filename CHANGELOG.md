@@ -8,8 +8,9 @@ change public APIs between minor versions.
 
 ### Fixed
 
-- Reject non-finite numbers and other non-JSON values before WebSocket sends,
-  and isolate parsed event data and persisted global settings with defensive copies.
+- Reject non-finite numbers and other non-JSON global settings before sending,
+  preserve the previous runtime state when sending fails, replay the latest state,
+  and isolate each action callback with defensive copies.
 
 ## [0.1.1] - 2026-07-19
 

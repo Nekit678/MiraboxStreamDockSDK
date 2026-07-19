@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from unittest.mock import Mock, call
 
 from mirabox_sdk import (
+    JSON_OBJECT_CODEC,
     Action,
     ActionRegistry,
     Controller,
@@ -118,10 +119,10 @@ def launch_arguments() -> PluginLaunchArguments:
     )
 
 
-def will_appear_event() -> WillAppearEvent:
+def will_appear_event(*, context: str = "button") -> WillAppearEvent:
     return WillAppearEvent(
         action=ACTION_UUID,
-        context="button",
+        context=context,
         device="device-uuid",
         settings={"count": 1},
         coordinates=Coordinates(0, 0),
@@ -344,6 +345,76 @@ class StreamDockPluginRuntimeTests(unittest.TestCase):
         self.assertEqual(action.received_events, [appear, latest])
         self.assertEqual(runtime.global_settings, {"theme": "dark"})
 
+    def test_replays_global_settings_updated_by_setter(self) -> None:
+        runtime, _stream_dock = self.build_runtime()
+        runtime.on_stream_dock_event(DidReceiveGlobalSettingsEvent(settings={"theme": "light"}))
+
+        runtime.set_global_settings({"theme": "dark"})
+        runtime.on_stream_dock_event(will_appear_event())
+
+        action = runtime.actions["button"]
+        self.assertEqual(
+            action.received_events[-1],
+            DidReceiveGlobalSettingsEvent(settings={"theme": "dark"}),
+        )
+
+    def test_replays_global_settings_updated_by_typed_setter(self) -> None:
+        runtime, _stream_dock = self.build_runtime()
+        runtime.on_stream_dock_event(DidReceiveGlobalSettingsEvent(settings={"theme": "light"}))
+
+        runtime.set_typed_global_settings({"theme": "dark"}, JSON_OBJECT_CODEC)
+        runtime.on_stream_dock_event(will_appear_event())
+
+        action = runtime.actions["button"]
+        self.assertEqual(
+            action.received_events[-1],
+            DidReceiveGlobalSettingsEvent(settings={"theme": "dark"}),
+        )
+
+    def test_isolates_global_settings_broadcasts_between_actions(self) -> None:
+        runtime, stream_dock = self.build_runtime()
+        dependencies = ExampleDependencies(stream_dock)
+        first = RecordingAction(ACTION_UUID, "first-button", {}, dependencies)
+        second = RecordingAction(ACTION_UUID, "second-button", {}, dependencies)
+        runtime.actions = {first.context: first, second.context: second}
+
+        runtime.on_stream_dock_event(
+            DidReceiveGlobalSettingsEvent(settings={"audio": {"threshold": 0.5}})
+        )
+
+        first_event = first.received_events[-1]
+        second_event = second.received_events[-1]
+        assert isinstance(first_event, DidReceiveGlobalSettingsEvent)
+        assert isinstance(second_event, DidReceiveGlobalSettingsEvent)
+        first_audio = first_event.settings["audio"]
+        assert isinstance(first_audio, dict)
+        first_audio["threshold"] = 0.75
+        self.assertIsNot(first_event, second_event)
+        self.assertEqual(second_event.settings, {"audio": {"threshold": 0.5}})
+        self.assertEqual(runtime.global_settings, {"audio": {"threshold": 0.5}})
+
+    def test_isolates_global_settings_replays_between_late_actions(self) -> None:
+        runtime, _stream_dock = self.build_runtime()
+        runtime.on_stream_dock_event(
+            DidReceiveGlobalSettingsEvent(settings={"audio": {"threshold": 0.5}})
+        )
+        runtime.on_stream_dock_event(will_appear_event(context="first-button"))
+        first = runtime.actions["first-button"]
+        first_event = first.received_events[-1]
+        assert isinstance(first_event, DidReceiveGlobalSettingsEvent)
+        first_audio = first_event.settings["audio"]
+        assert isinstance(first_audio, dict)
+        first_audio["threshold"] = 0.75
+
+        runtime.on_stream_dock_event(will_appear_event(context="second-button"))
+
+        second = runtime.actions["second-button"]
+        second_event = second.received_events[-1]
+        assert isinstance(second_event, DidReceiveGlobalSettingsEvent)
+        self.assertIsNot(first_event, second_event)
+        self.assertEqual(second_event.settings, {"audio": {"threshold": 0.5}})
+        self.assertEqual(runtime.global_settings, {"audio": {"threshold": 0.5}})
+
     def test_isolates_saved_global_settings_from_event_mutation(self) -> None:
         runtime, _stream_dock = self.build_runtime()
         event = DidReceiveGlobalSettingsEvent(settings={"audio": {"threshold": 0.5}})
@@ -375,6 +446,36 @@ class StreamDockPluginRuntimeTests(unittest.TestCase):
         assert isinstance(sent_audio, dict)
         sent_audio["threshold"] = 0.25
         self.assertEqual(runtime.global_settings, {"audio": {"threshold": 0.5}})
+
+    def test_set_global_settings_preserves_state_when_validation_fails(self) -> None:
+        runtime, stream_dock = self.build_runtime()
+        runtime.global_settings = {"threshold": 0.5}
+
+        with self.assertRaises(JsonCodecEncodeError):
+            runtime.set_global_settings({"threshold": float("nan")})
+
+        self.assertEqual(runtime.global_settings, {"threshold": 0.5})
+        stream_dock.send.assert_not_called()
+
+    def test_set_global_settings_preserves_state_when_send_fails(self) -> None:
+        runtime, stream_dock = self.build_runtime()
+        runtime.global_settings = {"theme": "light"}
+        stream_dock.send.side_effect = RuntimeError("send failed")
+
+        with self.assertRaisesRegex(RuntimeError, "send failed"):
+            runtime.set_global_settings({"theme": "dark"})
+
+        self.assertEqual(runtime.global_settings, {"theme": "light"})
+
+    def test_set_typed_global_settings_preserves_state_when_send_fails(self) -> None:
+        runtime, stream_dock = self.build_runtime()
+        runtime.global_settings = {"theme": "light"}
+        stream_dock.send.side_effect = RuntimeError("send failed")
+
+        with self.assertRaisesRegex(RuntimeError, "send failed"):
+            runtime.set_typed_global_settings({"theme": "dark"}, JSON_OBJECT_CODEC)
+
+        self.assertEqual(runtime.global_settings, {"theme": "light"})
 
 
 class PluginCliTests(unittest.TestCase):

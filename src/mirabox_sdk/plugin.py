@@ -9,7 +9,7 @@ from typing import Any, Generic, TypeVar
 
 from .action import Action
 from .action_registry import ActionRegistry
-from .codecs import JsonCodec
+from .codecs import JSON_OBJECT_CODEC, JsonCodec
 from .commands import (
     GetGlobalSettingsCommand,
     RegisterPluginCommand,
@@ -69,7 +69,6 @@ class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
         self.actions: dict[str, Action[Any, DependenciesT]] = {}
         self.global_settings: JsonObject = {}
         self._global_settings_loaded = False
-        self._last_global_settings_event: DidReceiveGlobalSettingsEvent | None = None
         self.launch_arguments = launch_arguments
         self.plugin_uuid = launch_arguments.plugin_uuid
         self.register_event = launch_arguments.register_event
@@ -148,9 +147,6 @@ class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
         if isinstance(event, DidReceiveGlobalSettingsEvent):
             self.global_settings = deepcopy(event.settings)
             self._global_settings_loaded = True
-            self._last_global_settings_event = DidReceiveGlobalSettingsEvent(
-                settings=deepcopy(event.settings)
-            )
             self._dispatch_broadcast_event(event)
             return
 
@@ -214,12 +210,10 @@ class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
             raise
 
         if self._global_settings_loaded:
-            global_settings_event = self._last_global_settings_event
-            if global_settings_event is not None:
-                self._dispatch_broadcast_event_to_action_safely(
-                    action,
-                    global_settings_event,
-                )
+            self._dispatch_broadcast_event_to_action_safely(
+                action,
+                DidReceiveGlobalSettingsEvent(settings=deepcopy(self.global_settings)),
+            )
 
     @staticmethod
     def _dispatch_action_event(
@@ -247,7 +241,10 @@ class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
 
     def _dispatch_broadcast_event(self, event: StreamDockEvent) -> None:
         for action in tuple(self.actions.values()):
-            self._dispatch_broadcast_event_to_action_safely(action, event)
+            action_event = event
+            if isinstance(event, DidReceiveGlobalSettingsEvent):
+                action_event = DidReceiveGlobalSettingsEvent(settings=deepcopy(event.settings))
+            self._dispatch_broadcast_event_to_action_safely(action, action_event)
 
     def _dispatch_broadcast_event_to_action_safely(
         self,
@@ -283,20 +280,29 @@ class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
             action.on_system_did_wake_up(event)
 
     def set_global_settings(self, settings: JsonObject) -> None:
-        command = SetGlobalSettingsCommand(self.plugin_uuid, deepcopy(settings))
-        self.global_settings = deepcopy(command.settings)
-        self.stream_dock.send(command)
+        """Validate and persist settings, updating local state after a successful send."""
+
+        command = SetGlobalSettingsCommand.from_settings(
+            self.plugin_uuid,
+            settings,
+            JSON_OBJECT_CODEC,
+        )
+        self._send_global_settings(command)
 
     def set_typed_global_settings(
         self,
         settings: GlobalSettingsT,
         codec: JsonCodec[GlobalSettingsT],
     ) -> None:
-        """Encode and persist plugin-owned global settings."""
+        """Encode and persist settings, updating local state after a successful send."""
 
         command = SetGlobalSettingsCommand.from_settings(self.plugin_uuid, settings, codec)
-        self.global_settings = deepcopy(command.settings)
+        self._send_global_settings(command)
+
+    def _send_global_settings(self, command: SetGlobalSettingsCommand) -> None:
+        next_settings = deepcopy(command.settings)
         self.stream_dock.send(command)
+        self.global_settings = next_settings
 
     def get_global_settings(self) -> None:
         self.stream_dock.send(GetGlobalSettingsCommand(self.plugin_uuid))
