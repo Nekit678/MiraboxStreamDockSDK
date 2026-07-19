@@ -1,6 +1,20 @@
-"""Public API for the typed MiraBox Stream Dock SDK."""
+"""Build typed Python plugins for MiraBox Stream Dock.
 
-__version__ = "0.3.0"
+The package-level namespace is the supported public API. It provides an action
+runtime, immutable incoming-event and outgoing-command models, WebSocket
+transport, typed JSON codecs, executable launch validation, logging, and the
+version-matched Property Inspector browser client.
+
+Typical applications register :class:`Action` subclasses in an
+:class:`ActionRegistry`, construct :class:`StreamDockPlugin` with a
+:class:`WebSocketStreamDockConnection`, and pass the resulting factory to
+:func:`run_plugin_cli`.
+
+SDK logging is silent by default. Call :func:`configure_logging` explicitly when
+transport or event-dispatch diagnostics are required.
+"""
+
+__version__ = "0.3.1"
 
 from .action import Action
 from .action_registry import ActionRegistry

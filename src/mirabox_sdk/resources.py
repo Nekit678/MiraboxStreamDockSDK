@@ -9,7 +9,13 @@ PROPERTY_INSPECTOR_CLIENT_FILENAME = "mirabox-sdk.js"
 
 
 def property_inspector_client_bytes() -> bytes:
-    """Return the bundled Property Inspector client."""
+    """Read the version-matched Property Inspector JavaScript client.
+
+    Returns:
+        Raw bytes of ``mirabox-sdk.js`` distributed inside the installed Python
+        package. Reading through :mod:`importlib.resources` also works when the
+        package is not represented by ordinary source files.
+    """
 
     return (
         files("mirabox_sdk")
@@ -23,7 +29,26 @@ def copy_property_inspector_client(
     *,
     overwrite: bool = False,
 ) -> Path:
-    """Copy the shared client into a plugin's Property Inspector directory."""
+    """Copy the bundled client into a Property Inspector directory.
+
+    The destination directory and missing parents are created automatically.
+    An existing byte-identical client is left in place regardless of
+    ``overwrite``.
+
+    Args:
+        destination_directory: Directory inside the plugin bundle that should
+            receive :data:`PROPERTY_INSPECTOR_CLIENT_FILENAME`.
+        overwrite: Replace a different existing file when ``True``. The default
+            protects local modifications and stale versioned copies.
+
+    Returns:
+        Path to the copied or already-identical client file.
+
+    Raises:
+        IsADirectoryError: If the target filename already names a directory.
+        FileExistsError: If a different file exists and ``overwrite`` is false.
+        OSError: If directories or the destination file cannot be read/written.
+    """
 
     destination = Path(destination_directory)
     destination.mkdir(parents=True, exist_ok=True)

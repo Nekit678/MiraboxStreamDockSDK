@@ -12,6 +12,16 @@ from .json_types import JsonObject, JsonValue, is_json_value
 
 @dataclass(frozen=True, slots=True)
 class RegistrationApplicationInfo:
+    """Metadata about the Stream Dock desktop application.
+
+    Attributes:
+        language: Host UI language or locale string.
+        platform: Host operating-system name.
+        platform_version: Host operating-system version.
+        version: Stream Dock application version.
+        font: Default UI font when supplied by the host.
+    """
+
     language: str
     platform: str
     platform_version: str
@@ -21,6 +31,19 @@ class RegistrationApplicationInfo:
 
 @dataclass(frozen=True, slots=True)
 class RegistrationColors:
+    """Optional host theme colors available to plugin user interfaces.
+
+    Each value is the protocol color string supplied in the ``-info`` argument.
+    A field is ``None`` when that Stream Dock version does not provide it.
+
+    Attributes:
+        button_mouse_over_background_color: Button background on pointer hover.
+        button_pressed_background_color: Button background while pressed.
+        button_pressed_border_color: Button border while pressed.
+        button_pressed_text_color: Button text while pressed.
+        highlight_color: Host accent or selection color.
+    """
+
     button_mouse_over_background_color: str | None = None
     button_pressed_background_color: str | None = None
     button_pressed_border_color: str | None = None
@@ -30,6 +53,15 @@ class RegistrationColors:
 
 @dataclass(frozen=True, slots=True)
 class RegistrationDeviceInfo:
+    """Device announced when the plugin executable starts.
+
+    Attributes:
+        id: Opaque, non-empty device identifier.
+        name: User-visible device name.
+        type: Numeric device type assigned by Stream Dock.
+        size: Device action-grid dimensions.
+    """
+
     id: str
     name: str
     type: int
@@ -38,12 +70,29 @@ class RegistrationDeviceInfo:
 
 @dataclass(frozen=True, slots=True)
 class RegistrationPluginInfo:
+    """Manifest identity reported for the launched plugin.
+
+    Attributes:
+        uuid: Plugin UUID read by Stream Dock from the manifest.
+        version: Plugin version read by Stream Dock from the manifest.
+    """
+
     uuid: str
     version: str
 
 
 @dataclass(frozen=True, slots=True)
 class RegistrationInfo:
+    """Validated contents of Stream Dock's JSON-encoded ``-info`` argument.
+
+    Attributes:
+        application: Host application and platform metadata.
+        colors: Optional colors matching the host theme.
+        device_pixel_ratio: Positive UI pixel-density scale factor.
+        devices: Immutable snapshot of devices connected at plugin startup.
+        plugin: Plugin identity read from the manifest.
+    """
+
     application: RegistrationApplicationInfo
     colors: RegistrationColors
     device_pixel_ratio: float
@@ -53,6 +102,15 @@ class RegistrationInfo:
 
 @dataclass(frozen=True, slots=True)
 class PluginLaunchArguments:
+    """Validated arguments used to connect and register a plugin executable.
+
+    Attributes:
+        port: Loopback WebSocket port in the inclusive range 1--65535.
+        plugin_uuid: Non-empty UUID used to register this plugin process.
+        register_event: Registration event name supplied by Stream Dock.
+        info: Parsed host, device, theme, and manifest metadata.
+    """
+
     port: int
     plugin_uuid: str
     register_event: str
@@ -212,7 +270,20 @@ def _parse_plugin(data: JsonObject) -> RegistrationPluginInfo:
 
 
 def parse_registration_info(value: object) -> RegistrationInfo:
-    """Validate and convert the decoded ``-info`` JSON argument."""
+    """Validate and convert the decoded ``-info`` JSON argument.
+
+    Args:
+        value: Value produced by JSON-decoding the command-line argument.
+
+    Returns:
+        Immutable typed registration metadata. Device order is preserved.
+
+    Raises:
+        InvalidRegistrationInfoError: If the value contains non-JSON data, a
+            required field is missing or has the wrong type, dimensions are not
+            positive, or device identifiers are duplicated. The exception path
+            identifies the offending JSON field.
+    """
 
     if not is_json_value(value):
         raise InvalidRegistrationInfoError("value contains non-JSON data")
@@ -234,7 +305,24 @@ def parse_plugin_launch_arguments(
     register_event: object,
     info: object,
 ) -> PluginLaunchArguments:
-    """Validate all arguments with which Stream Dock launches a plugin executable."""
+    """Validate all values with which Stream Dock launches a plugin executable.
+
+    Args:
+        port: Expected loopback WebSocket port from ``-port``.
+        plugin_uuid: Expected non-empty identifier from ``-pluginUUID``.
+        register_event: Expected non-empty name from ``-registerEvent``.
+        info: Decoded JSON value from ``-info``.
+
+    Returns:
+        Immutable launch arguments ready for constructing a connection and
+        :class:`StreamDockPlugin`.
+
+    Raises:
+        InvalidPluginLaunchArgumentsError: If the port or string arguments are
+            invalid.
+        InvalidRegistrationInfoError: If ``info`` does not match the
+            registration schema.
+    """
 
     if not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535:
         raise InvalidPluginLaunchArgumentsError(

@@ -14,21 +14,51 @@ DecodedT = TypeVar("DecodedT")
 
 
 class JsonCodec(Protocol[DecodedT]):
-    """Bidirectional conversion between a JSON object and one typed value."""
+    """Bidirectional conversion between a JSON object and one typed value.
 
-    def decode(self, value: JsonObject) -> DecodedT: ...
+    Implement this protocol when action settings, global settings, or Property
+    Inspector messages should be represented by a plugin-owned Python type.
+    Codec implementations may raise :class:`TypeError`, :class:`ValueError`, or
+    a :class:`JsonCodecError`; SDK helpers normalize those failures and add wire
+    paths where possible.
+    """
 
-    def encode(self, value: DecodedT) -> JsonObject: ...
+    def decode(self, value: JsonObject) -> DecodedT:
+        """Convert an isolated JSON object into the plugin-owned value."""
+
+        ...
+
+    def encode(self, value: DecodedT) -> JsonObject:
+        """Convert a plugin-owned value into a valid JSON object."""
+
+        ...
 
 
 @dataclass(frozen=True, slots=True)
 class FunctionalJsonCodec(Generic[DecodedT]):
-    """Build a validated codec from a decoder and an encoder function."""
+    """Adapt decoder and encoder callables to the :class:`JsonCodec` protocol.
+
+    Attributes:
+        decoder: Callable receiving a deep-copied JSON object and returning the
+            typed representation.
+        encoder: Callable receiving the typed representation and returning a
+            JSON object. The result is validated and deep-copied.
+
+    ``TypeError`` and ``ValueError`` raised by either callable are translated to
+    the corresponding SDK codec error while existing :class:`JsonCodecError`
+    instances are preserved.
+    """
 
     decoder: Callable[[JsonObject], DecodedT]
     encoder: Callable[[DecodedT], JsonObject]
 
     def decode(self, value: JsonObject) -> DecodedT:
+        """Decode an isolated JSON object with :attr:`decoder`.
+
+        Raises:
+            JsonCodecDecodeError: If the decoder rejects the input.
+        """
+
         try:
             return self.decoder(_copy_json_object(value, decoding=True))
         except JsonCodecError:
@@ -37,6 +67,13 @@ class FunctionalJsonCodec(Generic[DecodedT]):
             raise JsonCodecDecodeError(str(exc) or type(exc).__name__) from exc
 
     def encode(self, value: DecodedT) -> JsonObject:
+        """Encode a value with :attr:`encoder` and validate its result.
+
+        Raises:
+            JsonCodecEncodeError: If the encoder fails or does not return a
+                JSON-compatible object.
+        """
+
         try:
             encoded = self.encoder(value)
         except JsonCodecError:
@@ -48,17 +85,46 @@ class FunctionalJsonCodec(Generic[DecodedT]):
 
 @dataclass(frozen=True, slots=True)
 class JsonObjectCodec:
-    """Identity codec that validates and isolates a mutable JSON object."""
+    """Validate and isolate mutable JSON objects without changing their shape.
+
+    Both directions return a deep copy, preventing plugin code, command models,
+    and parsed wire messages from accidentally sharing nested mutable values.
+    """
 
     def decode(self, value: JsonObject) -> JsonObject:
+        """Validate ``value`` and return a deep copy.
+
+        Raises:
+            JsonCodecDecodeError: If ``value`` is not a finite JSON object.
+        """
+
         return _copy_json_object(value, decoding=True)
 
     def encode(self, value: JsonObject) -> JsonObject:
+        """Validate ``value`` and return a deep copy.
+
+        Raises:
+            JsonCodecEncodeError: If ``value`` is not a finite JSON object.
+        """
+
         return _copy_json_object(value, decoding=False)
 
 
 def decode_with_codec(value: JsonObject, codec: JsonCodec[DecodedT]) -> DecodedT:
-    """Validate and isolate wire data before handing it to a plugin codec."""
+    """Validate and isolate wire data before handing it to a plugin codec.
+
+    Args:
+        value: JSON object received from Stream Dock.
+        codec: Decoder for the desired plugin-owned type.
+
+    Returns:
+        Value returned by ``codec.decode``.
+
+    Raises:
+        JsonCodecDecodeError: If the input is invalid, or if the codec raises
+            :class:`TypeError` or :class:`ValueError`.
+        JsonCodecError: Any more specific codec error raised by the codec.
+    """
 
     try:
         return codec.decode(_copy_json_object(value, decoding=True))
@@ -69,7 +135,20 @@ def decode_with_codec(value: JsonObject, codec: JsonCodec[DecodedT]) -> DecodedT
 
 
 def encode_with_codec(value: DecodedT, codec: JsonCodec[DecodedT]) -> JsonObject:
-    """Validate and isolate the JSON object produced by a plugin codec."""
+    """Encode a typed value and validate the resulting JSON object.
+
+    Args:
+        value: Plugin-owned value to encode.
+        codec: Encoder associated with the value's type.
+
+    Returns:
+        A deep-copied, finite JSON object suitable for a wire command.
+
+    Raises:
+        JsonCodecEncodeError: If encoding fails or the result is not a JSON
+            object.
+        JsonCodecError: Any more specific codec error raised by the codec.
+    """
 
     try:
         encoded = codec.encode(value)

@@ -10,7 +10,20 @@ JsonObject: TypeAlias = dict[str, JsonValue]
 
 
 def is_json_value(value: object) -> TypeGuard[JsonValue]:
-    """Return whether a decoded value can be represented by the JSON protocol."""
+    """Return whether a value can be represented safely by the JSON protocol.
+
+    Accepted values are ``None``, booleans, integers, finite floats, strings,
+    lists of accepted values, and dictionaries with string keys and accepted
+    values. ``NaN`` and positive or negative infinity are rejected even though
+    Python's default JSON encoder can emit them as non-standard tokens.
+
+    Args:
+        value: Arbitrary value to inspect recursively.
+
+    Returns:
+        ``True`` when ``value`` satisfies :data:`JsonValue`. Type checkers also
+        narrow the value to that alias in the true branch.
+    """
 
     if value is None or isinstance(value, (bool, int, str)):
         return True

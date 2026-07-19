@@ -1,3 +1,5 @@
+"""WebSocket transport for typed Stream Dock commands and events."""
+
 from __future__ import annotations
 
 import json
@@ -54,9 +56,24 @@ def _log_protocol_message(direction: str, message: object) -> None:
 
 
 class WebSocketStreamDockConnection(StreamDockConnection):
-    """Translate between Stream Dock WebSocket frames and plugin messages."""
+    """Translate between Stream Dock WebSocket frames and typed SDK messages.
+
+    The connection always targets ``127.0.0.1`` using the port supplied by the
+    host application. Incoming malformed JSON and invalid protocol events are
+    logged and ignored so one bad frame does not terminate the receive loop.
+    Outgoing commands are validated as finite JSON before transmission.
+
+    Args:
+        port: Loopback WebSocket port supplied in the plugin launch arguments.
+
+    Note:
+        Payload fields are redacted from DEBUG protocol logs unless the
+        application explicitly opts in with ``configure_logging``.
+    """
 
     def __init__(self, port: int) -> None:
+        """Create a loopback WebSocket client for the supplied host port."""
+
         self._listener: StreamDockListener | None = None
         self._ws = websocket.WebSocketApp(
             f"ws://127.0.0.1:{port}",
@@ -67,15 +84,43 @@ class WebSocketStreamDockConnection(StreamDockConnection):
         )
 
     def set_listener(self, listener: StreamDockListener) -> None:
+        """Replace the listener receiving connection and parsed event callbacks.
+
+        Args:
+            listener: Object implementing :class:`StreamDockListener`.
+        """
+
         self._listener = listener
 
     def run_forever(self) -> None:
+        """Run the WebSocket event loop until the connection closes."""
+
         self._ws.run_forever()
 
     def close(self) -> None:
+        """Request WebSocket shutdown.
+
+        Calling this method delegates to ``websocket-client`` and is safe for
+        the runtime to attempt during final cleanup.
+        """
+
         self._ws.close()
 
     def send(self, command: StreamDockCommand) -> None:
+        """Serialize, validate, log, and transmit one typed command.
+
+        Args:
+            command: Command whose :meth:`StreamDockCommand.to_wire` method
+                returns the outgoing envelope.
+
+        Raises:
+            ValueError: If the command contains a non-JSON value or a non-finite
+                floating-point number.
+            TypeError: If JSON serialization cannot encode the envelope.
+            WebSocketException: If the underlying connection cannot send the
+                frame.
+        """
+
         message = command.to_wire()
         if not is_json_value(message):
             raise ValueError("Stream Dock command contains a non-JSON value")

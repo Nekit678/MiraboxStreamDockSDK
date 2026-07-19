@@ -389,6 +389,24 @@ def parse_stream_dock_event(
     :class:`UnknownStreamDockEvent`. Set ``allow_unknown=False`` to raise
     :class:`UnsupportedEventError` instead. Malformed known events always raise
     :class:`MalformedEventError` or its :class:`InvalidFieldError` subtype.
+
+    Args:
+        value: A value already decoded from a WebSocket JSON frame.
+        allow_unknown: Preserve unrecognized event names and their complete
+            envelopes when ``True``; reject them when ``False``.
+
+    Returns:
+        A frozen dataclass representing the recognized event, or an
+        :class:`UnknownStreamDockEvent` for a valid unrecognized envelope.
+        Mutable JSON objects are copied before being stored in the result.
+
+    Raises:
+        MalformedEventError: If the root is not a JSON object or lacks a valid
+            event name.
+        InvalidFieldError: If a recognized event has a missing, invalid, or
+            unsupported field. The error identifies the event and JSON path.
+        UnsupportedEventError: If the event is unknown and ``allow_unknown`` is
+            ``False``.
     """
 
     if not is_json_value(value):

@@ -18,7 +18,20 @@ def build_plugin_argument_parser(
     *,
     description: str | None = None,
 ) -> argparse.ArgumentParser:
-    """Build a parser for the arguments supplied to every plugin executable."""
+    """Build a parser for the standard Stream Dock launch arguments.
+
+    Args:
+        description: Optional description displayed in command-line help.
+
+    Returns:
+        A parser accepting ``-port``, ``-pluginUUID``, ``-registerEvent``, and
+        the JSON-encoded ``-info`` value supplied by Stream Dock.
+
+    Note:
+        This function only configures ``argparse``. Use
+        :func:`parse_plugin_cli_arguments` to parse and validate protocol-level
+        constraints as well.
+    """
 
     parser = argparse.ArgumentParser(description=description)
     parser.add_argument("-port", type=int, required=True, help="Stream Dock WebSocket port")
@@ -33,7 +46,23 @@ def parse_plugin_cli_arguments(
     *,
     description: str | None = None,
 ) -> PluginLaunchArguments:
-    """Parse and validate the standard Stream Dock executable arguments."""
+    """Parse and validate the standard Stream Dock executable arguments.
+
+    Args:
+        argv: Argument list without the executable name. ``None`` makes
+            ``argparse`` read :data:`sys.argv`.
+        description: Optional description displayed in command-line help.
+
+    Returns:
+        Immutable, typed launch arguments including parsed registration info.
+
+    Raises:
+        SystemExit: If required CLI options are missing or syntactically invalid.
+        InvalidPluginLaunchArgumentsError: If ``-info`` is not valid JSON or a
+            launch value is outside the protocol's accepted range.
+        InvalidRegistrationInfoError: If decoded ``-info`` data does not match
+            the registration schema.
+    """
 
     args = build_plugin_argument_parser(description=description).parse_args(argv)
     try:
@@ -58,7 +87,26 @@ def run_plugin_cli(
     description: str | None = None,
     application_logger: logging.Logger | None = None,
 ) -> int:
-    """Parse launch arguments, build the plugin, and manage its full lifecycle."""
+    """Run a plugin application with consistent startup and shutdown handling.
+
+    Args:
+        build_application: Factory called once with validated launch arguments.
+            The returned object must implement ``run()`` and ``stop()``.
+        argv: Optional argument list passed to
+            :func:`parse_plugin_cli_arguments`. ``None`` reads :data:`sys.argv`.
+        description: Optional command-line help description.
+        application_logger: Logger used for lifecycle diagnostics. The module
+            logger is used when omitted.
+
+    Returns:
+        ``0`` after normal completion or keyboard interruption, ``2`` for
+        invalid Stream Dock launch data, and ``1`` when construction, execution,
+        or shutdown raises an unexpected exception.
+
+    Note:
+        ``stop()`` is attempted exactly once after a successfully constructed
+        application, even when ``run()`` fails.
+    """
 
     active_logger = application_logger or logger
     try:

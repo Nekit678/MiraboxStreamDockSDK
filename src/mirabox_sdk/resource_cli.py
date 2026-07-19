@@ -10,6 +10,12 @@ from .resources import copy_property_inspector_client
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Build the ``mirabox-sdk`` resource-management argument parser.
+
+    Returns:
+        Parser containing the ``copy-property-inspector`` subcommand.
+    """
+
     parser = argparse.ArgumentParser(description="Manage MiraBox Stream Dock SDK resources")
     subparsers = parser.add_subparsers(dest="command", required=True)
     copy_parser = subparsers.add_parser(
@@ -26,6 +32,20 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Run the resource-management command-line interface.
+
+    Args:
+        argv: Arguments without the executable name. ``None`` reads
+            :data:`sys.argv`.
+
+    Returns:
+        ``0`` after printing the copied client path, or ``1`` after printing a
+        filesystem error to standard error.
+
+    Raises:
+        SystemExit: If command-line arguments are missing or invalid.
+    """
+
     args = build_parser().parse_args(argv)
     if args.command != "copy-property-inspector":
         raise AssertionError(f"Unsupported command: {args.command}")

@@ -18,7 +18,17 @@ def _format_path(path: Sequence[PathComponent]) -> str:
 
 
 class StreamDockProtocolError(ValueError):
-    """Base error containing the event name and failing JSON path."""
+    """Base error containing a reason, event name, and failing JSON path.
+
+    Attributes:
+        reason: Human-readable explanation without event or path prefixes.
+        event_name: Wire event associated with the failure, when known.
+        path: Immutable sequence of string keys and integer array indexes from
+            the JSON root to the failing value.
+
+    ``str(error)`` renders paths in a JSONPath-like form such as
+    ``$.payload.settings.count`` or ``$.devices[0].id``.
+    """
 
     def __init__(
         self,
@@ -27,6 +37,14 @@ class StreamDockProtocolError(ValueError):
         event_name: str | None = None,
         path: Sequence[PathComponent] = (),
     ) -> None:
+        """Create a structured protocol error.
+
+        Args:
+            reason: Human-readable failure explanation.
+            event_name: Optional wire event associated with the failure.
+            path: Object keys and array indexes locating the invalid value.
+        """
+
         self.reason = reason
         self.event_name = event_name
         self.path = tuple(path)
@@ -35,15 +53,15 @@ class StreamDockProtocolError(ValueError):
 
 
 class MalformedEventError(StreamDockProtocolError):
-    """The decoded message is not a valid Stream Dock event envelope."""
+    """Raised when a decoded value is not a valid Stream Dock event envelope."""
 
 
 class InvalidFieldError(MalformedEventError):
-    """A known event contains a missing or invalid field."""
+    """Raised when a known event has a missing or type-invalid field."""
 
 
 class UnsupportedEventError(StreamDockProtocolError):
-    """The event name is unknown and unknown events were explicitly disabled."""
+    """Raised for an unknown event when forward compatibility is disabled."""
 
     def __init__(self, event_name: str) -> None:
         super().__init__(
@@ -54,20 +72,20 @@ class UnsupportedEventError(StreamDockProtocolError):
 
 
 class InvalidRegistrationInfoError(StreamDockProtocolError):
-    """The Stream Dock ``-info`` argument does not match the registration contract."""
+    """Raised when Stream Dock ``-info`` data violates the registration schema."""
 
 
 class InvalidPluginLaunchArgumentsError(StreamDockProtocolError):
-    """The executable launch arguments are inconsistent or outside valid ranges."""
+    """Raised when executable launch arguments are missing or outside valid ranges."""
 
 
 class JsonCodecError(StreamDockProtocolError):
-    """Base error raised while converting between JSON objects and typed values."""
+    """Base error for conversion between JSON objects and plugin-owned values."""
 
 
 class JsonCodecDecodeError(JsonCodecError):
-    """A JSON object cannot be decoded into the requested typed value."""
+    """Raised when a JSON object cannot become the requested typed value."""
 
 
 class JsonCodecEncodeError(JsonCodecError):
-    """A typed value cannot be encoded as a JSON object."""
+    """Raised when a typed value cannot become a finite JSON object."""

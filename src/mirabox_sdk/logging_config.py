@@ -87,6 +87,32 @@ def configure_logging(
     redacted unless ``include_payload=True`` is explicitly requested; full
     payloads are emitted only by DEBUG records. Handlers installed directly by
     the application remain under application control.
+
+    Args:
+        level: Numeric logging level or case-insensitive standard level name.
+        log_file: Optional UTF-8 log path. Parent directories are created. When
+            omitted, a stream handler is used.
+        stream: Optional text stream for the stream handler. ``None`` means the
+            logging module's default stream, normally ``sys.stderr``.
+        enabled: Set to ``False`` to restore the SDK's silent default.
+        include_payload: Include complete protocol payloads in DEBUG records.
+            Leave disabled when payloads may contain secrets or personal data.
+        max_bytes: File size at which rotation occurs. ``0`` disables rotation.
+        backup_count: Number of rotated log files retained when rotation is on.
+
+    Returns:
+        The configured ``mirabox_sdk`` package logger.
+
+    Raises:
+        TypeError: If a boolean, level, or rotation argument has the wrong type.
+        ValueError: If the level name is unknown, file and stream destinations
+            are both supplied, or rotation limits are inconsistent.
+        OSError: If a log directory or file handler cannot be created.
+
+    Note:
+        This function sets ``propagate=False`` and never changes the root logger.
+        It replaces only the handler installed by previous calls; handlers
+        attached directly by the application remain untouched.
     """
 
     if not isinstance(enabled, bool):

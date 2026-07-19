@@ -55,7 +55,27 @@ GlobalSettingsT = TypeVar("GlobalSettingsT")
 
 
 class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
-    """Manage registration, actions, event dispatch, and service lifecycle."""
+    """Manage registration, action dispatch, and plugin service lifecycle.
+
+    One runtime owns one Stream Dock connection and one action registry. It
+    creates an :class:`Action` for each ``willAppear`` context, routes targeted
+    events to that instance, and broadcasts device, application, system, and
+    global-settings events to all active actions.
+
+    ``DependenciesT`` is the application-defined dependency container passed to
+    every action constructed by the registry.
+
+    Attributes:
+        actions: Active action instances keyed by their opaque context IDs.
+        global_settings: Isolated copy of the latest raw plugin-wide settings.
+        launch_arguments: Validated values supplied by Stream Dock at startup.
+        plugin_uuid: UUID used for registration and global-settings commands.
+        register_event: Runtime-provided event name used for registration.
+        info: Parsed host, device, theme, and manifest metadata.
+        stream_dock: Connection used for incoming events and outgoing commands.
+        action_registry: Registry used to resolve manifest action UUIDs.
+        action_dependencies: Shared dependency container passed to new actions.
+    """
 
     def __init__(
         self,
@@ -66,6 +86,19 @@ class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
         action_dependencies: DependenciesT,
         services: Iterable[LifecycleService] = (),
     ) -> None:
+        """Create a plugin runtime and attach it to a connection.
+
+        Args:
+            launch_arguments: Validated executable launch arguments.
+            stream_dock: Connection that will carry protocol traffic. This
+                runtime installs itself as the connection listener immediately.
+            action_registry: Mapping from manifest UUIDs to action classes.
+            action_dependencies: Dependency container passed to every created
+                action.
+            services: Optional plugin-owned services. They start in iteration
+                order and stop in reverse order.
+        """
+
         self.actions: dict[str, Action[Any, DependenciesT]] = {}
         self.global_settings: JsonObject = {}
         self._global_settings_loaded = False
@@ -83,7 +116,17 @@ class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
         self.stream_dock.set_listener(self)
 
     def run(self) -> None:
-        """Start plugin services and process Stream Dock events until disconnected."""
+        """Start services and process Stream Dock events until disconnection.
+
+        A runtime is single-use: it cannot be run more than once or restarted
+        after :meth:`stop`. Successfully started services are recorded for
+        reverse-order cleanup by :meth:`stop`.
+
+        Raises:
+            RuntimeError: If this runtime was already run or stopped.
+            Exception: Any exception raised while starting a service or running
+                the connection loop is propagated to the caller.
+        """
 
         if self._stopped:
             raise RuntimeError("Cannot run a stopped Stream Dock plugin")
@@ -97,7 +140,12 @@ class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
         self.stream_dock.run_forever()
 
     def stop(self) -> None:
-        """Release actions, services, and the connection exactly once."""
+        """Release actions, started services, and the connection exactly once.
+
+        Active actions receive ``on_will_disappear(None)``. Services stop in
+        reverse startup order. Cleanup failures are logged and do not prevent
+        the remaining resources from being released; repeated calls are no-ops.
+        """
 
         if self._stopped:
             return
@@ -124,10 +172,26 @@ class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
         logger.info("Stream Dock plugin %s stopped", self.plugin_uuid)
 
     def on_stream_dock_connected(self) -> None:
+        """Register the plugin and request global settings after connection.
+
+        This callback is invoked by the connection when its WebSocket opens.
+        Registration uses the exact event name and UUID supplied at launch.
+        """
+
         self.stream_dock.send(RegisterPluginCommand(self.register_event, self.plugin_uuid))
         self.get_global_settings()
 
     def on_stream_dock_event(self, event: StreamDockEvent) -> None:
+        """Dispatch one parsed event while isolating callback failures.
+
+        Args:
+            event: Known or forward-compatible unknown event from the
+                connection.
+
+        Callback exceptions are logged with the event name and are not allowed
+        to escape into the WebSocket receive loop.
+        """
+
         try:
             self._dispatch(event)
         except Exception:
@@ -280,7 +344,17 @@ class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
             action.on_system_did_wake_up(event)
 
     def set_global_settings(self, settings: JsonObject) -> None:
-        """Validate and persist settings, updating local state after a successful send."""
+        """Validate and persist raw plugin-wide settings.
+
+        Local :attr:`global_settings` is updated with an isolated copy only
+        after the command is sent successfully.
+
+        Args:
+            settings: JSON-compatible object shared by all plugin actions.
+
+        Raises:
+            JsonCodecEncodeError: If ``settings`` is not a finite JSON object.
+        """
 
         command = SetGlobalSettingsCommand.from_settings(
             self.plugin_uuid,
@@ -294,7 +368,18 @@ class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
         settings: GlobalSettingsT,
         codec: JsonCodec[GlobalSettingsT],
     ) -> None:
-        """Encode and persist settings, updating local state after a successful send."""
+        """Encode and persist typed plugin-wide settings.
+
+        Local :attr:`global_settings` stores the encoded JSON representation and
+        changes only after the command is sent successfully.
+
+        Args:
+            settings: Plugin-owned global settings value.
+            codec: Codec that converts the value to a JSON object.
+
+        Raises:
+            JsonCodecEncodeError: If encoding fails or produces invalid JSON.
+        """
 
         command = SetGlobalSettingsCommand.from_settings(self.plugin_uuid, settings, codec)
         self._send_global_settings(command)
@@ -306,4 +391,11 @@ class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
         self._global_settings_loaded = True
 
     def get_global_settings(self) -> None:
+        """Request the latest persisted plugin-wide settings.
+
+        The response arrives asynchronously as
+        :class:`DidReceiveGlobalSettingsEvent`, updates
+        :attr:`global_settings`, and is broadcast to active actions.
+        """
+
         self.stream_dock.send(GetGlobalSettingsCommand(self.plugin_uuid))
