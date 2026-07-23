@@ -10,7 +10,6 @@ import websocket
 
 from .commands import StreamDockCommand
 from .errors import StreamDockProtocolError
-from .json_types import is_json_value
 from .logging_config import _protocol_payload_logging_enabled
 from .parser import parse_stream_dock_event
 from .protocols import StreamDockConnection, StreamDockListener
@@ -19,6 +18,10 @@ logger = logging.getLogger(__name__)
 
 _REDACTED = "<redacted>"
 _LOGGABLE_PROTOCOL_FIELDS = ("event", "action", "context", "device", "uuid")
+
+
+def _reject_non_finite_json_constant(value: str) -> None:
+    raise ValueError(f"non-finite JSON constant {value!r}")
 
 
 def _redact_protocol_message(message: object) -> object:
@@ -35,24 +38,30 @@ def _redact_protocol_message(message: object) -> object:
     return redacted
 
 
-def _log_protocol_message(direction: str, message: object) -> None:
+def _log_protocol_message(
+    direction: str,
+    message: object,
+    *,
+    serialized_message: str | None = None,
+) -> None:
+    if not logger.isEnabledFor(logging.DEBUG):
+        return
+
     event = message.get("event") if isinstance(message, dict) else None
     context = message.get("context") if isinstance(message, dict) else None
-    logger.info(
+    logger.debug(
         "%s: event=%r context=%r",
         direction,
         event if isinstance(event, str) else None,
         context if isinstance(context, str) else None,
     )
-    if logger.isEnabledFor(logging.DEBUG):
-        log_message = (
-            message if _protocol_payload_logging_enabled() else _redact_protocol_message(message)
-        )
-        logger.debug(
-            "%s message: %s",
-            direction,
-            json.dumps(log_message, ensure_ascii=False),
-        )
+    if not _protocol_payload_logging_enabled():
+        logger.debug("%s message: %r", direction, _redact_protocol_message(message))
+        return
+
+    if serialized_message is None:
+        serialized_message = json.dumps(message, ensure_ascii=False)
+    logger.debug("%s message: %s", direction, serialized_message)
 
 
 class WebSocketStreamDockConnection(StreamDockConnection):
@@ -114,18 +123,22 @@ class WebSocketStreamDockConnection(StreamDockConnection):
                 returns the outgoing envelope.
 
         Raises:
-            ValueError: If the command contains a non-JSON value or a non-finite
-                floating-point number.
-            TypeError: If JSON serialization cannot encode the envelope.
+            ValueError: If JSON serialization cannot encode the command or it
+                contains a non-finite floating-point number.
             WebSocketException: If the underlying connection cannot send the
                 frame.
         """
 
         message = command.to_wire()
-        if not is_json_value(message):
-            raise ValueError("Stream Dock command contains a non-JSON value")
-        raw_message = json.dumps(message, ensure_ascii=False, allow_nan=False)
-        _log_protocol_message("Plugin -> Stream Dock", message)
+        try:
+            raw_message = json.dumps(message, ensure_ascii=False, allow_nan=False)
+        except (TypeError, ValueError):
+            raise ValueError("Stream Dock command contains a non-JSON value") from None
+        _log_protocol_message(
+            "Plugin -> Stream Dock",
+            message,
+            serialized_message=raw_message,
+        )
         self._ws.send(raw_message)
 
     def _on_open(self, _ws: websocket.WebSocket) -> None:
@@ -136,11 +149,15 @@ class WebSocketStreamDockConnection(StreamDockConnection):
 
     def _on_message(self, _ws: websocket.WebSocket, message: Any) -> None:
         try:
-            data = json.loads(message)
-        except (json.JSONDecodeError, TypeError) as exc:
+            data = json.loads(message, parse_constant=_reject_non_finite_json_constant)
+        except (json.JSONDecodeError, TypeError, ValueError) as exc:
             logger.warning("Ignoring invalid JSON from Stream Dock: %s", exc)
             return
-        _log_protocol_message("Stream Dock -> Plugin", data)
+        _log_protocol_message(
+            "Stream Dock -> Plugin",
+            data,
+            serialized_message=message if isinstance(message, str) else None,
+        )
         try:
             event = parse_stream_dock_event(data)
         except StreamDockProtocolError as exc:

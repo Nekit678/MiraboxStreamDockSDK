@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from mirabox_sdk import (
+    JSON_OBJECT_CODEC,
     Controller,
     Coordinates,
     DeviceDidDisconnectEvent,
@@ -25,6 +26,7 @@ from mirabox_sdk import (
     JsonCodecDecodeError,
     JsonCodecEncodeError,
     JsonObject,
+    JsonObjectCodec,
     KeyDownEvent,
     LogMessageCommand,
     MalformedEventError,
@@ -50,10 +52,13 @@ from mirabox_sdk import (
     WebSocketStreamDockConnection,
     WillAppearEvent,
     configure_logging,
+    decode_with_codec,
+    encode_with_codec,
     parse_plugin_launch_arguments,
     parse_registration_info,
     parse_stream_dock_event,
 )
+from mirabox_sdk.json_types import clone_json_object
 
 
 @dataclass(frozen=True, slots=True)
@@ -292,6 +297,57 @@ class JsonCodecTests(unittest.TestCase):
                 invalid_codec,
             )
 
+    def test_builtin_codec_helpers_copy_json_objects_once(self) -> None:
+        identity_codec = FunctionalJsonCodec[JsonObject](
+            decoder=lambda value: value,
+            encoder=lambda value: value,
+        )
+
+        for codec in (identity_codec, JSON_OBJECT_CODEC):
+            with self.subTest(codec=type(codec).__name__, direction="decode"):
+                source: JsonObject = {"nested": {"value": 1}}
+                with patch(
+                    "mirabox_sdk.codecs.clone_json_object",
+                    wraps=clone_json_object,
+                ) as copy:
+                    decoded = decode_with_codec(source, codec)
+
+                self.assertEqual(copy.call_count, 1)
+                self.assertIsNot(decoded, source)
+                self.assertIsNot(decoded["nested"], source["nested"])
+
+            with self.subTest(codec=type(codec).__name__, direction="encode"):
+                source = {"nested": {"value": 1}}
+                with patch(
+                    "mirabox_sdk.codecs.clone_json_object",
+                    wraps=clone_json_object,
+                ) as copy:
+                    encoded = encode_with_codec(source, codec)
+
+                self.assertEqual(copy.call_count, 1)
+                self.assertIsNot(encoded, source)
+                self.assertIsNot(encoded["nested"], source["nested"])
+
+    def test_codec_helpers_isolate_values_for_builtin_subclasses(self) -> None:
+        class PassthroughJsonObjectCodec(JsonObjectCodec):
+            def decode(self, value: JsonObject) -> JsonObject:
+                return value
+
+            def encode(self, value: JsonObject) -> JsonObject:
+                return value
+
+        codec = PassthroughJsonObjectCodec()
+        for direction, operation in (
+            ("decode", decode_with_codec),
+            ("encode", encode_with_codec),
+        ):
+            with self.subTest(direction=direction):
+                source: JsonObject = {"nested": {"value": 1}}
+                result = operation(source, codec)
+
+                self.assertIsNot(result, source)
+                self.assertIsNot(result["nested"], source["nested"])
+
 
 class StreamDockEventParsingTests(unittest.TestCase):
     def test_isolates_nested_event_data_from_parser_input(self) -> None:
@@ -306,6 +362,31 @@ class StreamDockEventParsingTests(unittest.TestCase):
         assert isinstance(audio, dict)
         audio["threshold"] = 0.75
 
+        self.assertEqual(
+            event,
+            DidReceiveGlobalSettingsEvent(settings={"audio": {"threshold": 0.5}}),
+        )
+
+    def test_copies_only_retained_json_from_known_event(self) -> None:
+        settings: JsonObject = {"audio": {"threshold": 0.5}}
+        message: JsonObject = {
+            "event": "didReceiveGlobalSettings",
+            "payload": {"settings": settings},
+            "unused": {"values": list(range(100))},
+        }
+
+        with (
+            patch(
+                "mirabox_sdk.parser.clone_json_object",
+                wraps=clone_json_object,
+            ) as copy,
+            patch("mirabox_sdk.parser.is_json_value") as validate_entire_message,
+        ):
+            event = parse_stream_dock_event(message)
+
+        validate_entire_message.assert_not_called()
+        self.assertEqual(copy.call_count, 1)
+        self.assertIs(copy.call_args.args[0], settings)
         self.assertEqual(
             event,
             DidReceiveGlobalSettingsEvent(settings={"audio": {"threshold": 0.5}}),
@@ -518,10 +599,16 @@ class StreamDockEventParsingTests(unittest.TestCase):
         data = {"event": "futureEvent", "payload": {"version": 2}}
 
         event = parse_stream_dock_event(data)
+        payload = data["payload"]
+        assert isinstance(payload, dict)
+        payload["version"] = 3
 
         self.assertEqual(
             event,
-            UnknownStreamDockEvent(event="futureEvent", data=data),
+            UnknownStreamDockEvent(
+                event="futureEvent",
+                data={"event": "futureEvent", "payload": {"version": 2}},
+            ),
         )
         self.assertEqual(event.event_name, "futureEvent")
 
@@ -628,12 +715,57 @@ class WebSocketStreamDockConnectionTests(unittest.TestCase):
     def test_rejects_non_json_command_before_sending(self, app_factory: Mock) -> None:
         web_socket = app_factory.return_value
         connection = WebSocketStreamDockConnection(12345)
-        command = SetSettingsCommand("button", {"threshold": float("nan")})
 
-        with self.assertRaisesRegex(ValueError, "non-JSON value"):
-            connection.send(command)
+        invalid_settings = (
+            {"threshold": float("nan")},
+            {"unsupported": object()},
+        )
+        for settings in invalid_settings:
+            with (
+                self.subTest(settings=settings),
+                self.assertRaisesRegex(
+                    ValueError,
+                    "non-JSON value",
+                ),
+            ):
+                connection.send(SetSettingsCommand("button", settings))  # type: ignore[arg-type]
 
         web_socket.send.assert_not_called()
+
+    @patch("mirabox_sdk.connection.websocket.WebSocketApp")
+    def test_reuses_serialized_command_for_debug_logging(self, app_factory: Mock) -> None:
+        web_socket = app_factory.return_value
+        connection = WebSocketStreamDockConnection(12345)
+        command = SetSettingsCommand("button", {"nested": {"value": 1}})
+
+        with (
+            patch("mirabox_sdk.connection.json.dumps", wraps=json.dumps) as serialize,
+            patch(
+                "mirabox_sdk.connection._protocol_payload_logging_enabled",
+                return_value=True,
+            ),
+            self.assertLogs("mirabox_sdk.connection", level="DEBUG") as logs,
+        ):
+            connection.send(command)
+
+        self.assertEqual(serialize.call_count, 1)
+        self.assertIn('"nested": {"value": 1}', "\n".join(logs.output))
+        web_socket.send.assert_called_once()
+
+    @patch("mirabox_sdk.connection.websocket.WebSocketApp")
+    def test_rejects_non_finite_incoming_json(self, app_factory: Mock) -> None:
+        web_socket = app_factory.return_value
+        listener = Mock()
+        connection = WebSocketStreamDockConnection(12345)
+        connection.set_listener(listener)
+
+        with self.assertLogs("mirabox_sdk.connection", level="WARNING"):
+            connection._on_message(
+                web_socket,
+                '{"event":"systemDidWakeUp","unused":NaN}',
+            )
+
+        listener.on_stream_dock_event.assert_not_called()
 
     @patch("mirabox_sdk.connection.websocket.WebSocketApp")
     def test_translates_messages_across_websocket_boundary(self, app_factory: Mock) -> None:
@@ -649,7 +781,7 @@ class WebSocketStreamDockConnectionTests(unittest.TestCase):
         )
 
         connection._on_open(web_socket)
-        with self.assertLogs("mirabox_sdk.connection", level="INFO") as logs:
+        with self.assertNoLogs("mirabox_sdk.connection", level="INFO"):
             connection._on_message(web_socket, incoming)
             connection.send(SetTitleCommand("button", "Микрофон"))
 
@@ -673,17 +805,6 @@ class WebSocketStreamDockConnectionTests(unittest.TestCase):
                 "payload": {"title": "Микрофон", "target": 0},
             },
         )
-        self.assertEqual(
-            logs.output,
-            [
-                "INFO:mirabox_sdk.connection:Stream Dock -> Plugin: "
-                "event='keyDown' context='button'",
-                "INFO:mirabox_sdk.connection:Plugin -> Stream Dock: "
-                "event='setTitle' context='button'",
-            ],
-        )
-        self.assertNotIn("channelId", "\n".join(logs.output))
-        self.assertNotIn("Микрофон", "\n".join(logs.output))
 
     @patch("mirabox_sdk.connection.websocket.WebSocketApp")
     def test_redacts_payloads_from_debug_protocol_logs(self, app_factory: Mock) -> None:
@@ -718,9 +839,9 @@ class WebSocketStreamDockConnectionTests(unittest.TestCase):
         self.assertNotIn(outgoing_secret, output)
         self.assertNotIn(property_secret, output)
         self.assertNotIn('"label": "visible"', output)
-        self.assertIn('"payload": "<redacted>"', output)
-        self.assertIn('"action": "action-uuid"', output)
-        self.assertIn('"context": "button"', output)
+        self.assertIn("'payload': '<redacted>'", output)
+        self.assertIn("'action': 'action-uuid'", output)
+        self.assertIn("'context': 'button'", output)
 
     @patch("mirabox_sdk.connection.websocket.WebSocketApp")
     def test_logs_full_payloads_only_when_explicitly_enabled(self, app_factory: Mock) -> None:
@@ -765,9 +886,9 @@ class WebSocketStreamDockConnectionTests(unittest.TestCase):
         self.assertIn(incoming_secret, output)
         self.assertIn(outgoing_secret, output)
         self.assertIn('"label": "visible"', output)
-        self.assertNotIn('"payload": "<redacted>"', output)
+        self.assertNotIn("'payload': '<redacted>'", output)
         self.assertNotIn(outgoing_secret, redacted_stream.getvalue())
-        self.assertIn('"payload": "<redacted>"', redacted_stream.getvalue())
+        self.assertIn("'payload': '<redacted>'", redacted_stream.getvalue())
 
     @patch("mirabox_sdk.connection.websocket.WebSocketApp")
     def test_rejects_invalid_inbound_messages(self, app_factory: Mock) -> None:

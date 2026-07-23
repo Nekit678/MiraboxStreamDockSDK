@@ -6,6 +6,24 @@ change public APIs between minor versions.
 
 ## [Unreleased]
 
+### Changed
+
+- Emit per-message protocol metadata only at DEBUG while retaining connection
+  lifecycle and operational records at INFO.
+
+### Fixed
+
+- Isolate action settings from both caller-owned values and outbound command
+  payloads after a successful settings update.
+
+### Performance
+
+- Validate and clone retained event and codec JSON in one traversal, avoid
+  copying unused fields from known event envelopes, and serialize outgoing
+  commands without a separate recursive pre-validation pass.
+- Reuse serialized WebSocket frames for outbound DEBUG payload logging instead
+  of encoding the same command twice.
+
 ## [0.3.1] - 2026-07-19
 
 ### Documentation

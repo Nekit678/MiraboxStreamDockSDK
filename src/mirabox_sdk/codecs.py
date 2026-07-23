@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from copy import deepcopy
 from dataclasses import dataclass
 from typing import Generic, Protocol, TypeVar
 
 from .errors import JsonCodecDecodeError, JsonCodecEncodeError, JsonCodecError
-from .json_types import JsonObject, is_json_value
+from .json_types import JsonObject, clone_json_object
 
 DecodedT = TypeVar("DecodedT")
 
@@ -127,6 +126,8 @@ def decode_with_codec(value: JsonObject, codec: JsonCodec[DecodedT]) -> DecodedT
     """
 
     try:
+        if type(codec) in (FunctionalJsonCodec, JsonObjectCodec):
+            return codec.decode(value)
         return codec.decode(_copy_json_object(value, decoding=True))
     except JsonCodecError:
         raise
@@ -156,14 +157,17 @@ def encode_with_codec(value: DecodedT, codec: JsonCodec[DecodedT]) -> JsonObject
         raise
     except (TypeError, ValueError) as exc:
         raise JsonCodecEncodeError(str(exc) or type(exc).__name__) from exc
+    if type(codec) in (FunctionalJsonCodec, JsonObjectCodec):
+        return encoded
     return _copy_json_object(encoded, decoding=False)
 
 
 def _copy_json_object(value: object, *, decoding: bool) -> JsonObject:
     error_type = JsonCodecDecodeError if decoding else JsonCodecEncodeError
-    if not isinstance(value, dict) or not is_json_value(value):
-        raise error_type("expected a JSON object")
-    return deepcopy(value)
+    try:
+        return clone_json_object(value)
+    except ValueError:
+        raise error_type("expected a JSON object") from None
 
 
 JSON_OBJECT_CODEC = JsonObjectCodec()

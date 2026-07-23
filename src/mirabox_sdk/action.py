@@ -223,6 +223,8 @@ class Action(Generic[SettingsT, DependenciesT]):
         Raises:
             JsonCodecEncodeError: If :attr:`settings_codec` cannot encode the
                 value as a JSON object.
+            JsonCodecDecodeError: If the encoded value cannot be decoded into
+                isolated local settings.
         """
 
         command = SetSettingsCommand.from_settings(
@@ -230,8 +232,9 @@ class Action(Generic[SettingsT, DependenciesT]):
             settings=settings,
             codec=cast(JsonCodec[SettingsT], self.settings_codec),
         )
+        next_settings = self.decode_settings(command.settings)
         self._send(command)
-        self.settings = settings
+        self.settings = next_settings
 
     def get_settings(self) -> None:
         """Request the latest persisted settings for this action context.

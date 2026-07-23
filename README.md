@@ -454,9 +454,9 @@ duplicating messages. Return the SDK to its default silent state with:
 configure_logging(enabled=False)
 ```
 
-`INFO` records contain protocol direction, event, and context. `DEBUG` adds
-routing metadata. Message payloads remain redacted unless `include_payload=True`
-is explicitly configured.
+`INFO` records cover connection lifecycle and operational status. Per-message
+protocol direction, event, and context are emitted only at `DEBUG`. Message
+payloads remain redacted unless `include_payload=True` is explicitly configured.
 Handlers installed manually by the application remain its responsibility.
 
 ## Project structure

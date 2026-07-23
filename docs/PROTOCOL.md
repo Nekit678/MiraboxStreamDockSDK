@@ -103,11 +103,11 @@ All command models expose `to_wire()` for the exact JSON object sent through
 the WebSocket. The transport validates that this object contains only JSON
 values and rejects non-finite numbers such as `NaN` before sending.
 
-Protocol logs contain routing metadata such as the event and context. Message
-payloads are redacted by default because settings and Property Inspector messages
-may contain secrets under plugin-defined field names. Pass `include_payload=True`
-to `configure_logging()` to include complete messages in DEBUG records temporarily
-in a trusted development environment.
+Per-message protocol logs are emitted only at DEBUG and contain routing metadata
+such as the event and context. Message payloads are redacted by default because
+settings and Property Inspector messages may contain secrets under plugin-defined
+field names. Pass `include_payload=True` to `configure_logging()` to include
+complete messages temporarily in a trusted development environment.
 SDK logging is disabled and isolated from the root logger by default. Use
 `configure_logging()` to select a level and write to stderr or a rotating UTF-8
 file, then call it with `enabled=False` to restore the silent default.

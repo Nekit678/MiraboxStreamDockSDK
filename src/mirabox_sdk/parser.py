@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from copy import deepcopy
 from typing import NoReturn
 
 from .errors import InvalidFieldError, MalformedEventError, UnsupportedEventError
@@ -37,7 +36,7 @@ from .events import (
     WillAppearEvent,
     WillDisappearEvent,
 )
-from .json_types import JsonObject, is_json_value
+from .json_types import JsonObject, clone_json_object, is_json_value
 
 
 def _invalid(
@@ -46,6 +45,13 @@ def _invalid(
     reason: str,
 ) -> NoReturn:
     raise InvalidFieldError(reason, event_name=event_name, path=path)
+
+
+def _clone_event_object(value: object) -> JsonObject:
+    try:
+        return clone_json_object(value)
+    except ValueError:
+        raise MalformedEventError("message contains a non-JSON value") from None
 
 
 def _require_string(
@@ -243,7 +249,7 @@ def _action_payload(
     if device is None:  # pragma: no cover - narrowed by require_device
         raise AssertionError("required device was not parsed")
     payload = _require_object(data, "payload", event_name)
-    settings = _require_object(payload, "settings", event_name, ("payload",))
+    settings = _clone_event_object(_require_object(payload, "settings", event_name, ("payload",)))
     return action, context, device, settings, _coordinates(payload, event_name), payload
 
 
@@ -409,18 +415,20 @@ def parse_stream_dock_event(
             ``False``.
     """
 
-    if not is_json_value(value):
-        raise MalformedEventError("message contains a non-JSON value")
     if not isinstance(value, dict):
+        if not is_json_value(value):
+            raise MalformedEventError("message contains a non-JSON value")
         raise MalformedEventError("expected event object")
-    data = deepcopy(value)
+    data = value
     raw_event = _require_string(data, "event", None)
     try:
         event_type = StreamDockEventType(raw_event)
     except ValueError:
         if not allow_unknown:
+            if not is_json_value(data):
+                raise MalformedEventError("message contains a non-JSON value") from None
             raise UnsupportedEventError(raw_event) from None
-        return UnknownStreamDockEvent(event=raw_event, data=dict(data))
+        return UnknownStreamDockEvent(event=raw_event, data=_clone_event_object(data))
 
     if event_type in _ACTION_PAYLOAD_EVENTS:
         return _parse_action_payload_event(data, event_type)
@@ -446,7 +454,7 @@ def parse_stream_dock_event(
 
     if event_type is StreamDockEventType.SEND_TO_PLUGIN:
         action, context, device = _action_identity(data, raw_event, require_device=False)
-        message = _require_object(data, "payload", raw_event)
+        message = _clone_event_object(_require_object(data, "payload", raw_event))
         return SendToPluginEvent(
             action=action,
             context=context,
@@ -460,7 +468,9 @@ def parse_stream_dock_event(
     if event_type is StreamDockEventType.DID_RECEIVE_GLOBAL_SETTINGS:
         payload = _require_object(data, "payload", raw_event)
         return DidReceiveGlobalSettingsEvent(
-            settings=_require_object(payload, "settings", raw_event, ("payload",))
+            settings=_clone_event_object(
+                _require_object(payload, "settings", raw_event, ("payload",))
+            )
         )
 
     if event_type is StreamDockEventType.DEVICE_DID_CONNECT:

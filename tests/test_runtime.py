@@ -163,6 +163,34 @@ class ActionTests(unittest.TestCase):
 
         self.assertEqual(action.settings, {"count": 1})
 
+    def test_set_settings_isolates_local_state_from_input_and_command(self) -> None:
+        stream_dock = Mock()
+        action = RecordingAction(
+            ACTION_UUID,
+            "button",
+            {"nested": {"value": 0}},
+            ExampleDependencies(stream_dock),
+        )
+        settings: JsonObject = {"nested": {"value": 1}}
+
+        action.set_settings(settings)
+
+        command = stream_dock.send.call_args.args[0]
+        command_settings = command.settings
+        input_nested = settings["nested"]
+        command_nested = command_settings["nested"]
+        local_nested = action.settings["nested"]
+        assert isinstance(input_nested, dict)
+        assert isinstance(command_nested, dict)
+        assert isinstance(local_nested, dict)
+
+        input_nested["value"] = 2
+        command_nested["value"] = 3
+
+        self.assertEqual(local_nested["value"], 1)
+        self.assertEqual(input_nested["value"], 2)
+        self.assertEqual(command_nested["value"], 3)
+
 
 class ActionRegistryTests(unittest.TestCase):
     def test_registrations_are_isolated_per_plugin(self) -> None:
