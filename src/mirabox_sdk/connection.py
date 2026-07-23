@@ -10,6 +10,7 @@ import websocket
 
 from .commands import StreamDockCommand
 from .errors import StreamDockProtocolError
+from .json_types import is_json_value
 from .logging_config import _protocol_payload_logging_enabled
 from .parser import parse_stream_dock_event
 from .protocols import StreamDockConnection, StreamDockListener
@@ -123,13 +124,15 @@ class WebSocketStreamDockConnection(StreamDockConnection):
                 returns the outgoing envelope.
 
         Raises:
-            ValueError: If JSON serialization cannot encode the command or it
-                contains a non-finite floating-point number.
+            ValueError: If the command contains a value outside
+                :data:`JsonValue` or a non-finite floating-point number.
             WebSocketException: If the underlying connection cannot send the
                 frame.
         """
 
         message = command.to_wire()
+        if not is_json_value(message):
+            raise ValueError("Stream Dock command contains a non-JSON value")
         try:
             raw_message = json.dumps(message, ensure_ascii=False, allow_nan=False)
         except (TypeError, ValueError):

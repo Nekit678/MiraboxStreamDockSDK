@@ -716,19 +716,29 @@ class WebSocketStreamDockConnectionTests(unittest.TestCase):
         web_socket = app_factory.return_value
         connection = WebSocketStreamDockConnection(12345)
 
-        invalid_settings = (
-            {"threshold": float("nan")},
-            {"unsupported": object()},
+        invalid_commands = (
+            SetSettingsCommand("button", {"threshold": float("nan")}),
+            SetSettingsCommand("button", {"unsupported": object()}),  # type: ignore[dict-item]
+            SetSettingsCommand("button", {1: "x"}),  # type: ignore[dict-item]
+            SendToPropertyInspectorCommand(
+                "action",
+                "button",
+                {"items": (1, 2)},  # type: ignore[dict-item]
+            ),
+            SetGlobalSettingsCommand(
+                "plugin",
+                {"items": (1, 2)},  # type: ignore[dict-item]
+            ),
         )
-        for settings in invalid_settings:
+        for command in invalid_commands:
             with (
-                self.subTest(settings=settings),
+                self.subTest(command=command),
                 self.assertRaisesRegex(
                     ValueError,
                     "non-JSON value",
                 ),
             ):
-                connection.send(SetSettingsCommand("button", settings))  # type: ignore[arg-type]
+                connection.send(command)
 
         web_socket.send.assert_not_called()
 
