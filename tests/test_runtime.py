@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import unittest
 from dataclasses import dataclass
-from unittest.mock import Mock, call
+from unittest.mock import Mock, call, patch
 
 from mirabox_sdk import (
     JSON_OBJECT_CODEC,
@@ -31,6 +32,7 @@ from mirabox_sdk import (
     parse_plugin_cli_arguments,
     run_plugin_cli,
 )
+from mirabox_sdk.json_types import clone_json_object
 
 ACTION_UUID = "com.example.counter"
 REGISTRATION_INFO_JSON = (
@@ -462,6 +464,92 @@ class StreamDockPluginRuntimeTests(unittest.TestCase):
         self.assertEqual(second_event.settings, {"audio": {"threshold": 0.5}})
         self.assertEqual(runtime.global_settings, {"audio": {"threshold": 0.5}})
 
+    def test_clones_global_settings_once_for_all_actions(self) -> None:
+        runtime, stream_dock = self.build_runtime()
+        dependencies = ExampleDependencies(stream_dock)
+        runtime.actions = {
+            f"button-{index}": RecordingAction(
+                ACTION_UUID,
+                f"button-{index}",
+                {},
+                dependencies,
+            )
+            for index in range(64)
+        }
+        settings: JsonObject = {
+            "profiles": [
+                {"name": f"profile-{index}", "levels": list(range(100))} for index in range(16)
+            ]
+        }
+
+        with patch(
+            "mirabox_sdk.plugin.clone_json_object",
+            wraps=clone_json_object,
+        ) as clone:
+            runtime.on_stream_dock_event(DidReceiveGlobalSettingsEvent(settings=settings))
+
+        self.assertEqual(clone.call_count, 1)
+        received = [action.received_events[-1] for action in runtime.actions.values()]
+        self.assertEqual(len({id(event) for event in received}), 64)
+
+    def test_replays_global_settings_without_cloning_snapshot(self) -> None:
+        runtime, _stream_dock = self.build_runtime()
+        runtime.on_stream_dock_event(
+            DidReceiveGlobalSettingsEvent(settings={"profiles": [{"level": 1}]})
+        )
+
+        with patch(
+            "mirabox_sdk.plugin.clone_json_object",
+            wraps=clone_json_object,
+        ) as clone:
+            runtime.on_stream_dock_event(will_appear_event())
+
+        clone.assert_not_called()
+        self.assertEqual(
+            runtime.actions["button"].received_events[-1],
+            DidReceiveGlobalSettingsEvent(settings={"profiles": [{"level": 1}]}),
+        )
+
+    def test_copies_only_mutated_global_settings_containers(self) -> None:
+        runtime, stream_dock = self.build_runtime()
+        dependencies = ExampleDependencies(stream_dock)
+        first = RecordingAction(ACTION_UUID, "first-button", {}, dependencies)
+        second = RecordingAction(ACTION_UUID, "second-button", {}, dependencies)
+        runtime.actions = {first.context: first, second.context: second}
+
+        runtime.on_stream_dock_event(
+            DidReceiveGlobalSettingsEvent(settings={"profiles": [{"levels": [1, 2, 3]}]})
+        )
+
+        first_event = first.received_events[-1]
+        second_event = second.received_events[-1]
+        assert isinstance(first_event, DidReceiveGlobalSettingsEvent)
+        assert isinstance(second_event, DidReceiveGlobalSettingsEvent)
+        first_profiles = first_event.settings["profiles"]
+        assert isinstance(first_profiles, list)
+        first_profile = first_profiles[0]
+        assert isinstance(first_profile, dict)
+        first_levels = first_profile["levels"]
+        assert isinstance(first_levels, list)
+        first_levels.append(4)
+
+        self.assertEqual(
+            first_event.settings,
+            {"profiles": [{"levels": [1, 2, 3, 4]}]},
+        )
+        self.assertEqual(
+            json.loads(json.dumps(first_event.settings)),
+            {"profiles": [{"levels": [1, 2, 3, 4]}]},
+        )
+        self.assertEqual(
+            second_event.settings,
+            {"profiles": [{"levels": [1, 2, 3]}]},
+        )
+        self.assertEqual(
+            runtime.global_settings,
+            {"profiles": [{"levels": [1, 2, 3]}]},
+        )
+
     def test_isolates_global_settings_replays_between_late_actions(self) -> None:
         runtime, _stream_dock = self.build_runtime()
         runtime.on_stream_dock_event(
@@ -499,6 +587,28 @@ class StreamDockPluginRuntimeTests(unittest.TestCase):
         self.assertEqual(
             action.received_events[-1],
             DidReceiveGlobalSettingsEvent(settings={"audio": {"threshold": 0.5}}),
+        )
+
+    def test_replays_mutated_runtime_global_settings_without_changing_old_events(
+        self,
+    ) -> None:
+        runtime, _stream_dock = self.build_runtime()
+        runtime.on_stream_dock_event(
+            DidReceiveGlobalSettingsEvent(settings={"audio": {"threshold": 0.5}})
+        )
+        runtime.on_stream_dock_event(will_appear_event(context="first-button"))
+        first_event = runtime.actions["first-button"].received_events[-1]
+
+        audio = runtime.global_settings["audio"]
+        assert isinstance(audio, dict)
+        audio["threshold"] = 0.75
+        runtime.on_stream_dock_event(will_appear_event(context="second-button"))
+
+        assert isinstance(first_event, DidReceiveGlobalSettingsEvent)
+        self.assertEqual(first_event.settings, {"audio": {"threshold": 0.5}})
+        self.assertEqual(
+            runtime.actions["second-button"].received_events[-1],
+            DidReceiveGlobalSettingsEvent(settings={"audio": {"threshold": 0.75}}),
         )
 
     def test_isolates_saved_global_settings_from_setter_input(self) -> None:

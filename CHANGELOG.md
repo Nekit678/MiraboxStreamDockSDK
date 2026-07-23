@@ -21,6 +21,8 @@ change public APIs between minor versions.
 - Validate and clone retained event and codec JSON in one traversal, avoid
   copying unused fields from known event envelopes, and serialize outgoing
   commands without a separate recursive pre-validation pass.
+- Share one global-settings snapshot across action broadcasts and lazily copy
+  only containers traversed by callbacks, while preserving mutation isolation.
 - Reuse serialized WebSocket frames for outbound DEBUG payload logging instead
   of encoding the same command twice.
 

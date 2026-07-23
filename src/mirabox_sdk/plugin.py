@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable
-from copy import deepcopy
 from typing import Any, Generic, TypeVar
 
 from .action import Action
@@ -39,7 +38,7 @@ from .events import (
     WillAppearEvent,
     WillDisappearEvent,
 )
-from .json_types import JsonObject
+from .json_types import JsonObject, _copy_on_write_json_object, clone_json_object
 from .protocols import (
     LifecycleService,
     StreamDockActionDependencies,
@@ -100,7 +99,10 @@ class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
         """
 
         self.actions: dict[str, Action[Any, DependenciesT]] = {}
-        self.global_settings: JsonObject = {}
+        self._global_settings_snapshot: JsonObject = {}
+        self._global_settings: JsonObject = _copy_on_write_json_object(
+            self._global_settings_snapshot
+        )
         self._global_settings_loaded = False
         self.launch_arguments = launch_arguments
         self.plugin_uuid = launch_arguments.plugin_uuid
@@ -114,6 +116,18 @@ class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
         self._has_run = False
         self._stopped = False
         self.stream_dock.set_listener(self)
+
+    @property
+    def global_settings(self) -> JsonObject:
+        """Return the isolated mutable view of the latest global settings."""
+
+        return self._global_settings
+
+    @global_settings.setter
+    def global_settings(self, settings: JsonObject) -> None:
+        loaded = self._global_settings_loaded
+        self._replace_global_settings(clone_json_object(settings))
+        self._global_settings_loaded = loaded
 
     def run(self) -> None:
         """Start services and process Stream Dock events until disconnection.
@@ -209,9 +223,9 @@ class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
             return
 
         if isinstance(event, DidReceiveGlobalSettingsEvent):
-            self.global_settings = deepcopy(event.settings)
-            self._global_settings_loaded = True
-            self._dispatch_broadcast_event(event)
+            snapshot = clone_json_object(event.settings)
+            self._replace_global_settings(snapshot)
+            self._dispatch_global_settings(snapshot)
             return
 
         if not isinstance(event, ActionEvent):
@@ -276,7 +290,7 @@ class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
         if self._global_settings_loaded:
             self._dispatch_broadcast_event_to_action_safely(
                 action,
-                DidReceiveGlobalSettingsEvent(settings=deepcopy(self.global_settings)),
+                self._new_global_settings_event(),
             )
 
     @staticmethod
@@ -305,10 +319,34 @@ class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
 
     def _dispatch_broadcast_event(self, event: StreamDockEvent) -> None:
         for action in tuple(self.actions.values()):
-            action_event = event
-            if isinstance(event, DidReceiveGlobalSettingsEvent):
-                action_event = DidReceiveGlobalSettingsEvent(settings=deepcopy(event.settings))
-            self._dispatch_broadcast_event_to_action_safely(action, action_event)
+            self._dispatch_broadcast_event_to_action_safely(action, event)
+
+    def _dispatch_global_settings(self, snapshot: JsonObject) -> None:
+        for action in tuple(self.actions.values()):
+            self._dispatch_broadcast_event_to_action_safely(
+                action,
+                DidReceiveGlobalSettingsEvent(settings=_copy_on_write_json_object(snapshot)),
+            )
+
+    def _new_global_settings_event(self) -> DidReceiveGlobalSettingsEvent:
+        return DidReceiveGlobalSettingsEvent(
+            settings=_copy_on_write_json_object(self._global_settings_snapshot)
+        )
+
+    def _replace_global_settings(self, snapshot: JsonObject) -> None:
+        global_settings: JsonObject
+
+        def update_snapshot_after_mutation() -> None:
+            if self._global_settings is global_settings:
+                self._global_settings_snapshot = clone_json_object(global_settings)
+
+        global_settings = _copy_on_write_json_object(
+            snapshot,
+            on_mutation=update_snapshot_after_mutation,
+        )
+        self._global_settings_snapshot = snapshot
+        self._global_settings = global_settings
+        self._global_settings_loaded = True
 
     def _dispatch_broadcast_event_to_action_safely(
         self,
@@ -385,10 +423,9 @@ class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
         self._send_global_settings(command)
 
     def _send_global_settings(self, command: SetGlobalSettingsCommand) -> None:
-        next_settings = deepcopy(command.settings)
+        next_settings = clone_json_object(command.settings)
         self.stream_dock.send(command)
-        self.global_settings = next_settings
-        self._global_settings_loaded = True
+        self._replace_global_settings(next_settings)
 
     def get_global_settings(self) -> None:
         """Request the latest persisted plugin-wide settings.
