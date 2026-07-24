@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from typing import Any, Generic, TypeVar
 
 from .action import Action
@@ -103,6 +103,7 @@ class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
         self._global_settings: JsonObject = _copy_on_write_json_object(
             self._global_settings_snapshot
         )
+        self._global_settings_snapshot_dirty = False
         self._global_settings_loaded = False
         self.launch_arguments = launch_arguments
         self.plugin_uuid = launch_arguments.plugin_uuid
@@ -119,7 +120,11 @@ class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
 
     @property
     def global_settings(self) -> JsonObject:
-        """Return the isolated mutable view of the latest global settings."""
+        """Return the isolated mutable view of the latest global settings.
+
+        Container mutations validate and isolate new values before committing.
+        Invalid JSON values raise :class:`ValueError` without changing settings.
+        """
 
         return self._global_settings
 
@@ -330,22 +335,31 @@ class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
 
     def _new_global_settings_event(self) -> DidReceiveGlobalSettingsEvent:
         return DidReceiveGlobalSettingsEvent(
-            settings=_copy_on_write_json_object(self._global_settings_snapshot)
+            settings=_copy_on_write_json_object(self._current_global_settings_snapshot())
         )
+
+    def _current_global_settings_snapshot(self) -> JsonObject:
+        """Materialize pending public mutations for the next isolated replay."""
+
+        if self._global_settings_snapshot_dirty:
+            self._global_settings_snapshot = clone_json_object(self._global_settings)
+            self._global_settings_snapshot_dirty = False
+        return self._global_settings_snapshot
 
     def _replace_global_settings(self, snapshot: JsonObject) -> None:
         global_settings: JsonObject
 
-        def update_snapshot_after_mutation() -> None:
+        def mark_snapshot_dirty_after_mutation() -> None:
             if self._global_settings is global_settings:
-                self._global_settings_snapshot = clone_json_object(global_settings)
+                self._global_settings_snapshot_dirty = True
 
         global_settings = _copy_on_write_json_object(
             snapshot,
-            on_mutation=update_snapshot_after_mutation,
+            on_mutation=mark_snapshot_dirty_after_mutation,
         )
         self._global_settings_snapshot = snapshot
         self._global_settings = global_settings
+        self._global_settings_snapshot_dirty = False
         self._global_settings_loaded = True
 
     def _dispatch_broadcast_event_to_action_safely(
@@ -380,6 +394,29 @@ class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
             action.on_application_did_terminate(event)
         elif isinstance(event, SystemDidWakeUpEvent):
             action.on_system_did_wake_up(event)
+
+    def update_global_settings(self, update: Callable[[JsonObject], None]) -> None:
+        """Atomically update and persist raw global settings.
+
+        ``update`` receives an isolated copy-on-write draft. The draft is sent
+        to Stream Dock and replaces :attr:`global_settings` only after the
+        callback returns, the complete result passes JSON validation, and the
+        command is sent successfully. Callback, validation, or send failures
+        leave the current public view and replay snapshot unchanged.
+
+        Args:
+            update: Callback that applies one or more changes to the draft.
+
+        Raises:
+            JsonCodecEncodeError: If the completed draft is not a finite JSON
+                object.
+            Exception: Any exception raised by ``update`` or while sending the
+                command.
+        """
+
+        draft = _copy_on_write_json_object(self._current_global_settings_snapshot())
+        update(draft)
+        self.set_global_settings(draft)
 
     def set_global_settings(self, settings: JsonObject) -> None:
         """Validate and persist raw plugin-wide settings.

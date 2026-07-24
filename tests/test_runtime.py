@@ -25,6 +25,7 @@ from mirabox_sdk import (
     RegistrationColors,
     RegistrationInfo,
     RegistrationPluginInfo,
+    SetGlobalSettingsCommand,
     StreamDockPlugin,
     StreamDockSender,
     SystemDidWakeUpEvent,
@@ -610,6 +611,158 @@ class StreamDockPluginRuntimeTests(unittest.TestCase):
             runtime.actions["second-button"].received_events[-1],
             DidReceiveGlobalSettingsEvent(settings={"audio": {"threshold": 0.75}}),
         )
+
+    def test_batches_runtime_global_settings_mutations_before_snapshot_clone(self) -> None:
+        runtime, _stream_dock = self.build_runtime()
+        runtime.on_stream_dock_event(DidReceiveGlobalSettingsEvent(settings={"items": []}))
+        items = runtime.global_settings["items"]
+        assert isinstance(items, list)
+
+        with patch(
+            "mirabox_sdk.plugin.clone_json_object",
+            wraps=clone_json_object,
+        ) as clone:
+            for item in range(100):
+                items.append(item)
+
+            clone.assert_not_called()
+            runtime.on_stream_dock_event(will_appear_event())
+
+        clone.assert_called_once()
+        self.assertEqual(
+            runtime.actions["button"].received_events[-1],
+            DidReceiveGlobalSettingsEvent(settings={"items": list(range(100))}),
+        )
+
+    def test_rejects_invalid_runtime_global_settings_mutation_atomically(self) -> None:
+        runtime, _stream_dock = self.build_runtime()
+        expected: JsonObject = {"items": [1]}
+        runtime.on_stream_dock_event(DidReceiveGlobalSettingsEvent(settings=expected))
+        items = runtime.global_settings["items"]
+        assert isinstance(items, list)
+
+        with patch(
+            "mirabox_sdk.plugin.clone_json_object",
+            wraps=clone_json_object,
+        ) as clone:
+            with self.assertRaisesRegex(ValueError, "expected a JSON value"):
+                items.append(object())  # type: ignore[arg-type]
+            runtime.on_stream_dock_event(will_appear_event())
+
+        clone.assert_not_called()
+        self.assertEqual(runtime.global_settings, expected)
+        self.assertEqual(
+            runtime.actions["button"].received_events[-1],
+            DidReceiveGlobalSettingsEvent(settings=expected),
+        )
+
+    def test_isolates_runtime_global_settings_mutation_inputs(self) -> None:
+        runtime, _stream_dock = self.build_runtime()
+        runtime.on_stream_dock_event(DidReceiveGlobalSettingsEvent(settings={}))
+        profile: JsonObject = {"levels": [1]}
+
+        runtime.global_settings["profile"] = profile
+        levels = profile["levels"]
+        assert isinstance(levels, list)
+        levels.append(2)
+        runtime.on_stream_dock_event(will_appear_event())
+
+        expected: JsonObject = {"profile": {"levels": [1]}}
+        self.assertEqual(runtime.global_settings, expected)
+        self.assertEqual(
+            runtime.actions["button"].received_events[-1],
+            DidReceiveGlobalSettingsEvent(settings=expected),
+        )
+
+    def test_updates_runtime_global_settings_in_one_transaction(self) -> None:
+        runtime, stream_dock = self.build_runtime()
+        runtime.on_stream_dock_event(DidReceiveGlobalSettingsEvent(settings={"items": [0]}))
+
+        def append_items(settings: JsonObject) -> None:
+            items = settings["items"]
+            assert isinstance(items, list)
+            for item in range(1, 101):
+                items.append(item)
+
+        with patch(
+            "mirabox_sdk.plugin.clone_json_object",
+            wraps=clone_json_object,
+        ) as clone:
+            runtime.update_global_settings(append_items)
+            runtime.on_stream_dock_event(will_appear_event())
+
+        clone.assert_called_once()
+        expected: JsonObject = {"items": list(range(101))}
+        self.assertEqual(runtime.global_settings, expected)
+        self.assertEqual(
+            stream_dock.send.call_args.args[0],
+            SetGlobalSettingsCommand("plugin-uuid", expected),
+        )
+        self.assertEqual(
+            runtime.actions["button"].received_events[-1],
+            DidReceiveGlobalSettingsEvent(settings=expected),
+        )
+
+    def test_rolls_back_runtime_global_settings_transaction_on_callback_failure(
+        self,
+    ) -> None:
+        runtime, stream_dock = self.build_runtime()
+        expected: JsonObject = {"items": [1]}
+        runtime.on_stream_dock_event(DidReceiveGlobalSettingsEvent(settings=expected))
+        original = runtime.global_settings
+
+        def fail_after_mutation(settings: JsonObject) -> None:
+            items = settings["items"]
+            assert isinstance(items, list)
+            items.append(2)
+            raise RuntimeError("update failed")
+
+        with self.assertRaisesRegex(RuntimeError, "update failed"):
+            runtime.update_global_settings(fail_after_mutation)
+
+        self.assertIs(runtime.global_settings, original)
+        self.assertEqual(runtime.global_settings, expected)
+        stream_dock.send.assert_not_called()
+
+    def test_rolls_back_runtime_global_settings_transaction_on_invalid_value(
+        self,
+    ) -> None:
+        runtime, stream_dock = self.build_runtime()
+        expected: JsonObject = {"items": [1]}
+        runtime.on_stream_dock_event(DidReceiveGlobalSettingsEvent(settings=expected))
+        original = runtime.global_settings
+
+        def append_invalid_value(settings: JsonObject) -> None:
+            items = settings["items"]
+            assert isinstance(items, list)
+            items.append(object())  # type: ignore[arg-type]
+
+        with self.assertRaisesRegex(ValueError, "expected a JSON value"):
+            runtime.update_global_settings(append_invalid_value)
+
+        self.assertIs(runtime.global_settings, original)
+        self.assertEqual(runtime.global_settings, expected)
+        stream_dock.send.assert_not_called()
+
+    def test_rolls_back_runtime_global_settings_transaction_on_send_failure(
+        self,
+    ) -> None:
+        runtime, stream_dock = self.build_runtime()
+        expected: JsonObject = {"items": [1]}
+        runtime.on_stream_dock_event(DidReceiveGlobalSettingsEvent(settings=expected))
+        original = runtime.global_settings
+        stream_dock.send.side_effect = RuntimeError("send failed")
+
+        def append_item(settings: JsonObject) -> None:
+            items = settings["items"]
+            assert isinstance(items, list)
+            items.append(2)
+
+        with self.assertRaisesRegex(RuntimeError, "send failed"):
+            runtime.update_global_settings(append_item)
+
+        self.assertIs(runtime.global_settings, original)
+        self.assertEqual(runtime.global_settings, expected)
 
     def test_isolates_saved_global_settings_from_setter_input(self) -> None:
         runtime, stream_dock = self.build_runtime()

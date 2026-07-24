@@ -274,6 +274,30 @@ class CounterAction(Action[CounterSettings, Dependencies]):
 Граница кодека проверяет, что закодированные значения являются корректным JSON.
 Ошибки декодирования дополняются именем события и путём к настройкам.
 
+### Глобальные настройки
+
+Используйте `update_global_settings()`, когда несколько изменений в памяти
+образуют одну логическую операцию. Callback работает с изолированным черновиком;
+исключение или некорректный итоговый JSON откатывает всё обновление:
+
+```python
+def append_items(settings: JsonObject) -> None:
+    items = settings.get("items")
+    if not isinstance(items, list):
+        raise ValueError("items must be a list")
+    items.extend(values)
+
+
+runtime.update_global_settings(append_items)
+```
+
+После успешного callback транзакция валидирует весь черновик и сохраняет его
+одной командой `setGlobalSettings`. Ошибка callback, валидации или отправки
+оставляет прежнее локальное состояние без изменений. Прямые мутации
+`runtime.global_settings` остаются совместимыми для локального replay-состояния,
+но для группы связанных сохраняемых изменений предпочтителен транзакционный
+метод.
+
 ## Клиент Property Inspector
 
 Скопируйте JavaScript-клиент из установленного SDK в пакет плагина:

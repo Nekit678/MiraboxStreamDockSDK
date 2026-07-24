@@ -6,6 +6,11 @@ change public APIs between minor versions.
 
 ## [Unreleased]
 
+### Added
+
+- Add `StreamDockPlugin.update_global_settings()` for atomic, rollback-safe
+  updates and persistence of global settings.
+
 ### Changed
 
 - Emit per-message protocol metadata only at DEBUG while retaining connection
@@ -15,6 +20,8 @@ change public APIs between minor versions.
 
 - Isolate action settings from both caller-owned values and outbound command
   payloads after a successful settings update.
+- Validate and isolate mutations of runtime global settings before committing
+  them, so failed updates leave the public view and replay state unchanged.
 
 ### Performance
 
@@ -23,6 +30,8 @@ change public APIs between minor versions.
   commands without a separate recursive pre-validation pass.
 - Share one global-settings snapshot across action broadcasts and lazily copy
   only containers traversed by callbacks, while preserving mutation isolation.
+- Batch consecutive runtime global-settings mutations and rebuild their replay
+  snapshot only once when it is next needed.
 - Reuse serialized WebSocket frames for outbound DEBUG payload logging instead
   of encoding the same command twice.
 

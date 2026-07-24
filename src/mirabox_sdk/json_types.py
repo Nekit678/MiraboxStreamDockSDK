@@ -76,7 +76,8 @@ def _copy_on_write_json_object(
 
     Args:
         value: Owned JSON object used as the immutable backing snapshot.
-        on_mutation: Optional callback invoked after a view container changes.
+        on_mutation: Optional callback invoked after a validated view mutation
+            commits.
 
     Returns:
         A ``dict`` subclass compatible with :data:`JsonObject`.
@@ -145,7 +146,10 @@ class _CopyOnWriteJsonDict(dict[str, JsonValue]):
         return wrapped
 
     def __setitem__(self, key: str, value: JsonValue) -> None:
-        dict.__setitem__(self, key, value)
+        if not isinstance(key, str):
+            raise ValueError("expected JSON object keys to be strings")
+        cloned = _clone_json_value(value)
+        dict.__setitem__(self, key, cloned)
         self._owner.changed()
 
     def __delitem__(self, key: str) -> None:
@@ -224,10 +228,11 @@ class _CopyOnWriteJsonDict(dict[str, JsonValue]):
         /,
         **kwargs: JsonValue,
     ) -> None:
-        try:
-            dict.update(self, other)
-            dict.update(self, kwargs)
-        finally:
+        updates = dict(other)
+        updates.update(kwargs)
+        cloned = _clone_json_dict(updates)
+        if cloned:
+            dict.update(self, cloned)
             self._owner.changed()
 
     def copy(self) -> JsonObject:
@@ -300,9 +305,10 @@ class _CopyOnWriteJsonList(list[JsonValue]):
         if isinstance(index, slice):
             if not isinstance(value, Iterable):
                 raise TypeError("can only assign an iterable")
-            list.__setitem__(self, index, value)
+            cloned: JsonValue | list[JsonValue] = [_clone_json_value(item) for item in value]
         else:
-            list.__setitem__(self, index, value)  # type: ignore[arg-type]
+            cloned = _clone_json_value(value)
+        list.__setitem__(self, index, cloned)  # type: ignore[arg-type]
         self._owner.changed()
 
     def __delitem__(self, index: int | slice) -> None:
@@ -340,17 +346,19 @@ class _CopyOnWriteJsonList(list[JsonValue]):
         return list.__ge__(self, other)
 
     def append(self, value: JsonValue) -> None:
-        list.append(self, value)
+        cloned = _clone_json_value(value)
+        list.append(self, cloned)
         self._owner.changed()
 
     def extend(self, values: Iterable[JsonValue]) -> None:
-        try:
-            list.extend(self, values)
-        finally:
+        cloned = [_clone_json_value(value) for value in values]
+        if cloned:
+            list.extend(self, cloned)
             self._owner.changed()
 
     def insert(self, index: int, value: JsonValue) -> None:
-        list.insert(self, index, value)
+        cloned = _clone_json_value(value)
+        list.insert(self, index, cloned)
         self._owner.changed()
 
     def pop(self, index: int = -1) -> JsonValue:
@@ -390,12 +398,10 @@ class _CopyOnWriteJsonList(list[JsonValue]):
         self._owner.changed()
 
     def sort(self, *, key: Callable[[JsonValue], Any] | None = None, reverse: bool = False) -> None:
-        for _value in self:
-            pass
-        try:
-            list.sort(self, key=key, reverse=reverse)
-        finally:
-            self._owner.changed()
+        sorted_values = self.copy()
+        sorted_values.sort(key=key, reverse=reverse)
+        list.__setitem__(self, slice(None), sorted_values)
+        self._owner.changed()
 
     def copy(self) -> list[JsonValue]:
         return list(self)

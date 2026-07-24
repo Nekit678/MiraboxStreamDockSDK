@@ -274,6 +274,29 @@ class CounterAction(Action[CounterSettings, Dependencies]):
 The codec boundary verifies that encoded values are valid JSON. Decode errors
 are wrapped with the relevant event name and settings path.
 
+### Global settings
+
+Use `update_global_settings()` when several in-memory changes belong to one
+logical operation. The callback works on an isolated draft; an exception or
+invalid JSON result rolls back the complete update:
+
+```python
+def append_items(settings: JsonObject) -> None:
+    items = settings.get("items")
+    if not isinstance(items, list):
+        raise ValueError("items must be a list")
+    items.extend(values)
+
+
+runtime.update_global_settings(append_items)
+```
+
+After the callback succeeds, the transaction validates the complete draft and
+persists it with one `setGlobalSettings` command. Callback, validation, and send
+failures leave the previous local state unchanged. Direct mutations of
+`runtime.global_settings` remain supported for local replay state, but the
+transactional method is preferred for a batch of related persisted changes.
+
 ## Property Inspector client
 
 Copy the JavaScript client shipped with the installed SDK into the plugin
