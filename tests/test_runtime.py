@@ -29,6 +29,7 @@ from mirabox_sdk import (
     StreamDockPlugin,
     StreamDockSender,
     SystemDidWakeUpEvent,
+    UnknownStreamDockEvent,
     WillAppearEvent,
     parse_plugin_cli_arguments,
     run_plugin_cli,
@@ -105,6 +106,15 @@ class FailingBroadcastAction(RecordingAction):
 
     def on_system_did_wake_up(self, _event: SystemDidWakeUpEvent) -> None:
         raise RuntimeError("system wake-up failed")
+
+
+class RecordingUnhandledEventPlugin(StreamDockPlugin[ExampleDependencies]):
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.unhandled_events: list[UnknownStreamDockEvent] = []
+
+    def on_unhandled_event(self, event: UnknownStreamDockEvent) -> None:
+        self.unhandled_events.append(event)
 
 
 def launch_arguments() -> PluginLaunchArguments:
@@ -334,6 +344,23 @@ class StreamDockPluginRuntimeTests(unittest.TestCase):
             services=services,
         )
         return runtime, stream_dock
+
+    def test_delivers_unknown_event_to_plugin_hook_once(self) -> None:
+        stream_dock = Mock()
+        runtime = RecordingUnhandledEventPlugin(
+            launch_arguments(),
+            stream_dock=stream_dock,
+            action_registry=ActionRegistry(),
+            action_dependencies=ExampleDependencies(stream_dock),
+        )
+        event = UnknownStreamDockEvent(
+            event="futureEvent",
+            data={"event": "futureEvent", "payload": {"version": 2}},
+        )
+
+        runtime.on_stream_dock_event(event)
+
+        self.assertEqual(runtime.unhandled_events, [event])
 
     def test_registers_and_dispatches_events_without_plugin_specific_code(self) -> None:
         runtime, stream_dock = self.build_runtime()

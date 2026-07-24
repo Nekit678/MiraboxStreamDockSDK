@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import ClassVar, TypeVar
@@ -115,6 +116,38 @@ class StreamDockEvent:
         """Return the event's raw protocol name as a plain string."""
 
         return str(object.__getattribute__(self, "event"))
+
+
+class EventScope(StrEnum):
+    """Runtime destination for a recognized Stream Dock event."""
+
+    ACTION = "action"
+    BROADCAST = "broadcast"
+
+
+EventParser = Callable[[JsonObject, str], StreamDockEvent]
+
+
+@dataclass(frozen=True, slots=True)
+class EventDescriptor:
+    """Single source of parser and runtime dispatch metadata for one event.
+
+    Attributes:
+        wire_name: Exact event name received from Stream Dock.
+        event_class: Typed model returned by the parser.
+        parser: Function that validates an envelope and constructs the model.
+        scope: Whether the event targets one action or all active actions.
+        callback: :class:`Action` callback selected by the runtime.
+        runtime_handler: Optional runtime method for events that update state or
+            create/remove action instances before invoking ``callback``.
+    """
+
+    wire_name: str
+    event_class: type[StreamDockEvent]
+    parser: EventParser
+    scope: EventScope
+    callback: str
+    runtime_handler: str | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

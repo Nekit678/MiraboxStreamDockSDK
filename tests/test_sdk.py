@@ -10,8 +10,11 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+import mirabox_sdk
 from mirabox_sdk import (
+    EVENT_REGISTRY,
     JSON_OBJECT_CODEC,
+    Action,
     Controller,
     Coordinates,
     DeviceDidDisconnectEvent,
@@ -19,6 +22,7 @@ from mirabox_sdk import (
     DeviceSize,
     DialRotateEvent,
     DidReceiveGlobalSettingsEvent,
+    EventScope,
     FunctionalJsonCodec,
     GetSettingsCommand,
     InvalidFieldError,
@@ -45,6 +49,8 @@ from mirabox_sdk import (
     SetTitleCommand,
     StreamDockCommand,
     StreamDockConnection,
+    StreamDockEventType,
+    StreamDockPlugin,
     TitleAlignment,
     TitleParameters,
     TitleParametersDidChangeEvent,
@@ -410,6 +416,122 @@ class JsonCodecTests(unittest.TestCase):
 
 
 class StreamDockEventParsingTests(unittest.TestCase):
+    def test_event_registry_covers_parser_dispatch_callback_and_exports(self) -> None:
+        self.assertEqual(
+            set(EVENT_REGISTRY),
+            {event_type.value for event_type in StreamDockEventType},
+        )
+        for wire_name, descriptor in EVENT_REGISTRY.items():
+            with self.subTest(event=wire_name):
+                self.assertEqual(descriptor.wire_name, wire_name)
+                self.assertEqual(str(descriptor.event_class.event), wire_name)
+                self.assertIn(descriptor.scope, EventScope)
+                self.assertTrue(callable(descriptor.parser))
+                self.assertTrue(hasattr(Action, descriptor.callback))
+                self.assertIs(
+                    getattr(mirabox_sdk, descriptor.event_class.__name__),
+                    descriptor.event_class,
+                )
+                if descriptor.runtime_handler is not None:
+                    self.assertTrue(hasattr(StreamDockPlugin, descriptor.runtime_handler))
+        with self.assertRaises(TypeError):
+            EVENT_REGISTRY["futureEvent"] = next(iter(EVENT_REGISTRY.values()))  # type: ignore[index]
+
+    def test_parses_every_event_registered_for_runtime_dispatch(self) -> None:
+        identity: JsonObject = {
+            "action": "action-uuid",
+            "context": "button",
+            "device": "device-uuid",
+        }
+
+        def action_payload_event(event: str, **fields: object) -> JsonObject:
+            return {
+                "event": event,
+                **identity,
+                "payload": {
+                    "settings": {},
+                    "coordinates": {"column": 0, "row": 0},
+                    **fields,
+                },
+            }
+
+        visibility = {"controller": "Keypad", "isInMultiAction": False}
+        key = {"isInMultiAction": False}
+        title_parameters = {
+            "fontFamily": "Arial",
+            "fontSize": 12,
+            "fontStyle": "Regular",
+            "fontUnderline": False,
+            "showTitle": True,
+            "titleAlignment": "middle",
+            "titleColor": "#ffffffff",
+        }
+        envelopes: dict[str, JsonObject] = {
+            "willAppear": action_payload_event("willAppear", **visibility),
+            "willDisappear": action_payload_event("willDisappear", **visibility),
+            "didReceiveSettings": action_payload_event(
+                "didReceiveSettings",
+                isInMultiAction=False,
+            ),
+            "titleParametersDidChange": action_payload_event(
+                "titleParametersDidChange",
+                title="Channel",
+                titleParameters=title_parameters,
+            ),
+            "keyDown": action_payload_event("keyDown", **key),
+            "keyUp": action_payload_event("keyUp", **key),
+            "touchTap": action_payload_event("touchTap", **key),
+            "dialDown": action_payload_event("dialDown", controller="Encoder"),
+            "dialUp": action_payload_event("dialUp", controller="Encoder"),
+            "dialRotate": action_payload_event("dialRotate", ticks=1, pressed=False),
+            "propertyInspectorDidAppear": {
+                "event": "propertyInspectorDidAppear",
+                **identity,
+            },
+            "propertyInspectorDidDisappear": {
+                "event": "propertyInspectorDidDisappear",
+                **identity,
+            },
+            "sendToPlugin": {
+                "event": "sendToPlugin",
+                "action": "action-uuid",
+                "context": "button",
+                "payload": {"event": "refresh"},
+            },
+            "didReceiveGlobalSettings": {
+                "event": "didReceiveGlobalSettings",
+                "payload": {"settings": {}},
+            },
+            "deviceDidConnect": {
+                "event": "deviceDidConnect",
+                "device": "device-uuid",
+                "deviceInfo": {
+                    "name": "Stream Dock",
+                    "type": 1,
+                    "size": {"columns": 5, "rows": 3},
+                },
+            },
+            "deviceDidDisconnect": {
+                "event": "deviceDidDisconnect",
+                "device": "device-uuid",
+            },
+            "applicationDidLaunch": {
+                "event": "applicationDidLaunch",
+                "payload": {"application": "com.example.app"},
+            },
+            "applicationDidTerminate": {
+                "event": "applicationDidTerminate",
+                "payload": {"application": "com.example.app"},
+            },
+            "systemDidWakeUp": {"event": "systemDidWakeUp"},
+        }
+
+        self.assertEqual(set(envelopes), set(EVENT_REGISTRY))
+        for wire_name, envelope in envelopes.items():
+            with self.subTest(event=wire_name):
+                event = parse_stream_dock_event(envelope)
+                self.assertIsInstance(event, EVENT_REGISTRY[wire_name].event_class)
+
     def test_isolates_nested_event_data_from_parser_input(self) -> None:
         settings: JsonObject = {"audio": {"threshold": 0.5}}
         message: JsonObject = {

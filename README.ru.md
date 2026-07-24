@@ -398,7 +398,7 @@ wire-событие и команду с Python-моделью или вспом
 | Среда выполнения | `Action`, `ActionRegistry`, `StreamDockPlugin`, `LifecycleService` |
 | Соединение | `WebSocketStreamDockConnection`, `StreamDockConnection`, `StreamDockSender`, `StreamDockListener` |
 | Запуск и регистрация | `PluginLaunchArguments`, модели регистрации, `parse_plugin_cli_arguments`, `run_plugin_cli` |
-| Входящие события | Типизированные модели клавиш, касаний, энкодеров, настроек, Property Inspector, устройств, приложений и системы |
+| Входящие события | Типизированные модели и read-only `EVENT_REGISTRY` с parser, scope, callback и stateful runtime handler |
 | Исходящие команды | Модели регистрации, настроек, заголовка, изображения, состояния, обратной связи, URL, логов и Property Inspector; `ValidatedWireMessage` |
 | Данные приложения | `JsonCodec`, `FunctionalJsonCodec`, `JsonObjectCodec`, `ValidatedJsonObject`, `OwnedJsonPayload`, типизированные функции кодирования и декодирования |
 | Ресурсы | `copy_property_inspector_client`, `property_inspector_client_bytes`, CLI `mirabox-sdk` |
@@ -422,7 +422,19 @@ wire-событие и команду с Python-моделью или вспом
 
 По умолчанию `parse_stream_dock_event()` сохраняет неизвестный, но структурно
 корректный конверт как `UnknownStreamDockEvent`. Это позволяет SDK переживать
-расширения протокола, сохраняя строгую проверку известных событий.
+расширения протокола, сохраняя строгую проверку известных событий. Стандартный
+runtime один раз передаёт каждое такое событие в
+`StreamDockPlugin.on_unhandled_event()`. Переопределите этот no-op hook в
+подклассе плагина, чтобы анализировать или логировать новые события протокола.
+Неизвестные конверты не рассылаются action-объектам, потому что их правила
+маршрутизации ещё неизвестны.
+
+Разбор и доставка известных событий используют один неизменяемый
+`EVENT_REGISTRY`. Каждый `EventDescriptor` хранит wire name, модель события,
+parser, `EventScope`, callback action-объекта и специальный runtime handler при
+необходимости. Проверка registry при импорте обнаруживает отсутствующий элемент
+`StreamDockEventType`, а тесты проверяют наличие каждого callback и публичного
+экспорта модели события.
 
 ## Логирование
 

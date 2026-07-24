@@ -17,24 +17,13 @@ from .commands import (
 from .errors import JsonCodecDecodeError
 from .events import (
     ActionEvent,
-    ApplicationDidLaunchEvent,
-    ApplicationDidTerminateEvent,
-    DeviceDidConnectEvent,
-    DeviceDidDisconnectEvent,
-    DialDownEvent,
-    DialRotateEvent,
-    DialUpEvent,
     DidReceiveGlobalSettingsEvent,
     DidReceiveSettingsEvent,
-    KeyDownEvent,
-    KeyUpEvent,
-    PropertyInspectorDidAppearEvent,
-    PropertyInspectorDidDisappearEvent,
-    SendToPluginEvent,
+    EventDescriptor,
+    EventScope,
     StreamDockEvent,
-    SystemDidWakeUpEvent,
     TitleParametersDidChangeEvent,
-    TouchTapEvent,
+    UnknownStreamDockEvent,
     WillAppearEvent,
     WillDisappearEvent,
 )
@@ -45,6 +34,7 @@ from .json_types import (
     _prepare_copy_on_write_json_object,
     clone_json_object,
 )
+from .parser import EVENT_REGISTRY
 from .protocols import (
     LifecycleService,
     StreamDockActionDependencies,
@@ -223,52 +213,134 @@ class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
         except Exception:
             logger.exception("Failed to process Stream Dock event %s", event.event_name)
 
+    def on_unhandled_event(self, _event: UnknownStreamDockEvent) -> None:
+        """Handle an event that has no descriptor in this SDK version.
+
+        Override this no-op hook to observe :class:`UnknownStreamDockEvent`
+        instances preserved by the parser. It is invoked once at plugin scope;
+        unknown envelopes are not broadcast to action instances because their
+        routing semantics are not yet known.
+
+        Args:
+            _event: Forward-compatible event containing its raw wire name and
+                complete decoded envelope.
+        """
+
+        pass
+
     def _dispatch(self, event: StreamDockEvent) -> None:
-        if isinstance(event, WillAppearEvent):
-            self._create_action(event)
+        descriptor = self._descriptor_for_event(event)
+        if descriptor is None:
+            if not isinstance(event, UnknownStreamDockEvent):
+                raise AssertionError(
+                    f"Known Stream Dock event {event.event_name!r} has no matching descriptor"
+                )
+            self.on_unhandled_event(event)
+            return
+        if descriptor.runtime_handler is not None:
+            handler = getattr(self, descriptor.runtime_handler)
+            handler(event, descriptor)
+            return
+        self._dispatch_registered_event(event, descriptor)
+
+    @staticmethod
+    def _descriptor_for_event(event: StreamDockEvent) -> EventDescriptor | None:
+        descriptor = EVENT_REGISTRY.get(event.event_name)
+        if descriptor is None or not isinstance(event, descriptor.event_class):
+            return None
+        return descriptor
+
+    def _dispatch_registered_event(
+        self,
+        event: StreamDockEvent,
+        descriptor: EventDescriptor,
+    ) -> None:
+        if descriptor.scope is EventScope.BROADCAST:
+            self._dispatch_broadcast_event(event, descriptor)
             return
 
-        if isinstance(event, WillDisappearEvent):
-            action = self.actions.pop(event.context, None)
-            if action is not None:
-                action.on_will_disappear(event)
-            return
-
-        if isinstance(event, DidReceiveGlobalSettingsEvent):
-            snapshot = clone_json_object(event.settings)
-            self._replace_global_settings(snapshot)
-            self._dispatch_global_settings(self._global_settings_source)
-            return
-
-        if not isinstance(event, ActionEvent):
-            self._dispatch_broadcast_event(event)
-            return
+        if not isinstance(event, ActionEvent):  # pragma: no cover - registry invariant
+            raise AssertionError(f"Action-scoped event {event.event_name!r} lacks action routing")
 
         action = self.actions.get(event.context)
         if action is None:
             return
+        self._invoke_action_callback(action, event, descriptor)
 
-        if isinstance(event, DidReceiveSettingsEvent):
-            try:
-                action.update_settings_from_wire(event.settings)
-            except JsonCodecDecodeError as exc:
-                raise JsonCodecDecodeError(
-                    exc.reason,
-                    event_name=event.event_name,
-                    path=("payload", "settings", *exc.path),
-                ) from exc
-            action.on_did_receive_settings(event)
+    def _handle_will_appear_event(
+        self,
+        event: StreamDockEvent,
+        descriptor: EventDescriptor,
+    ) -> None:
+        if not isinstance(event, WillAppearEvent):  # pragma: no cover - registry invariant
+            raise AssertionError("willAppear descriptor received the wrong event class")
+        self._create_action(event, descriptor)
+
+    def _handle_will_disappear_event(
+        self,
+        event: StreamDockEvent,
+        descriptor: EventDescriptor,
+    ) -> None:
+        if not isinstance(event, WillDisappearEvent):  # pragma: no cover - registry invariant
+            raise AssertionError("willDisappear descriptor received the wrong event class")
+        action = self.actions.pop(event.context, None)
+        if action is not None:
+            self._invoke_action_callback(action, event, descriptor)
+
+    def _handle_did_receive_settings_event(
+        self,
+        event: StreamDockEvent,
+        descriptor: EventDescriptor,
+    ) -> None:
+        if not isinstance(event, DidReceiveSettingsEvent):  # pragma: no cover
+            raise AssertionError("didReceiveSettings descriptor received the wrong event class")
+        action = self.actions.get(event.context)
+        if action is None:
             return
+        try:
+            action.update_settings_from_wire(event.settings)
+        except JsonCodecDecodeError as exc:
+            raise JsonCodecDecodeError(
+                exc.reason,
+                event_name=event.event_name,
+                path=("payload", "settings", *exc.path),
+            ) from exc
+        self._invoke_action_callback(action, event, descriptor)
 
-        if isinstance(event, TitleParametersDidChangeEvent):
-            action.title = event.title
-            action.title_parameters = event.title_parameters
-            action.on_title_parameters_did_change(event)
+    def _handle_title_parameters_did_change_event(
+        self,
+        event: StreamDockEvent,
+        descriptor: EventDescriptor,
+    ) -> None:
+        if not isinstance(event, TitleParametersDidChangeEvent):  # pragma: no cover
+            raise AssertionError(
+                "titleParametersDidChange descriptor received the wrong event class"
+            )
+        action = self.actions.get(event.context)
+        if action is None:
             return
+        action.title = event.title
+        action.title_parameters = event.title_parameters
+        self._invoke_action_callback(action, event, descriptor)
 
-        self._dispatch_action_event(action, event)
+    def _handle_did_receive_global_settings_event(
+        self,
+        event: StreamDockEvent,
+        descriptor: EventDescriptor,
+    ) -> None:
+        if not isinstance(event, DidReceiveGlobalSettingsEvent):  # pragma: no cover
+            raise AssertionError(
+                "didReceiveGlobalSettings descriptor received the wrong event class"
+            )
+        snapshot = clone_json_object(event.settings)
+        self._replace_global_settings(snapshot)
+        self._dispatch_global_settings(self._global_settings_source, descriptor)
 
-    def _create_action(self, event: WillAppearEvent) -> None:
+    def _create_action(
+        self,
+        event: WillAppearEvent,
+        descriptor: EventDescriptor,
+    ) -> None:
         if event.context in self.actions:
             return
 
@@ -290,7 +362,7 @@ class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
             return
         self.actions[event.context] = action
         try:
-            action.on_will_appear(event)
+            self._invoke_action_callback(action, event, descriptor)
         except Exception:
             self.actions.pop(event.context, None)
             try:
@@ -300,44 +372,43 @@ class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
             raise
 
         if self._global_settings_loaded:
+            global_settings_event = self._new_global_settings_event()
+            global_settings_descriptor = self._descriptor_for_event(global_settings_event)
+            if global_settings_descriptor is None:  # pragma: no cover - registry invariant
+                raise AssertionError("Global settings event is not registered")
             self._dispatch_broadcast_event_to_action_safely(
                 action,
-                self._new_global_settings_event(),
+                global_settings_event,
+                global_settings_descriptor,
             )
 
     @staticmethod
-    def _dispatch_action_event(
+    def _invoke_action_callback(
         action: Action[Any, DependenciesT],
-        event: ActionEvent,
+        event: StreamDockEvent,
+        descriptor: EventDescriptor,
     ) -> None:
-        if isinstance(event, KeyDownEvent):
-            action.on_key_down(event)
-        elif isinstance(event, KeyUpEvent):
-            action.on_key_up(event)
-        elif isinstance(event, TouchTapEvent):
-            action.on_touch_tap(event)
-        elif isinstance(event, DialDownEvent):
-            action.on_dial_down(event)
-        elif isinstance(event, DialUpEvent):
-            action.on_dial_up(event)
-        elif isinstance(event, DialRotateEvent):
-            action.on_dial_rotate(event)
-        elif isinstance(event, PropertyInspectorDidAppearEvent):
-            action.on_property_inspector_did_appear(event)
-        elif isinstance(event, PropertyInspectorDidDisappearEvent):
-            action.on_property_inspector_did_disappear(event)
-        elif isinstance(event, SendToPluginEvent):
-            action.on_send_to_plugin(event)
+        callback = getattr(action, descriptor.callback)
+        callback(event)
 
-    def _dispatch_broadcast_event(self, event: StreamDockEvent) -> None:
+    def _dispatch_broadcast_event(
+        self,
+        event: StreamDockEvent,
+        descriptor: EventDescriptor,
+    ) -> None:
         for action in tuple(self.actions.values()):
-            self._dispatch_broadcast_event_to_action_safely(action, event)
+            self._dispatch_broadcast_event_to_action_safely(action, event, descriptor)
 
-    def _dispatch_global_settings(self, source: _CopyOnWriteJsonSource) -> None:
+    def _dispatch_global_settings(
+        self,
+        source: _CopyOnWriteJsonSource,
+        descriptor: EventDescriptor,
+    ) -> None:
         for action in tuple(self.actions.values()):
             self._dispatch_broadcast_event_to_action_safely(
                 action,
                 DidReceiveGlobalSettingsEvent(settings=_copy_on_write_json_object(source)),
+                descriptor,
             )
 
     def _new_global_settings_event(self) -> DidReceiveGlobalSettingsEvent:
@@ -386,9 +457,10 @@ class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
         self,
         action: Action[Any, DependenciesT],
         event: StreamDockEvent,
+        descriptor: EventDescriptor,
     ) -> None:
         try:
-            self._dispatch_broadcast_event_to_action(action, event)
+            self._invoke_action_callback(action, event, descriptor)
         except Exception:
             logger.exception(
                 "Failed to process broadcast Stream Dock event %s for action %s context %s",
@@ -396,24 +468,6 @@ class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
                 action.action,
                 action.context,
             )
-
-    @staticmethod
-    def _dispatch_broadcast_event_to_action(
-        action: Action[Any, DependenciesT],
-        event: StreamDockEvent,
-    ) -> None:
-        if isinstance(event, DidReceiveGlobalSettingsEvent):
-            action.on_did_receive_global_settings(event)
-        elif isinstance(event, DeviceDidConnectEvent):
-            action.on_device_did_connect(event)
-        elif isinstance(event, DeviceDidDisconnectEvent):
-            action.on_device_did_disconnect(event)
-        elif isinstance(event, ApplicationDidLaunchEvent):
-            action.on_application_did_launch(event)
-        elif isinstance(event, ApplicationDidTerminateEvent):
-            action.on_application_did_terminate(event)
-        elif isinstance(event, SystemDidWakeUpEvent):
-            action.on_system_did_wake_up(event)
 
     def update_global_settings(self, update: Callable[[JsonObject], None]) -> None:
         """Atomically update and persist raw global settings.

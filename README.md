@@ -397,7 +397,7 @@ behavior implemented by this SDK.
 | Runtime | `Action`, `ActionRegistry`, `StreamDockPlugin`, `LifecycleService` |
 | Connection | `WebSocketStreamDockConnection`, `StreamDockConnection`, `StreamDockSender`, `StreamDockListener` |
 | Launch and registration | `PluginLaunchArguments`, registration dataclasses, `parse_plugin_cli_arguments`, `run_plugin_cli` |
-| Input events | Typed models for key, touch, dial, settings, Property Inspector, device, application, and system events |
+| Input events | Typed models plus the read-only `EVENT_REGISTRY` describing parser, scope, callback, and stateful runtime handler |
 | Output commands | Registration, settings, title, image, state, feedback, URL, log, and Property Inspector command models; `ValidatedWireMessage` |
 | Application data | `JsonCodec`, `FunctionalJsonCodec`, `JsonObjectCodec`, `ValidatedJsonObject`, `OwnedJsonPayload`, typed encode/decode helpers |
 | Resources | `copy_property_inspector_client`, `property_inspector_client_bytes`, `mirabox-sdk` CLI |
@@ -421,7 +421,18 @@ also exported there.
 
 By default, `parse_stream_dock_event()` preserves an unknown but structurally
 valid envelope as `UnknownStreamDockEvent`. This lets the SDK tolerate protocol
-extensions while known events remain strictly validated.
+extensions while known events remain strictly validated. The standard runtime
+delivers each preserved event once to `StreamDockPlugin.on_unhandled_event()`;
+override that no-op hook in a plugin subclass to inspect or log new protocol
+events. Unknown envelopes are not broadcast to actions because their routing
+semantics are not known yet.
+
+Known events are parsed and dispatched from the same read-only
+`EVENT_REGISTRY`. Each `EventDescriptor` records the wire name, event model,
+parser, `EventScope`, action callback, and any stateful runtime handler. Registry
+validation fails during import if a `StreamDockEventType` member is missing, and
+the test suite verifies that every callback and package-level event export
+exists.
 
 ## Logging
 

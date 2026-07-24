@@ -74,6 +74,8 @@ from .events import (
     DialUpEvent,
     DidReceiveGlobalSettingsEvent,
     DidReceiveSettingsEvent,
+    EventDescriptor,
+    EventScope,
     KeyDownEvent,
     KeyEvent,
     KeyUpEvent,
@@ -94,7 +96,7 @@ from .events import (
 )
 from .json_types import JsonObject, JsonValue, OwnedJsonPayload, ValidatedJsonObject
 from .logging_config import configure_logging
-from .parser import parse_stream_dock_event
+from .parser import EVENT_REGISTRY, parse_stream_dock_event
 from .plugin import StreamDockPlugin
 from .protocols import (
     LifecycleService,
@@ -141,6 +143,9 @@ __all__ = [
     "DialUpEvent",
     "DidReceiveGlobalSettingsEvent",
     "DidReceiveSettingsEvent",
+    "EVENT_REGISTRY",
+    "EventDescriptor",
+    "EventScope",
     "GetGlobalSettingsCommand",
     "GetSettingsCommand",
     "FunctionalJsonCodec",

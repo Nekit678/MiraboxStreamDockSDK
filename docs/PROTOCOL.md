@@ -74,9 +74,18 @@ model is dispatched to the corresponding `Action` callback where applicable.
 behavior even though it is not currently listed on the upstream “Received
 Events” page.
 
-An unknown event is preserved as `UnknownStreamDockEvent` by default. Pass
-`allow_unknown=False` to `parse_stream_dock_event()` when strict rejection with
+An unknown event is preserved as `UnknownStreamDockEvent` by default and
+delivered once to `StreamDockPlugin.on_unhandled_event()`. Override that
+plugin-level hook to observe new protocol envelopes. Unknown events are not
+broadcast to actions because an SDK version that does not recognize an event
+cannot safely infer its action or broadcast scope. Pass `allow_unknown=False`
+to `parse_stream_dock_event()` when strict rejection with
 `UnsupportedEventError` is preferable.
+
+Known-event parsing and runtime delivery are driven by the same read-only
+`EVENT_REGISTRY`. Its `EventDescriptor` entries bind each wire name to its
+parser, typed model, `EventScope`, `Action` callback, and optional stateful
+runtime handler.
 
 ## Events sent by a plugin
 
@@ -160,7 +169,9 @@ practical.
 When adding or changing protocol behavior:
 
 1. compare the official documentation and templates;
-2. record the Stream Dock version used for runtime verification;
-3. add or update a wire-level regression test;
-4. update this map, the public exports, and the changelog when the supported API
+2. add one `EventDescriptor` to `EVENT_REGISTRY` after defining the event model
+   and parser;
+3. record the Stream Dock version used for runtime verification;
+4. add or update a wire-level regression test;
+5. update this map, the public exports, and the changelog when the supported API
    changes.
