@@ -268,6 +268,32 @@ class ActionTests(unittest.TestCase):
         self.assertEqual(input_nested["value"], 2)
         self.assertEqual(command_nested["value"], 3)
 
+    def test_set_settings_reuses_one_owned_snapshot_for_local_state(self) -> None:
+        stream_dock = Mock()
+        action = RecordingAction(
+            ACTION_UUID,
+            "button",
+            {"items": []},
+            ExampleDependencies(stream_dock),
+        )
+        settings: JsonObject = {"items": list(range(100))}
+
+        with (
+            patch(
+                "mirabox_sdk.codecs._clone_json_object_source",
+                wraps=_clone_json_object_source,
+            ) as own_payload,
+            patch(
+                "mirabox_sdk.codecs.clone_json_object",
+                wraps=clone_json_object,
+            ) as clone,
+        ):
+            action.set_settings(settings)
+
+        own_payload.assert_called_once()
+        clone.assert_not_called()
+        self.assertEqual(action.settings, settings)
+
 
 class ActionRegistryTests(unittest.TestCase):
     def test_registrations_are_isolated_per_plugin(self) -> None:

@@ -398,8 +398,8 @@ behavior implemented by this SDK.
 | Connection | `WebSocketStreamDockConnection`, `StreamDockConnection`, `StreamDockSender`, `StreamDockListener` |
 | Launch and registration | `PluginLaunchArguments`, registration dataclasses, `parse_plugin_cli_arguments`, `run_plugin_cli` |
 | Input events | Typed models for key, touch, dial, settings, Property Inspector, device, application, and system events |
-| Output commands | Registration, settings, title, image, state, feedback, URL, log, and Property Inspector command models |
-| Application data | `JsonCodec`, `FunctionalJsonCodec`, `JsonObjectCodec`, typed encode/decode helpers |
+| Output commands | Registration, settings, title, image, state, feedback, URL, log, and Property Inspector command models; `ValidatedWireMessage` |
+| Application data | `JsonCodec`, `FunctionalJsonCodec`, `JsonObjectCodec`, `ValidatedJsonObject`, `OwnedJsonPayload`, typed encode/decode helpers |
 | Resources | `copy_property_inspector_client`, `property_inspector_client_bytes`, `mirabox-sdk` CLI |
 | Parsing | `parse_stream_dock_event`, `parse_registration_info`, typed protocol errors |
 | Logging | `configure_logging` with isolated console, file, and disable controls |

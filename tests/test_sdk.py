@@ -30,6 +30,7 @@ from mirabox_sdk import (
     KeyDownEvent,
     LogMessageCommand,
     MalformedEventError,
+    OwnedJsonPayload,
     PluginLaunchArguments,
     PropertyInspectorMessage,
     RegistrationApplicationInfo,
@@ -42,6 +43,7 @@ from mirabox_sdk import (
     SetGlobalSettingsCommand,
     SetSettingsCommand,
     SetTitleCommand,
+    StreamDockCommand,
     StreamDockConnection,
     TitleAlignment,
     TitleParameters,
@@ -49,6 +51,8 @@ from mirabox_sdk import (
     TouchTapEvent,
     UnknownStreamDockEvent,
     UnsupportedEventError,
+    ValidatedJsonObject,
+    ValidatedWireMessage,
     WebSocketStreamDockConnection,
     WillAppearEvent,
     configure_logging,
@@ -194,6 +198,32 @@ class StreamDockRegistrationTests(unittest.TestCase):
 
 
 class JsonCodecTests(unittest.TestCase):
+    def test_validated_json_object_creates_isolated_owned_payloads(self) -> None:
+        source: JsonObject = {"profile": {"levels": [1, 2]}}
+        validated = ValidatedJsonObject(source)
+        first = validated.owned_payload()
+        second = validated.owned_payload()
+
+        source_profile = source["profile"]
+        first_profile = first["profile"]
+        assert isinstance(source_profile, dict)
+        assert isinstance(first_profile, dict)
+        source_profile["levels"] = [3]
+        first_profile["levels"] = [4]
+
+        self.assertEqual(second, {"profile": {"levels": [1, 2]}})
+        self.assertEqual(first.isolated_copy(), {"profile": {"levels": [4]}})
+        self.assertIsInstance(first, OwnedJsonPayload)
+
+    def test_validated_wire_message_requires_owned_payload_for_shallow_composition(
+        self,
+    ) -> None:
+        with self.assertRaisesRegex(TypeError, "OwnedJsonPayload"):
+            ValidatedWireMessage.from_owned_payload(  # type: ignore[arg-type]
+                {"invalid": object()},
+                event="customEvent",
+            )
+
     def test_decodes_typed_settings_from_event(self) -> None:
         event = parse_stream_dock_event(
             {
@@ -268,6 +298,22 @@ class JsonCodecTests(unittest.TestCase):
                 "settings": {"profiles": [{"level": 1}]},
             },
         )
+
+    def test_extensible_commands_own_direct_payloads_and_validate_mutations(self) -> None:
+        source: JsonObject = {"nested": {"value": 1}}
+        settings_command = SetSettingsCommand("button", source)
+        global_command = SetGlobalSettingsCommand("plugin", source)
+        inspector_command = SendToPropertyInspectorCommand("action", "button", source)
+
+        source_nested = source["nested"]
+        assert isinstance(source_nested, dict)
+        source_nested["value"] = 2
+
+        self.assertEqual(settings_command.settings, {"nested": {"value": 1}})
+        self.assertEqual(global_command.settings, {"nested": {"value": 1}})
+        self.assertEqual(inspector_command.payload, {"nested": {"value": 1}})
+        with self.assertRaises(ValueError):
+            settings_command.settings["invalid"] = object()  # type: ignore[assignment]
 
     def test_converts_typed_property_inspector_payloads_both_ways(self) -> None:
         event = SendToPluginEvent(
@@ -727,18 +773,21 @@ class WebSocketStreamDockConnectionTests(unittest.TestCase):
 
     @patch("mirabox_sdk.connection.websocket.WebSocketApp")
     def test_rejects_non_json_command_before_sending(self, app_factory: Mock) -> None:
+        class CustomCommand(StreamDockCommand):
+            def __init__(self, message: object) -> None:
+                self.message = message
+
+            def to_wire(self) -> JsonObject:
+                return self.message  # type: ignore[return-value]
+
         web_socket = app_factory.return_value
         connection = WebSocketStreamDockConnection(12345)
 
         invalid_commands = (
-            SetSettingsCommand("button", {"threshold": float("nan")}),
-            SetSettingsCommand("button", {"unsupported": object()}),  # type: ignore[dict-item]
-            SetSettingsCommand("button", {1: "x"}),  # type: ignore[dict-item]
-            SendToPropertyInspectorCommand(
-                "action",
-                "button",
-                {"items": (1, 2)},  # type: ignore[dict-item]
-            ),
+            CustomCommand({"threshold": float("nan")}),
+            CustomCommand({"unsupported": object()}),
+            CustomCommand({1: "x"}),
+            CustomCommand({"items": (1, 2)}),
         )
         for command in invalid_commands:
             with (
@@ -753,34 +802,75 @@ class WebSocketStreamDockConnectionTests(unittest.TestCase):
         web_socket.send.assert_not_called()
 
     @patch("mirabox_sdk.connection.websocket.WebSocketApp")
-    def test_trusts_owned_global_settings_payload(self, app_factory: Mock) -> None:
+    def test_requires_explicit_validated_wire_result(self, app_factory: Mock) -> None:
+        class InvalidCommand(StreamDockCommand):
+            def to_wire(self) -> JsonObject:
+                return {"event": "customEvent"}
+
+            def to_validated_wire(self) -> ValidatedWireMessage:
+                return self.to_wire()  # type: ignore[return-value]
+
         web_socket = app_factory.return_value
         connection = WebSocketStreamDockConnection(12345)
-        command = SetGlobalSettingsCommand.from_settings(
-            "plugin",
-            {"profiles": [{"levels": list(range(100))}]},
-            JSON_OBJECT_CODEC,
+
+        with self.assertRaisesRegex(TypeError, "ValidatedWireMessage"):
+            connection.send(InvalidCommand())
+
+        web_socket.send.assert_not_called()
+
+    @patch("mirabox_sdk.connection.websocket.WebSocketApp")
+    def test_trusts_all_owned_command_payloads(self, app_factory: Mock) -> None:
+        web_socket = app_factory.return_value
+        connection = WebSocketStreamDockConnection(12345)
+        payload: JsonObject = {"profiles": [{"levels": list(range(100))}]}
+        commands = (
+            SetGlobalSettingsCommand.from_settings("plugin", payload, JSON_OBJECT_CODEC),
+            SetSettingsCommand.from_settings("button", payload, JSON_OBJECT_CODEC),
+            SendToPropertyInspectorCommand.from_payload(
+                "action",
+                "button",
+                payload,
+                JSON_OBJECT_CODEC,
+            ),
         )
 
-        with patch("mirabox_sdk.connection.is_json_value") as validate:
-            connection.send(command)
+        with patch("mirabox_sdk.commands.clone_json_object") as validate:
+            for command in commands:
+                connection.send(command)
 
         validate.assert_not_called()
         self.assertEqual(
-            json.loads(web_socket.send.call_args.args[0]),
+            json.loads(web_socket.send.call_args_list[0].args[0]),
             {
                 "event": "setGlobalSettings",
                 "context": "plugin",
-                "payload": {"profiles": [{"levels": list(range(100))}]},
+                "payload": payload,
             },
         )
 
-    def test_rejects_invalid_global_settings_when_command_takes_ownership(self) -> None:
-        with self.assertRaisesRegex(ValueError, "finite JSON object"):
-            SetGlobalSettingsCommand(
+    def test_rejects_invalid_extensible_payloads_when_commands_take_ownership(self) -> None:
+        factories = (
+            lambda: SetGlobalSettingsCommand(
                 "plugin",
                 {"items": (1, 2)},  # type: ignore[dict-item]
-            )
+            ),
+            lambda: SetSettingsCommand(
+                "button",
+                {"items": (1, 2)},  # type: ignore[dict-item]
+            ),
+            lambda: SendToPropertyInspectorCommand(
+                "action",
+                "button",
+                {"items": (1, 2)},  # type: ignore[dict-item]
+            ),
+        )
+
+        for factory in factories:
+            with (
+                self.subTest(factory=factory),
+                self.assertRaisesRegex(ValueError, "finite JSON object"),
+            ):
+                factory()
 
     @patch("mirabox_sdk.connection.websocket.WebSocketApp")
     def test_reuses_serialized_command_for_debug_logging(self, app_factory: Mock) -> None:

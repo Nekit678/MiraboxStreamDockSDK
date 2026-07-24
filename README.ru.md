@@ -399,8 +399,8 @@ wire-событие и команду с Python-моделью или вспом
 | Соединение | `WebSocketStreamDockConnection`, `StreamDockConnection`, `StreamDockSender`, `StreamDockListener` |
 | Запуск и регистрация | `PluginLaunchArguments`, модели регистрации, `parse_plugin_cli_arguments`, `run_plugin_cli` |
 | Входящие события | Типизированные модели клавиш, касаний, энкодеров, настроек, Property Inspector, устройств, приложений и системы |
-| Исходящие команды | Модели регистрации, настроек, заголовка, изображения, состояния, обратной связи, URL, логов и Property Inspector |
-| Данные приложения | `JsonCodec`, `FunctionalJsonCodec`, `JsonObjectCodec`, типизированные функции кодирования и декодирования |
+| Исходящие команды | Модели регистрации, настроек, заголовка, изображения, состояния, обратной связи, URL, логов и Property Inspector; `ValidatedWireMessage` |
+| Данные приложения | `JsonCodec`, `FunctionalJsonCodec`, `JsonObjectCodec`, `ValidatedJsonObject`, `OwnedJsonPayload`, типизированные функции кодирования и декодирования |
 | Ресурсы | `copy_property_inspector_client`, `property_inspector_client_bytes`, CLI `mirabox-sdk` |
 | Разбор протокола | `parse_stream_dock_event`, `parse_registration_info`, типизированные ошибки протокола |
 | Логирование | `configure_logging` с управлением консолью, файлом и отключением |

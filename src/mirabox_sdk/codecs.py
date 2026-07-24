@@ -9,6 +9,7 @@ from typing import Generic, Protocol, TypeVar
 from .errors import JsonCodecDecodeError, JsonCodecEncodeError, JsonCodecError
 from .json_types import (
     JsonObject,
+    OwnedJsonPayload,
     _clone_json_object_source,
     _CopyOnWriteJsonSource,
     clone_json_object,
@@ -190,6 +191,35 @@ def _encode_with_codec_source(
         return _clone_json_object_source(encoded)
     except ValueError:
         raise JsonCodecEncodeError("expected a JSON object") from None
+
+
+def _encode_with_codec_payload(
+    value: DecodedT,
+    codec: JsonCodec[DecodedT],
+) -> OwnedJsonPayload:
+    """Encode into one validated payload owned by an outbound command."""
+
+    return OwnedJsonPayload(_encode_with_codec_source(value, codec))
+
+
+def _decode_owned_with_codec(
+    payload: OwnedJsonPayload,
+    codec: JsonCodec[DecodedT],
+) -> DecodedT:
+    """Decode an owned payload through an isolated copy-on-write view."""
+
+    isolated = payload.isolated_copy()
+    try:
+        if type(codec) is FunctionalJsonCodec:
+            assert isinstance(codec, FunctionalJsonCodec)
+            return codec.decoder(isolated)
+        if type(codec) is JsonObjectCodec:
+            return isolated  # type: ignore[return-value]
+        return codec.decode(isolated)
+    except JsonCodecError:
+        raise
+    except (TypeError, ValueError) as exc:
+        raise JsonCodecDecodeError(str(exc) or type(exc).__name__) from exc
 
 
 def _copy_json_object(value: object, *, decoding: bool) -> JsonObject:

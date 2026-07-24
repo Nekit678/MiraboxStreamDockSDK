@@ -8,9 +8,8 @@ from typing import Any
 
 import websocket
 
-from .commands import StreamDockCommand, _ValidatedWireEnvelope
+from .commands import StreamDockCommand, ValidatedWireMessage
 from .errors import StreamDockProtocolError
-from .json_types import is_json_value
 from .logging_config import _protocol_payload_logging_enabled
 from .parser import parse_stream_dock_event
 from .protocols import StreamDockConnection, StreamDockListener
@@ -71,8 +70,8 @@ class WebSocketStreamDockConnection(StreamDockConnection):
     The connection always targets ``127.0.0.1`` using the port supplied by the
     host application. Incoming malformed JSON and invalid protocol events are
     logged and ignored so one bad frame does not terminate the receive loop.
-    Outgoing custom commands are validated as finite JSON before transmission;
-    SDK-owned command envelopes carry that guarantee from their model boundary.
+    The command layer validates and owns outgoing wire messages before this
+    transport serializes them.
 
     Args:
         port: Loopback WebSocket port supplied in the plugin launch arguments.
@@ -131,9 +130,10 @@ class WebSocketStreamDockConnection(StreamDockConnection):
                 frame.
         """
 
-        message = command.to_wire()
-        if not isinstance(message, _ValidatedWireEnvelope) and not is_json_value(message):
-            raise ValueError("Stream Dock command contains a non-JSON value")
+        wire_message = command.to_validated_wire()
+        if not isinstance(wire_message, ValidatedWireMessage):
+            raise TypeError("command.to_validated_wire() must return ValidatedWireMessage")
+        message = wire_message._json_object()
         try:
             raw_message = json.dumps(message, ensure_ascii=False, allow_nan=False)
         except (TypeError, ValueError):

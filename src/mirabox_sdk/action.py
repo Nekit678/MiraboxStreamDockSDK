@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, ClassVar, Generic, TypeVar, cast
 
-from .codecs import JSON_OBJECT_CODEC, JsonCodec, decode_with_codec
+from .codecs import JSON_OBJECT_CODEC, JsonCodec, _decode_owned_with_codec, decode_with_codec
 from .commands import (
     GetSettingsCommand,
     LogMessageCommand,
@@ -227,12 +227,13 @@ class Action(Generic[SettingsT, DependenciesT]):
                 isolated local settings.
         """
 
+        codec = cast(JsonCodec[SettingsT], self.settings_codec)
         command = SetSettingsCommand.from_settings(
             context=self.context,
             settings=settings,
-            codec=cast(JsonCodec[SettingsT], self.settings_codec),
+            codec=codec,
         )
-        next_settings = self.decode_settings(command.settings)
+        next_settings = _decode_owned_with_codec(command.settings, codec)
         self._send(command)
         self.settings = next_settings
 

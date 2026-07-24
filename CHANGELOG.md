@@ -10,11 +10,15 @@ change public APIs between minor versions.
 
 - Add `StreamDockPlugin.update_global_settings()` for atomic, rollback-safe
   updates and persistence of global settings.
+- Add reusable `ValidatedJsonObject`, `OwnedJsonPayload`, and
+  `ValidatedWireMessage` ownership and command-boundary types.
 
 ### Changed
 
 - Emit per-message protocol metadata only at DEBUG while retaining connection
   lifecycle and operational records at INFO.
+- Move outbound validation behind `StreamDockCommand.to_validated_wire()`, so
+  the WebSocket transport no longer depends on a private command marker.
 
 ### Fixed
 
@@ -26,8 +30,11 @@ change public APIs between minor versions.
 ### Performance
 
 - Validate and clone retained event and codec JSON in one traversal, avoid
-  copying unused fields from known event envelopes, and serialize owned global
-  settings without a separate recursive pre-validation pass or runtime copy.
+  copying unused fields from known event envelopes, and serialize owned action,
+  global-settings, and Property Inspector payloads without a separate recursive
+  pre-validation pass.
+- Reuse the owned action-settings snapshot for isolated local state after
+  `Action.set_settings()` instead of decoding from another deep copy.
 - Share one prepared global-settings snapshot across action broadcasts, keep
   dictionary changes in sparse overlays, and materialize lists only for
   structural mutations, avoiding per-action copies of wide roots.

@@ -368,7 +368,7 @@ class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
 
         if isinstance(snapshot, _CopyOnWriteJsonSource):
             source = snapshot
-            owned_snapshot = source.value
+            owned_snapshot = source._value
         else:
             source = _prepare_copy_on_write_json_object(snapshot)
             owned_snapshot = snapshot

@@ -83,20 +83,44 @@ def _clone_json_dict(
     return cloned
 
 
-class _CopyOnWriteJsonSource:
-    __slots__ = ("container_has_only_scalars", "value")
+class ValidatedJsonObject:
+    """Own one validated JSON-object snapshot.
 
-    def __init__(
+    Construction validates and clones the complete object once. The immutable
+    backing snapshot can then create multiple isolated copy-on-write payloads
+    without another recursive validation or clone.
+    """
+
+    __slots__ = ("_container_has_only_scalars", "_value")
+
+    def __init__(self, value: object) -> None:
+        if not isinstance(value, dict):
+            raise ValueError("expected a JSON object")
+        container_has_only_scalars: dict[int, bool] = {}
+        cloned = _clone_json_dict(value, container_has_only_scalars)
+        self._initialize(cloned, container_has_only_scalars)
+
+    @classmethod
+    def _from_owned(
+        cls,
+        value: JsonObject,
+        container_has_only_scalars: dict[int, bool] | None = None,
+    ) -> ValidatedJsonObject:
+        validated = object.__new__(cls)
+        validated._initialize(value, container_has_only_scalars)
+        return validated
+
+    def _initialize(
         self,
         value: JsonObject,
         container_has_only_scalars: dict[int, bool] | None = None,
     ) -> None:
-        self.value = value
+        self._value = value
         if container_has_only_scalars is not None:
-            self.container_has_only_scalars = container_has_only_scalars
+            self._container_has_only_scalars = container_has_only_scalars
             return
 
-        self.container_has_only_scalars: dict[int, bool] = {}
+        self._container_has_only_scalars: dict[int, bool] = {}
         pending: list[dict[str, JsonValue] | list[JsonValue]] = [value]
         while pending:
             container = pending.pop()
@@ -106,23 +130,32 @@ class _CopyOnWriteJsonSource:
                 if isinstance(item, (dict, list)):
                     has_only_scalars = False
                     pending.append(item)
-            self.container_has_only_scalars[id(container)] = has_only_scalars
+            self._container_has_only_scalars[id(container)] = has_only_scalars
+
+    def owned_payload(self) -> OwnedJsonPayload:
+        """Return a mutable, isolated payload backed by this snapshot."""
+
+        return OwnedJsonPayload._from_validated(self)
+
+    def isolated_copy(self) -> JsonObject:
+        """Return an isolated copy-on-write JSON object."""
+
+        return _copy_on_write_json_object(self)
+
+
+_CopyOnWriteJsonSource = ValidatedJsonObject
 
 
 def _clone_json_object_source(value: object) -> _CopyOnWriteJsonSource:
     """Validate, clone, and prepare one owned copy-on-write JSON snapshot."""
 
-    if not isinstance(value, dict):
-        raise ValueError("expected a JSON object")
-    container_has_only_scalars: dict[int, bool] = {}
-    cloned = _clone_json_dict(value, container_has_only_scalars)
-    return _CopyOnWriteJsonSource(cloned, container_has_only_scalars)
+    return ValidatedJsonObject(value)
 
 
 def _prepare_copy_on_write_json_object(value: JsonObject) -> _CopyOnWriteJsonSource:
     """Precompute immutable snapshot metadata shared by multiple COW views."""
 
-    return _CopyOnWriteJsonSource(value)
+    return ValidatedJsonObject._from_owned(value)
 
 
 def _copy_on_write_json_object(
@@ -152,7 +185,7 @@ def _copy_on_write_json_object(
         else _prepare_copy_on_write_json_object(value)
     )
     owner = _CopyOnWriteOwner(source, on_mutation)
-    result = owner.wrap(source.value)
+    result = owner.wrap(source._value)
     if not isinstance(result, dict):  # pragma: no cover - narrowed by input type
         raise AssertionError("JSON object root was not a dictionary")
     return result
@@ -189,7 +222,7 @@ class _CopyOnWriteOwner:
         if existing is not None:
             return existing
 
-        source_has_only_scalars = self._source.container_has_only_scalars.get(identity)
+        source_has_only_scalars = self._source._container_has_only_scalars.get(identity)
         if isinstance(value, dict):
             wrapped: _CopyOnWriteJsonDict | _CopyOnWriteJsonList = _CopyOnWriteJsonDict(
                 value,
@@ -232,7 +265,7 @@ class _CopyOnWriteJsonDict(dict[str, JsonValue]):
             prepared_source = _prepare_copy_on_write_json_object(standalone_source)
             owner = _CopyOnWriteOwner(prepared_source, None)
             source = standalone_source
-            source_has_only_scalars = prepared_source.container_has_only_scalars.get(id(source))
+            source_has_only_scalars = prepared_source._container_has_only_scalars.get(id(source))
         elif not isinstance(source, dict):  # pragma: no cover - internal invariant
             raise TypeError("copy-on-write source must be a dictionary")
 
@@ -522,7 +555,7 @@ class _CopyOnWriteJsonList(list[JsonValue]):
             prepared_source = _prepare_copy_on_write_json_object({"value": standalone_source})
             owner = _CopyOnWriteOwner(prepared_source, None)
             source = standalone_source
-            source_has_only_scalars = prepared_source.container_has_only_scalars.get(id(source))
+            source_has_only_scalars = prepared_source._container_has_only_scalars.get(id(source))
         elif not isinstance(source, list):  # pragma: no cover - internal invariant
             raise TypeError("copy-on-write source must be a list")
 
@@ -756,6 +789,58 @@ class _CopyOnWriteJsonList(list[JsonValue]):
         list.__imul__(self, count)
         self._owner.changed()
         return self
+
+
+class OwnedJsonPayload(_CopyOnWriteJsonDict):
+    """Mutable JSON payload with an SDK-owned, validated backing snapshot.
+
+    Raw construction performs one validation-and-clone traversal. Constructing
+    from :class:`ValidatedJsonObject` reuses its owned snapshot. Every exposed
+    mutation is validated and isolated, while :meth:`isolated_copy` cheaply
+    creates an independent copy-on-write view for local SDK state.
+    """
+
+    __slots__ = ("_current_snapshot",)
+
+    def __init__(self, value: object | ValidatedJsonObject) -> None:
+        if isinstance(value, ValidatedJsonObject):
+            validated = value
+        else:
+            if not isinstance(value, dict):
+                try:
+                    value = dict(value)  # type: ignore[arg-type]
+                except (TypeError, ValueError):
+                    raise ValueError("expected a JSON object") from None
+            validated = ValidatedJsonObject(value)
+        self._initialize_from_validated(validated)
+
+    @classmethod
+    def _from_validated(cls, validated: ValidatedJsonObject) -> OwnedJsonPayload:
+        payload = dict.__new__(cls)
+        payload._initialize_from_validated(validated)
+        return payload
+
+    def _initialize_from_validated(self, validated: ValidatedJsonObject) -> None:
+        self._current_snapshot: ValidatedJsonObject | None = validated
+        owner = _CopyOnWriteOwner(validated, self._discard_current_snapshot)
+        super().__init__(
+            validated._value,
+            owner,
+            validated._container_has_only_scalars.get(id(validated._value)),
+        )
+
+    def isolated_copy(self) -> JsonObject:
+        """Return an independent copy-on-write view of the current payload."""
+
+        return _copy_on_write_json_object(self._validated_object())
+
+    def _validated_object(self) -> ValidatedJsonObject:
+        if self._current_snapshot is None:
+            self._current_snapshot = ValidatedJsonObject(self)
+        return self._current_snapshot
+
+    def _discard_current_snapshot(self) -> None:
+        self._current_snapshot = None
 
 
 def is_json_value(value: object) -> TypeGuard[JsonValue]:

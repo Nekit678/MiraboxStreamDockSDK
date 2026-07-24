@@ -6,21 +6,52 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import TypeVar
 
-from .codecs import JsonCodec, _encode_with_codec_source, encode_with_codec
+from .codecs import JsonCodec, _encode_with_codec_payload
 from .json_types import (
     JsonObject,
-    JsonValue,
-    _clone_json_object_source,
-    _copy_on_write_json_object,
+    OwnedJsonPayload,
     _CopyOnWriteJsonSource,
-    _get_copy_on_write_json_source,
+    clone_json_object,
 )
 
 PayloadT = TypeVar("PayloadT")
 
 
-class _ValidatedWireEnvelope(dict[str, JsonValue]):
-    """Marker for an SDK-owned envelope whose complete JSON shape is valid."""
+class ValidatedWireMessage:
+    """A complete JSON wire message validated by the command layer.
+
+    The constructor validates and owns custom command output. Commands whose
+    extensible payload is already owned use :meth:`from_owned_payload`, so the
+    payload is not traversed a second time.
+    """
+
+    __slots__ = ("_message",)
+
+    def __init__(self, message: object) -> None:
+        self._message = clone_json_object(message)
+
+    @classmethod
+    def from_owned_payload(
+        cls,
+        payload: OwnedJsonPayload,
+        **routing_fields: str,
+    ) -> ValidatedWireMessage:
+        """Compose string routing fields and one already-owned JSON payload."""
+
+        if not isinstance(payload, OwnedJsonPayload):
+            raise TypeError("payload must be an OwnedJsonPayload")
+        if not all(
+            isinstance(key, str) and isinstance(value, str) for key, value in routing_fields.items()
+        ):
+            raise ValueError("wire routing fields must be strings")
+        message: JsonObject = dict(routing_fields)
+        message["payload"] = payload
+        validated = object.__new__(cls)
+        validated._message = message
+        return validated
+
+    def _json_object(self) -> JsonObject:
+        return self._message
 
 
 class StreamDockCommand(ABC):
@@ -37,6 +68,19 @@ class StreamDockCommand(ABC):
         """Serialize the command to its exact JSON-compatible wire envelope."""
 
         ...
+
+    def to_validated_wire(self) -> ValidatedWireMessage:
+        """Return an owned wire message whose complete JSON shape is valid.
+
+        Custom commands inherit this validating implementation. Commands with
+        an :class:`OwnedJsonPayload` override it to compose a certified
+        envelope without recursively traversing the payload again.
+        """
+
+        try:
+            return ValidatedWireMessage(self.to_wire())
+        except ValueError:
+            raise ValueError("Stream Dock command contains a non-JSON value") from None
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,7 +101,7 @@ class RegisterPluginCommand(StreamDockCommand):
         return {"event": self.event, "uuid": self.uuid}
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, init=False)
 class SendToPropertyInspectorCommand(StreamDockCommand):
     """Deliver a plugin message to one action's Property Inspector.
 
@@ -67,9 +111,45 @@ class SendToPropertyInspectorCommand(StreamDockCommand):
         payload: Plugin-defined JSON message body.
     """
 
+    __match_args__ = ("action", "context", "payload")
+
     action: str
     context: str
-    payload: JsonObject
+    payload: OwnedJsonPayload
+
+    def __init__(self, action: str, context: str, payload: JsonObject) -> None:
+        """Validate, isolate, and own a raw Property Inspector payload."""
+
+        try:
+            owned_payload = OwnedJsonPayload(payload)
+        except ValueError:
+            raise ValueError("payload must be a finite JSON object") from None
+        self._initialize(action, context, owned_payload)
+
+    @classmethod
+    def _from_payload(
+        cls,
+        action: str,
+        context: str,
+        payload: OwnedJsonPayload,
+    ) -> SendToPropertyInspectorCommand:
+        command = object.__new__(cls)
+        command._initialize(action, context, payload)
+        return command
+
+    def _initialize(
+        self,
+        action: str,
+        context: str,
+        payload: OwnedJsonPayload,
+    ) -> None:
+        if not isinstance(action, str):
+            raise ValueError("action must be a string")
+        if not isinstance(context, str):
+            raise ValueError("context must be a string")
+        object.__setattr__(self, "action", action)
+        object.__setattr__(self, "context", context)
+        object.__setattr__(self, "payload", payload)
 
     @classmethod
     def from_payload(
@@ -94,7 +174,11 @@ class SendToPropertyInspectorCommand(StreamDockCommand):
             JsonCodecEncodeError: If encoding fails or produces invalid JSON.
         """
 
-        return cls(action=action, context=context, payload=encode_with_codec(payload, codec))
+        return cls._from_payload(
+            action,
+            context,
+            _encode_with_codec_payload(payload, codec),
+        )
 
     def to_wire(self) -> JsonObject:
         """Return a ``sendToPropertyInspector`` wire envelope."""
@@ -105,6 +189,16 @@ class SendToPropertyInspectorCommand(StreamDockCommand):
             "context": self.context,
             "payload": self.payload,
         }
+
+    def to_validated_wire(self) -> ValidatedWireMessage:
+        """Compose a certified envelope without revalidating the payload."""
+
+        return ValidatedWireMessage.from_owned_payload(
+            self.payload,
+            event="sendToPropertyInspector",
+            action=self.action,
+            context=self.context,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,7 +248,7 @@ class SetTitleCommand(StreamDockCommand):
         }
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, init=False)
 class SetSettingsCommand(StreamDockCommand):
     """Persist settings belonging to one action context.
 
@@ -163,8 +257,35 @@ class SetSettingsCommand(StreamDockCommand):
         settings: JSON object to persist for the action.
     """
 
+    __match_args__ = ("context", "settings")
+
     context: str
-    settings: JsonObject
+    settings: OwnedJsonPayload
+
+    def __init__(self, context: str, settings: JsonObject) -> None:
+        """Validate, isolate, and own a raw action-settings payload."""
+
+        try:
+            owned_settings = OwnedJsonPayload(settings)
+        except ValueError:
+            raise ValueError("settings must be a finite JSON object") from None
+        self._initialize(context, owned_settings)
+
+    @classmethod
+    def _from_payload(
+        cls,
+        context: str,
+        settings: OwnedJsonPayload,
+    ) -> SetSettingsCommand:
+        command = object.__new__(cls)
+        command._initialize(context, settings)
+        return command
+
+    def _initialize(self, context: str, settings: OwnedJsonPayload) -> None:
+        if not isinstance(context, str):
+            raise ValueError("context must be a string")
+        object.__setattr__(self, "context", context)
+        object.__setattr__(self, "settings", settings)
 
     @classmethod
     def from_settings(
@@ -187,12 +308,21 @@ class SetSettingsCommand(StreamDockCommand):
             JsonCodecEncodeError: If encoding fails or produces invalid JSON.
         """
 
-        return cls(context=context, settings=encode_with_codec(settings, codec))
+        return cls._from_payload(context, _encode_with_codec_payload(settings, codec))
 
     def to_wire(self) -> JsonObject:
         """Return a ``setSettings`` wire envelope."""
 
         return {"event": "setSettings", "context": self.context, "payload": self.settings}
+
+    def to_validated_wire(self) -> ValidatedWireMessage:
+        """Compose a certified envelope without revalidating the payload."""
+
+        return ValidatedWireMessage.from_owned_payload(
+            self.settings,
+            event="setSettings",
+            context=self.context,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -321,35 +451,35 @@ class SetGlobalSettingsCommand(StreamDockCommand):
     __match_args__ = ("context", "settings")
 
     context: str
-    settings: JsonObject
+    settings: OwnedJsonPayload
 
     def __init__(self, context: str, settings: JsonObject) -> None:
         """Validate, isolate, and own a raw global-settings payload."""
 
         try:
-            source = _clone_json_object_source(settings)
+            owned_settings = OwnedJsonPayload(settings)
         except ValueError:
             raise ValueError("settings must be a finite JSON object") from None
-        self._initialize(context, source)
+        self._initialize(context, owned_settings)
 
     @classmethod
-    def _from_source(
+    def _from_payload(
         cls,
         context: str,
-        source: _CopyOnWriteJsonSource,
+        settings: OwnedJsonPayload,
     ) -> SetGlobalSettingsCommand:
         command = object.__new__(cls)
-        command._initialize(context, source)
+        command._initialize(context, settings)
         return command
 
-    def _initialize(self, context: str, source: _CopyOnWriteJsonSource) -> None:
+    def _initialize(self, context: str, settings: OwnedJsonPayload) -> None:
         if not isinstance(context, str):
             raise ValueError("context must be a string")
         object.__setattr__(self, "context", context)
-        object.__setattr__(self, "settings", _copy_on_write_json_object(source))
+        object.__setattr__(self, "settings", settings)
 
     def _owned_settings_source(self) -> _CopyOnWriteJsonSource:
-        return _get_copy_on_write_json_source(self.settings)
+        return self.settings._validated_object()
 
     @classmethod
     def from_settings(
@@ -372,17 +502,24 @@ class SetGlobalSettingsCommand(StreamDockCommand):
             JsonCodecEncodeError: If encoding fails or produces invalid JSON.
         """
 
-        return cls._from_source(context, _encode_with_codec_source(settings, codec))
+        return cls._from_payload(context, _encode_with_codec_payload(settings, codec))
 
     def to_wire(self) -> JsonObject:
         """Return a ``setGlobalSettings`` wire envelope."""
 
-        return _ValidatedWireEnvelope(
-            {
-                "event": "setGlobalSettings",
-                "context": self.context,
-                "payload": self.settings,
-            }
+        return {
+            "event": "setGlobalSettings",
+            "context": self.context,
+            "payload": self.settings,
+        }
+
+    def to_validated_wire(self) -> ValidatedWireMessage:
+        """Compose a certified envelope without revalidating the payload."""
+
+        return ValidatedWireMessage.from_owned_payload(
+            self.settings,
+            event="setGlobalSettings",
+            context=self.context,
         )
 
 

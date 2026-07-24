@@ -42,6 +42,7 @@ from .commands import (
     ShowAlertCommand,
     ShowOkCommand,
     StreamDockCommand,
+    ValidatedWireMessage,
 )
 from .connection import WebSocketStreamDockConnection
 from .errors import (
@@ -91,7 +92,7 @@ from .events import (
     WillAppearEvent,
     WillDisappearEvent,
 )
-from .json_types import JsonObject, JsonValue
+from .json_types import JsonObject, JsonValue, OwnedJsonPayload, ValidatedJsonObject
 from .logging_config import configure_logging
 from .parser import parse_stream_dock_event
 from .plugin import StreamDockPlugin
@@ -161,6 +162,7 @@ __all__ = [
     "LogMessageCommand",
     "MalformedEventError",
     "OpenUrlCommand",
+    "OwnedJsonPayload",
     "PropertyInspectorDidAppearEvent",
     "PropertyInspectorDidDisappearEvent",
     "PropertyInspectorMessage",
@@ -198,6 +200,8 @@ __all__ = [
     "TouchTapEvent",
     "UnknownStreamDockEvent",
     "UnsupportedEventError",
+    "ValidatedJsonObject",
+    "ValidatedWireMessage",
     "WebSocketStreamDockConnection",
     "WillAppearEvent",
     "WillDisappearEvent",
