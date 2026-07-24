@@ -100,8 +100,11 @@ The `Action` and `StreamDockPlugin` helpers cover the common cases.
 | `sendToPropertyInspector` | `SendToPropertyInspectorCommand` | `Action.send_to_property_inspector()` / `send_typed_to_property_inspector()` |
 
 All command models expose `to_wire()` for the exact JSON object sent through
-the WebSocket. The transport validates that this object contains only JSON
-values and rejects non-finite numbers such as `NaN` before sending.
+the WebSocket. `SetGlobalSettingsCommand` validates and isolates its extensible
+JSON when it takes ownership, so the transport can serialize that certified
+envelope without another recursive validation pass. Other and custom
+`StreamDockCommand` envelopes are still checked at the transport boundary, and
+serialization rejects non-finite numbers such as `NaN`.
 
 Per-message protocol logs are emitted only at DEBUG and contain routing metadata
 such as the event and context. Message payloads are redacted by default because

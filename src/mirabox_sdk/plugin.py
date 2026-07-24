@@ -356,19 +356,27 @@ class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
             self._global_settings_snapshot_dirty = False
         return self._global_settings_source
 
-    def _replace_global_settings(self, snapshot: JsonObject) -> None:
+    def _replace_global_settings(
+        self,
+        snapshot: JsonObject | _CopyOnWriteJsonSource,
+    ) -> None:
         global_settings: JsonObject
 
         def mark_snapshot_dirty_after_mutation() -> None:
             if self._global_settings is global_settings:
                 self._global_settings_snapshot_dirty = True
 
-        source = _prepare_copy_on_write_json_object(snapshot)
+        if isinstance(snapshot, _CopyOnWriteJsonSource):
+            source = snapshot
+            owned_snapshot = source.value
+        else:
+            source = _prepare_copy_on_write_json_object(snapshot)
+            owned_snapshot = snapshot
         global_settings = _copy_on_write_json_object(
             source,
             on_mutation=mark_snapshot_dirty_after_mutation,
         )
-        self._global_settings_snapshot = snapshot
+        self._global_settings_snapshot = owned_snapshot
         self._global_settings_source = source
         self._global_settings = global_settings
         self._global_settings_snapshot_dirty = False
@@ -472,9 +480,8 @@ class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
         self._send_global_settings(command)
 
     def _send_global_settings(self, command: SetGlobalSettingsCommand) -> None:
-        next_settings = clone_json_object(command.settings)
         self.stream_dock.send(command)
-        self._replace_global_settings(next_settings)
+        self._replace_global_settings(command._owned_settings_source())
 
     def get_global_settings(self) -> None:
         """Request the latest persisted plugin-wide settings.

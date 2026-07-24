@@ -39,7 +39,10 @@ def clone_json_object(value: object) -> JsonObject:
     return _clone_json_dict(value)
 
 
-def _clone_json_value(value: object) -> JsonValue:
+def _clone_json_value(
+    value: object,
+    container_has_only_scalars: dict[int, bool] | None = None,
+) -> JsonValue:
     if value is None or isinstance(value, (bool, int, str)):
         return value
     if isinstance(value, float):
@@ -47,26 +50,52 @@ def _clone_json_value(value: object) -> JsonValue:
             raise ValueError("expected a finite JSON value")
         return value
     if isinstance(value, list):
-        return [_clone_json_value(item) for item in value]
+        cloned_list: list[JsonValue] = []
+        has_only_scalars = True
+        for item in value:
+            cloned_item = _clone_json_value(item, container_has_only_scalars)
+            if isinstance(cloned_item, (dict, list)):
+                has_only_scalars = False
+            cloned_list.append(cloned_item)
+        if container_has_only_scalars is not None:
+            container_has_only_scalars[id(cloned_list)] = has_only_scalars
+        return cloned_list
     if isinstance(value, dict):
-        return _clone_json_dict(value)
+        return _clone_json_dict(value, container_has_only_scalars)
     raise ValueError("expected a JSON value")
 
 
-def _clone_json_dict(value: dict[object, object]) -> JsonObject:
+def _clone_json_dict(
+    value: dict[object, object],
+    container_has_only_scalars: dict[int, bool] | None = None,
+) -> JsonObject:
     cloned: JsonObject = {}
+    has_only_scalars = True
     for key, item in value.items():
         if not isinstance(key, str):
             raise ValueError("expected JSON object keys to be strings")
-        cloned[key] = _clone_json_value(item)
+        cloned_item = _clone_json_value(item, container_has_only_scalars)
+        if isinstance(cloned_item, (dict, list)):
+            has_only_scalars = False
+        cloned[key] = cloned_item
+    if container_has_only_scalars is not None:
+        container_has_only_scalars[id(cloned)] = has_only_scalars
     return cloned
 
 
 class _CopyOnWriteJsonSource:
     __slots__ = ("container_has_only_scalars", "value")
 
-    def __init__(self, value: JsonObject) -> None:
+    def __init__(
+        self,
+        value: JsonObject,
+        container_has_only_scalars: dict[int, bool] | None = None,
+    ) -> None:
         self.value = value
+        if container_has_only_scalars is not None:
+            self.container_has_only_scalars = container_has_only_scalars
+            return
+
         self.container_has_only_scalars: dict[int, bool] = {}
         pending: list[dict[str, JsonValue] | list[JsonValue]] = [value]
         while pending:
@@ -78,6 +107,16 @@ class _CopyOnWriteJsonSource:
                     has_only_scalars = False
                     pending.append(item)
             self.container_has_only_scalars[id(container)] = has_only_scalars
+
+
+def _clone_json_object_source(value: object) -> _CopyOnWriteJsonSource:
+    """Validate, clone, and prepare one owned copy-on-write JSON snapshot."""
+
+    if not isinstance(value, dict):
+        raise ValueError("expected a JSON object")
+    container_has_only_scalars: dict[int, bool] = {}
+    cloned = _clone_json_dict(value, container_has_only_scalars)
+    return _CopyOnWriteJsonSource(cloned, container_has_only_scalars)
 
 
 def _prepare_copy_on_write_json_object(value: JsonObject) -> _CopyOnWriteJsonSource:
@@ -117,6 +156,14 @@ def _copy_on_write_json_object(
     if not isinstance(result, dict):  # pragma: no cover - narrowed by input type
         raise AssertionError("JSON object root was not a dictionary")
     return result
+
+
+def _get_copy_on_write_json_source(value: JsonObject) -> _CopyOnWriteJsonSource:
+    """Return the prepared snapshot backing an SDK-created copy-on-write root."""
+
+    if not isinstance(value, _CopyOnWriteJsonDict):
+        raise TypeError("expected a copy-on-write JSON object")
+    return value._owner._source
 
 
 class _CopyOnWriteOwner:
@@ -176,10 +223,19 @@ class _CopyOnWriteJsonDict(dict[str, JsonValue]):
 
     def __init__(
         self,
-        source: dict[str, JsonValue],
-        owner: _CopyOnWriteOwner,
-        source_has_only_scalars: bool | None,
+        source: Mapping[str, JsonValue] | Iterable[tuple[str, JsonValue]] = (),
+        owner: _CopyOnWriteOwner | None = None,
+        source_has_only_scalars: bool | None = None,
     ) -> None:
+        if owner is None:
+            standalone_source = dict(source)
+            prepared_source = _prepare_copy_on_write_json_object(standalone_source)
+            owner = _CopyOnWriteOwner(prepared_source, None)
+            source = standalone_source
+            source_has_only_scalars = prepared_source.container_has_only_scalars.get(id(source))
+        elif not isinstance(source, dict):  # pragma: no cover - internal invariant
+            raise TypeError("copy-on-write source must be a dictionary")
+
         # CPython's JSON encoder skips methods on physically empty dict
         # subclasses. A private sentinel keeps it on the mapping path, while
         # every public operation below exposes only the logical overlay.
@@ -457,10 +513,19 @@ class _CopyOnWriteJsonList(list[JsonValue]):
 
     def __init__(
         self,
-        source: list[JsonValue],
-        owner: _CopyOnWriteOwner,
-        source_has_only_scalars: bool | None,
+        source: Iterable[JsonValue] = (),
+        owner: _CopyOnWriteOwner | None = None,
+        source_has_only_scalars: bool | None = None,
     ) -> None:
+        if owner is None:
+            standalone_source = list(source)
+            prepared_source = _prepare_copy_on_write_json_object({"value": standalone_source})
+            owner = _CopyOnWriteOwner(prepared_source, None)
+            source = standalone_source
+            source_has_only_scalars = prepared_source.container_has_only_scalars.get(id(source))
+        elif not isinstance(source, list):  # pragma: no cover - internal invariant
+            raise TypeError("copy-on-write source must be a list")
+
         # As with dictionaries, a sentinel ensures that CPython's JSON encoder
         # invokes the overridden iterator even for a logically empty source.
         super().__init__([_COW_SENTINEL])  # type: ignore[list-item]

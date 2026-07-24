@@ -26,8 +26,8 @@ change public APIs between minor versions.
 ### Performance
 
 - Validate and clone retained event and codec JSON in one traversal, avoid
-  copying unused fields from known event envelopes, and serialize outgoing
-  commands without a separate recursive pre-validation pass.
+  copying unused fields from known event envelopes, and serialize owned global
+  settings without a separate recursive pre-validation pass or runtime copy.
 - Share one prepared global-settings snapshot across action broadcasts, keep
   dictionary changes in sparse overlays, and materialize lists only for
   structural mutations, avoiding per-action copies of wide roots.

@@ -34,6 +34,7 @@ from mirabox_sdk import (
     run_plugin_cli,
 )
 from mirabox_sdk.json_types import (
+    _clone_json_object_source,
     _copy_on_write_json_object,
     _prepare_copy_on_write_json_object,
     clone_json_object,
@@ -771,14 +772,26 @@ class StreamDockPluginRuntimeTests(unittest.TestCase):
             for item in range(1, 101):
                 items.append(item)
 
-        with patch(
-            "mirabox_sdk.plugin.clone_json_object",
-            wraps=clone_json_object,
-        ) as clone:
+        with (
+            patch(
+                "mirabox_sdk.codecs._clone_json_object_source",
+                wraps=_clone_json_object_source,
+            ) as own_payload,
+            patch(
+                "mirabox_sdk.plugin.clone_json_object",
+                wraps=clone_json_object,
+            ) as clone,
+            patch(
+                "mirabox_sdk.plugin._prepare_copy_on_write_json_object",
+                wraps=_prepare_copy_on_write_json_object,
+            ) as prepare,
+        ):
             runtime.update_global_settings(append_items)
             runtime.on_stream_dock_event(will_appear_event())
 
-        clone.assert_called_once()
+        own_payload.assert_called_once()
+        clone.assert_not_called()
+        prepare.assert_not_called()
         expected: JsonObject = {"items": list(range(101))}
         self.assertEqual(runtime.global_settings, expected)
         self.assertEqual(

@@ -5,7 +5,7 @@ from __future__ import annotations
 import ast
 import json
 import unittest
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from io import StringIO
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -252,6 +252,20 @@ class JsonCodecTests(unittest.TestCase):
                 "event": "setSettings",
                 "context": "button",
                 "payload": {"channelId": "microphone"},
+            },
+        )
+
+    def test_global_settings_command_preserves_dataclass_serialization(self) -> None:
+        command = SetGlobalSettingsCommand(
+            "plugin",
+            {"profiles": [{"level": 1}]},
+        )
+
+        self.assertEqual(
+            asdict(command),
+            {
+                "context": "plugin",
+                "settings": {"profiles": [{"level": 1}]},
             },
         )
 
@@ -725,10 +739,6 @@ class WebSocketStreamDockConnectionTests(unittest.TestCase):
                 "button",
                 {"items": (1, 2)},  # type: ignore[dict-item]
             ),
-            SetGlobalSettingsCommand(
-                "plugin",
-                {"items": (1, 2)},  # type: ignore[dict-item]
-            ),
         )
         for command in invalid_commands:
             with (
@@ -741,6 +751,36 @@ class WebSocketStreamDockConnectionTests(unittest.TestCase):
                 connection.send(command)
 
         web_socket.send.assert_not_called()
+
+    @patch("mirabox_sdk.connection.websocket.WebSocketApp")
+    def test_trusts_owned_global_settings_payload(self, app_factory: Mock) -> None:
+        web_socket = app_factory.return_value
+        connection = WebSocketStreamDockConnection(12345)
+        command = SetGlobalSettingsCommand.from_settings(
+            "plugin",
+            {"profiles": [{"levels": list(range(100))}]},
+            JSON_OBJECT_CODEC,
+        )
+
+        with patch("mirabox_sdk.connection.is_json_value") as validate:
+            connection.send(command)
+
+        validate.assert_not_called()
+        self.assertEqual(
+            json.loads(web_socket.send.call_args.args[0]),
+            {
+                "event": "setGlobalSettings",
+                "context": "plugin",
+                "payload": {"profiles": [{"levels": list(range(100))}]},
+            },
+        )
+
+    def test_rejects_invalid_global_settings_when_command_takes_ownership(self) -> None:
+        with self.assertRaisesRegex(ValueError, "finite JSON object"):
+            SetGlobalSettingsCommand(
+                "plugin",
+                {"items": (1, 2)},  # type: ignore[dict-item]
+            )
 
     @patch("mirabox_sdk.connection.websocket.WebSocketApp")
     def test_reuses_serialized_command_for_debug_logging(self, app_factory: Mock) -> None:

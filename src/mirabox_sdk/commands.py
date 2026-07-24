@@ -6,10 +6,21 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import TypeVar
 
-from .codecs import JsonCodec, encode_with_codec
-from .json_types import JsonObject
+from .codecs import JsonCodec, _encode_with_codec_source, encode_with_codec
+from .json_types import (
+    JsonObject,
+    JsonValue,
+    _clone_json_object_source,
+    _copy_on_write_json_object,
+    _CopyOnWriteJsonSource,
+    _get_copy_on_write_json_source,
+)
 
 PayloadT = TypeVar("PayloadT")
+
+
+class _ValidatedWireEnvelope(dict[str, JsonValue]):
+    """Marker for an SDK-owned envelope whose complete JSON shape is valid."""
 
 
 class StreamDockCommand(ABC):
@@ -294,17 +305,51 @@ class LogMessageCommand(StreamDockCommand):
         return {"event": "logMessage", "payload": {"message": self.message}}
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, init=False)
 class SetGlobalSettingsCommand(StreamDockCommand):
     """Persist settings shared by every action in a plugin.
+
+    The command validates and isolates ``settings`` when constructed, then
+    retains the owned snapshot for both serialization and successful runtime
+    state replacement.
 
     Attributes:
         context: Plugin UUID used as the command context.
         settings: JSON object to persist globally for the plugin.
     """
 
+    __match_args__ = ("context", "settings")
+
     context: str
     settings: JsonObject
+
+    def __init__(self, context: str, settings: JsonObject) -> None:
+        """Validate, isolate, and own a raw global-settings payload."""
+
+        try:
+            source = _clone_json_object_source(settings)
+        except ValueError:
+            raise ValueError("settings must be a finite JSON object") from None
+        self._initialize(context, source)
+
+    @classmethod
+    def _from_source(
+        cls,
+        context: str,
+        source: _CopyOnWriteJsonSource,
+    ) -> SetGlobalSettingsCommand:
+        command = object.__new__(cls)
+        command._initialize(context, source)
+        return command
+
+    def _initialize(self, context: str, source: _CopyOnWriteJsonSource) -> None:
+        if not isinstance(context, str):
+            raise ValueError("context must be a string")
+        object.__setattr__(self, "context", context)
+        object.__setattr__(self, "settings", _copy_on_write_json_object(source))
+
+    def _owned_settings_source(self) -> _CopyOnWriteJsonSource:
+        return _get_copy_on_write_json_source(self.settings)
 
     @classmethod
     def from_settings(
@@ -327,16 +372,18 @@ class SetGlobalSettingsCommand(StreamDockCommand):
             JsonCodecEncodeError: If encoding fails or produces invalid JSON.
         """
 
-        return cls(context=context, settings=encode_with_codec(settings, codec))
+        return cls._from_source(context, _encode_with_codec_source(settings, codec))
 
     def to_wire(self) -> JsonObject:
         """Return a ``setGlobalSettings`` wire envelope."""
 
-        return {
-            "event": "setGlobalSettings",
-            "context": self.context,
-            "payload": self.settings,
-        }
+        return _ValidatedWireEnvelope(
+            {
+                "event": "setGlobalSettings",
+                "context": self.context,
+                "payload": self.settings,
+            }
+        )
 
 
 @dataclass(frozen=True, slots=True)

@@ -7,7 +7,12 @@ from dataclasses import dataclass
 from typing import Generic, Protocol, TypeVar
 
 from .errors import JsonCodecDecodeError, JsonCodecEncodeError, JsonCodecError
-from .json_types import JsonObject, clone_json_object
+from .json_types import (
+    JsonObject,
+    _clone_json_object_source,
+    _CopyOnWriteJsonSource,
+    clone_json_object,
+)
 
 DecodedT = TypeVar("DecodedT")
 
@@ -160,6 +165,31 @@ def encode_with_codec(value: DecodedT, codec: JsonCodec[DecodedT]) -> JsonObject
     if type(codec) in (FunctionalJsonCodec, JsonObjectCodec):
         return encoded
     return _copy_json_object(encoded, decoding=False)
+
+
+def _encode_with_codec_source(
+    value: DecodedT,
+    codec: JsonCodec[DecodedT],
+) -> _CopyOnWriteJsonSource:
+    """Encode into one validated, cloned, and prepared owned snapshot."""
+
+    try:
+        if type(codec) is FunctionalJsonCodec:
+            assert isinstance(codec, FunctionalJsonCodec)
+            encoded = codec.encoder(value)
+        elif type(codec) is JsonObjectCodec:
+            encoded = value
+        else:
+            encoded = codec.encode(value)
+    except JsonCodecError:
+        raise
+    except (TypeError, ValueError) as exc:
+        raise JsonCodecEncodeError(str(exc) or type(exc).__name__) from exc
+
+    try:
+        return _clone_json_object_source(encoded)
+    except ValueError:
+        raise JsonCodecEncodeError("expected a JSON object") from None
 
 
 def _copy_json_object(value: object, *, decoding: bool) -> JsonObject:
