@@ -33,7 +33,11 @@ from mirabox_sdk import (
     parse_plugin_cli_arguments,
     run_plugin_cli,
 )
-from mirabox_sdk.json_types import clone_json_object
+from mirabox_sdk.json_types import (
+    _copy_on_write_json_object,
+    _prepare_copy_on_write_json_object,
+    clone_json_object,
+)
 
 ACTION_UUID = "com.example.counter"
 REGISTRATION_INFO_JSON = (
@@ -132,6 +136,75 @@ def will_appear_event(*, context: str = "button") -> WillAppearEvent:
         controller=Controller.KEYPAD,
         is_in_multi_action=False,
     )
+
+
+class CopyOnWriteJsonTests(unittest.TestCase):
+    def test_keeps_wide_containers_lazy_during_selective_access(self) -> None:
+        settings: JsonObject = {
+            **{f"key-{index}": index for index in range(10_000)},
+            "items": list(range(10_000)),
+        }
+        source = _prepare_copy_on_write_json_object(settings)
+        view = _copy_on_write_json_object(source)
+        root_storage_size = dict.__sizeof__(view)
+
+        self.assertEqual(view["key-5000"], 5000)
+        items = view["items"]
+        assert isinstance(items, list)
+        source_items = settings["items"]
+        assert isinstance(source_items, list)
+        list_storage_size = list.__sizeof__(items)
+        self.assertEqual(items[5000], 5000)
+        items[5000] = -1
+
+        self.assertEqual(dict.__sizeof__(view), root_storage_size)
+        self.assertLess(root_storage_size, dict.__sizeof__(settings))
+        self.assertEqual(list.__sizeof__(items), list_storage_size)
+        self.assertLess(list_storage_size, list.__sizeof__(source_items))
+        self.assertEqual(items[5000], -1)
+        self.assertEqual(source_items[5000], 5000)
+
+    def test_serializes_lazy_empty_and_mutated_containers(self) -> None:
+        settings: JsonObject = {
+            "empty_object": {},
+            "empty_list": [],
+            "profile": {"levels": [1, 2]},
+        }
+        view = _copy_on_write_json_object(_prepare_copy_on_write_json_object(settings))
+        profile = view["profile"]
+        assert isinstance(profile, dict)
+        levels = profile["levels"]
+        assert isinstance(levels, list)
+        levels.append(3)
+        del view["empty_object"]
+        view["empty_object"] = {"enabled": True}
+
+        expected: JsonObject = {
+            "empty_list": [],
+            "profile": {"levels": [1, 2, 3]},
+            "empty_object": {"enabled": True},
+        }
+        self.assertEqual(json.loads(json.dumps(view)), expected)
+        self.assertEqual(view, expected)
+        self.assertEqual(
+            settings,
+            {
+                "empty_object": {},
+                "empty_list": [],
+                "profile": {"levels": [1, 2]},
+            },
+        )
+
+    def test_keeps_scalar_mapping_views_dynamic_after_mutation(self) -> None:
+        view = _copy_on_write_json_object(_prepare_copy_on_write_json_object({"enabled": True}))
+        items = view.items()
+        values = view.values()
+
+        view["enabled"] = False
+        view["count"] = 1
+
+        self.assertEqual(list(items), [("enabled", False), ("count", 1)])
+        self.assertEqual(list(values), [False, 1])
 
 
 class ActionTests(unittest.TestCase):
@@ -483,13 +556,20 @@ class StreamDockPluginRuntimeTests(unittest.TestCase):
             ]
         }
 
-        with patch(
-            "mirabox_sdk.plugin.clone_json_object",
-            wraps=clone_json_object,
-        ) as clone:
+        with (
+            patch(
+                "mirabox_sdk.plugin.clone_json_object",
+                wraps=clone_json_object,
+            ) as clone,
+            patch(
+                "mirabox_sdk.plugin._prepare_copy_on_write_json_object",
+                wraps=_prepare_copy_on_write_json_object,
+            ) as prepare,
+        ):
             runtime.on_stream_dock_event(DidReceiveGlobalSettingsEvent(settings=settings))
 
         self.assertEqual(clone.call_count, 1)
+        self.assertEqual(prepare.call_count, 1)
         received = [action.received_events[-1] for action in runtime.actions.values()]
         self.assertEqual(len({id(event) for event in received}), 64)
 
@@ -499,13 +579,20 @@ class StreamDockPluginRuntimeTests(unittest.TestCase):
             DidReceiveGlobalSettingsEvent(settings={"profiles": [{"level": 1}]})
         )
 
-        with patch(
-            "mirabox_sdk.plugin.clone_json_object",
-            wraps=clone_json_object,
-        ) as clone:
+        with (
+            patch(
+                "mirabox_sdk.plugin.clone_json_object",
+                wraps=clone_json_object,
+            ) as clone,
+            patch(
+                "mirabox_sdk.plugin._prepare_copy_on_write_json_object",
+                wraps=_prepare_copy_on_write_json_object,
+            ) as prepare,
+        ):
             runtime.on_stream_dock_event(will_appear_event())
 
         clone.assert_not_called()
+        prepare.assert_not_called()
         self.assertEqual(
             runtime.actions["button"].received_events[-1],
             DidReceiveGlobalSettingsEvent(settings={"profiles": [{"level": 1}]}),

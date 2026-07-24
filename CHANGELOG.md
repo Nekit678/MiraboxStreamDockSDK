@@ -28,8 +28,9 @@ change public APIs between minor versions.
 - Validate and clone retained event and codec JSON in one traversal, avoid
   copying unused fields from known event envelopes, and serialize outgoing
   commands without a separate recursive pre-validation pass.
-- Share one global-settings snapshot across action broadcasts and lazily copy
-  only containers traversed by callbacks, while preserving mutation isolation.
+- Share one prepared global-settings snapshot across action broadcasts, keep
+  dictionary changes in sparse overlays, and materialize lists only for
+  structural mutations, avoiding per-action copies of wide roots.
 - Batch consecutive runtime global-settings mutations and rebuild their replay
   snapshot only once when it is next needed.
 - Reuse serialized WebSocket frames for outbound DEBUG payload logging instead

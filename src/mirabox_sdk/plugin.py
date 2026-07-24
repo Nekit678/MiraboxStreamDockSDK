@@ -38,7 +38,13 @@ from .events import (
     WillAppearEvent,
     WillDisappearEvent,
 )
-from .json_types import JsonObject, _copy_on_write_json_object, clone_json_object
+from .json_types import (
+    JsonObject,
+    _copy_on_write_json_object,
+    _CopyOnWriteJsonSource,
+    _prepare_copy_on_write_json_object,
+    clone_json_object,
+)
 from .protocols import (
     LifecycleService,
     StreamDockActionDependencies,
@@ -100,9 +106,10 @@ class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
 
         self.actions: dict[str, Action[Any, DependenciesT]] = {}
         self._global_settings_snapshot: JsonObject = {}
-        self._global_settings: JsonObject = _copy_on_write_json_object(
+        self._global_settings_source = _prepare_copy_on_write_json_object(
             self._global_settings_snapshot
         )
+        self._global_settings: JsonObject = _copy_on_write_json_object(self._global_settings_source)
         self._global_settings_snapshot_dirty = False
         self._global_settings_loaded = False
         self.launch_arguments = launch_arguments
@@ -230,7 +237,7 @@ class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
         if isinstance(event, DidReceiveGlobalSettingsEvent):
             snapshot = clone_json_object(event.settings)
             self._replace_global_settings(snapshot)
-            self._dispatch_global_settings(snapshot)
+            self._dispatch_global_settings(self._global_settings_source)
             return
 
         if not isinstance(event, ActionEvent):
@@ -326,25 +333,28 @@ class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
         for action in tuple(self.actions.values()):
             self._dispatch_broadcast_event_to_action_safely(action, event)
 
-    def _dispatch_global_settings(self, snapshot: JsonObject) -> None:
+    def _dispatch_global_settings(self, source: _CopyOnWriteJsonSource) -> None:
         for action in tuple(self.actions.values()):
             self._dispatch_broadcast_event_to_action_safely(
                 action,
-                DidReceiveGlobalSettingsEvent(settings=_copy_on_write_json_object(snapshot)),
+                DidReceiveGlobalSettingsEvent(settings=_copy_on_write_json_object(source)),
             )
 
     def _new_global_settings_event(self) -> DidReceiveGlobalSettingsEvent:
         return DidReceiveGlobalSettingsEvent(
-            settings=_copy_on_write_json_object(self._current_global_settings_snapshot())
+            settings=_copy_on_write_json_object(self._current_global_settings_source())
         )
 
-    def _current_global_settings_snapshot(self) -> JsonObject:
+    def _current_global_settings_source(self) -> _CopyOnWriteJsonSource:
         """Materialize pending public mutations for the next isolated replay."""
 
         if self._global_settings_snapshot_dirty:
             self._global_settings_snapshot = clone_json_object(self._global_settings)
+            self._global_settings_source = _prepare_copy_on_write_json_object(
+                self._global_settings_snapshot
+            )
             self._global_settings_snapshot_dirty = False
-        return self._global_settings_snapshot
+        return self._global_settings_source
 
     def _replace_global_settings(self, snapshot: JsonObject) -> None:
         global_settings: JsonObject
@@ -353,11 +363,13 @@ class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
             if self._global_settings is global_settings:
                 self._global_settings_snapshot_dirty = True
 
+        source = _prepare_copy_on_write_json_object(snapshot)
         global_settings = _copy_on_write_json_object(
-            snapshot,
+            source,
             on_mutation=mark_snapshot_dirty_after_mutation,
         )
         self._global_settings_snapshot = snapshot
+        self._global_settings_source = source
         self._global_settings = global_settings
         self._global_settings_snapshot_dirty = False
         self._global_settings_loaded = True
@@ -414,7 +426,7 @@ class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
                 command.
         """
 
-        draft = _copy_on_write_json_object(self._current_global_settings_snapshot())
+        draft = _copy_on_write_json_object(self._current_global_settings_source())
         update(draft)
         self.set_global_settings(draft)
 

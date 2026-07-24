@@ -62,20 +62,44 @@ def _clone_json_dict(value: dict[object, object]) -> JsonObject:
     return cloned
 
 
+class _CopyOnWriteJsonSource:
+    __slots__ = ("container_has_only_scalars", "value")
+
+    def __init__(self, value: JsonObject) -> None:
+        self.value = value
+        self.container_has_only_scalars: dict[int, bool] = {}
+        pending: list[dict[str, JsonValue] | list[JsonValue]] = [value]
+        while pending:
+            container = pending.pop()
+            values = container.values() if isinstance(container, dict) else container
+            has_only_scalars = True
+            for item in values:
+                if isinstance(item, (dict, list)):
+                    has_only_scalars = False
+                    pending.append(item)
+            self.container_has_only_scalars[id(container)] = has_only_scalars
+
+
+def _prepare_copy_on_write_json_object(value: JsonObject) -> _CopyOnWriteJsonSource:
+    """Precompute immutable snapshot metadata shared by multiple COW views."""
+
+    return _CopyOnWriteJsonSource(value)
+
+
 def _copy_on_write_json_object(
-    value: JsonObject,
+    value: JsonObject | _CopyOnWriteJsonSource,
     *,
     on_mutation: Callable[[], None] | None = None,
 ) -> JsonObject:
     """Return an isolated, lazily copied view of an owned JSON object.
 
-    The source object must not be mutated after this function is called. The
-    root is shallow-copied immediately; nested containers are shallow-copied
-    only when traversed. Separate views can therefore share one validated
-    snapshot without sharing subsequent writes.
+    The source object must not be mutated after this function is called.
+    Dictionaries retain sparse overlays and lists materialize only before a
+    structural mutation. Separate views can therefore share one validated
+    snapshot without copying wide containers or sharing subsequent writes.
 
     Args:
-        value: Owned JSON object used as the immutable backing snapshot.
+        value: Owned JSON object or prepared immutable backing snapshot.
         on_mutation: Optional callback invoked after a validated view mutation
             commits.
 
@@ -83,24 +107,34 @@ def _copy_on_write_json_object(
         A ``dict`` subclass compatible with :data:`JsonObject`.
     """
 
-    owner = _CopyOnWriteOwner(on_mutation)
-    result = owner.wrap(value)
+    source = (
+        value
+        if isinstance(value, _CopyOnWriteJsonSource)
+        else _prepare_copy_on_write_json_object(value)
+    )
+    owner = _CopyOnWriteOwner(source, on_mutation)
+    result = owner.wrap(source.value)
     if not isinstance(result, dict):  # pragma: no cover - narrowed by input type
         raise AssertionError("JSON object root was not a dictionary")
     return result
 
 
 class _CopyOnWriteOwner:
-    __slots__ = ("_containers", "_on_mutation")
+    __slots__ = ("_containers", "_on_mutation", "_source")
 
-    def __init__(self, on_mutation: Callable[[], None] | None) -> None:
+    def __init__(
+        self,
+        source: _CopyOnWriteJsonSource,
+        on_mutation: Callable[[], None] | None,
+    ) -> None:
         self._containers: dict[int, _CopyOnWriteJsonDict | _CopyOnWriteJsonList] = {}
         self._on_mutation = on_mutation
+        self._source = source
 
     def wrap(self, value: JsonValue) -> JsonValue:
-        if isinstance(value, (_CopyOnWriteJsonDict, _CopyOnWriteJsonList)):
-            return value
         if not isinstance(value, (dict, list)):
+            return value
+        if isinstance(value, (_CopyOnWriteJsonDict, _CopyOnWriteJsonList)):
             return value
 
         identity = id(value)
@@ -108,10 +142,15 @@ class _CopyOnWriteOwner:
         if existing is not None:
             return existing
 
+        source_has_only_scalars = self._source.container_has_only_scalars.get(identity)
         if isinstance(value, dict):
-            wrapped: _CopyOnWriteJsonDict | _CopyOnWriteJsonList = _CopyOnWriteJsonDict(value, self)
+            wrapped: _CopyOnWriteJsonDict | _CopyOnWriteJsonList = _CopyOnWriteJsonDict(
+                value,
+                self,
+                source_has_only_scalars,
+            )
         else:
-            wrapped = _CopyOnWriteJsonList(value, self)
+            wrapped = _CopyOnWriteJsonList(value, self, source_has_only_scalars)
         self._containers[identity] = wrapped
         return wrapped
 
@@ -121,61 +160,183 @@ class _CopyOnWriteOwner:
 
 
 _MISSING = object()
+_COW_SENTINEL = object()
 
 
 class _CopyOnWriteJsonDict(dict[str, JsonValue]):
-    __slots__ = ("_owner",)
+    __slots__ = (
+        "_added",
+        "_deleted",
+        "_owner",
+        "_source",
+        "_source_has_only_scalars",
+        "_source_cleared",
+        "_updated",
+    )
 
-    def __init__(self, source: dict[str, JsonValue], owner: _CopyOnWriteOwner) -> None:
-        # Populate the built-in storage so C-level consumers such as
-        # ``json.dumps`` see the same mapping as Python-level consumers.
-        super().__init__(source)
+    def __init__(
+        self,
+        source: dict[str, JsonValue],
+        owner: _CopyOnWriteOwner,
+        source_has_only_scalars: bool | None,
+    ) -> None:
+        # CPython's JSON encoder skips methods on physically empty dict
+        # subclasses. A private sentinel keeps it on the mapping path, while
+        # every public operation below exposes only the logical overlay.
+        super().__init__()
+        dict.__setitem__(self, _COW_SENTINEL, None)  # type: ignore[arg-type]
         self._owner = owner
+        self._source = source
+        self._source_has_only_scalars = source_has_only_scalars
+        self._updated: dict[str, JsonValue] | None = None
+        self._added: dict[str, JsonValue] | None = None
+        self._deleted: set[str] | None = None
+        self._source_cleared = False
 
     def __len__(self) -> int:
-        return dict.__len__(self)
+        source_length = 0 if self._source_cleared else len(self._source)
+        deleted_length = 0 if self._deleted is None else len(self._deleted)
+        added_length = 0 if self._added is None else len(self._added)
+        return source_length - deleted_length + added_length
 
     def __iter__(self) -> Iterator[str]:
-        return dict.__iter__(self)
+        if not self._source_cleared:
+            deleted = self._deleted
+            for key in self._source:
+                if deleted is None or key not in deleted:
+                    yield key
+        if self._added is not None:
+            yield from self._added
+
+    def __reversed__(self) -> Iterator[str]:
+        if self._added is not None:
+            yield from reversed(self._added)
+        if not self._source_cleared:
+            deleted = self._deleted
+            for key in reversed(self._source):
+                if deleted is None or key not in deleted:
+                    yield key
 
     def __getitem__(self, key: str) -> JsonValue:
-        value = dict.__getitem__(self, key)
+        location: str
+        if self._added is not None and key in self._added:
+            value = self._added[key]
+            location = "added"
+        elif self._updated is not None and key in self._updated:
+            value = self._updated[key]
+            location = "updated"
+        elif not self._source_cleared and self._deleted is None:
+            value = self._source[key]
+            location = "source"
+        elif self._source_key_is_visible(key):
+            value = self._source[key]
+            location = "source"
+        else:
+            raise KeyError(key)
+
         wrapped = self._owner.wrap(value)
         if wrapped is not value:
-            dict.__setitem__(self, key, wrapped)
+            if location == "added":
+                assert self._added is not None
+                self._added[key] = wrapped
+            else:
+                if self._updated is None:
+                    self._updated = {}
+                self._updated[key] = wrapped
         return wrapped
 
     def __setitem__(self, key: str, value: JsonValue) -> None:
         if not isinstance(key, str):
             raise ValueError("expected JSON object keys to be strings")
         cloned = _clone_json_value(value)
-        dict.__setitem__(self, key, cloned)
+        self._set_cloned(key, cloned)
         self._owner.changed()
 
     def __delitem__(self, key: str) -> None:
-        dict.__delitem__(self, key)
+        if self._added is not None and key in self._added:
+            del self._added[key]
+            if not self._added:
+                self._added = None
+            self._owner.changed()
+            return
+        if not self._source_key_is_visible(key):
+            raise KeyError(key)
+        if self._updated is not None:
+            self._updated.pop(key, None)
+            if not self._updated:
+                self._updated = None
+        if self._deleted is None:
+            self._deleted = set()
+        self._deleted.add(key)
         self._owner.changed()
 
     def __contains__(self, key: object) -> bool:
-        return dict.__contains__(self, key)
+        if self._added is not None and key in self._added:
+            return True
+        return self._source_key_is_visible(key)
 
     def __repr__(self) -> str:
-        return dict.__repr__(self)
+        return repr(self.copy())
 
     def __eq__(self, other: object) -> bool:
-        return dict.__eq__(self, other)
+        if isinstance(other, _CopyOnWriteJsonDict):
+            other = other.copy()
+        return self.copy() == other
 
     def __ne__(self, other: object) -> bool:
-        return dict.__ne__(self, other)
+        return not self == other
+
+    def _source_key_is_visible(self, key: object) -> bool:
+        return (
+            not self._source_cleared
+            and key in self._source
+            and (self._deleted is None or key not in self._deleted)
+        )
+
+    def _set_cloned(self, key: str, value: JsonValue) -> None:
+        if self._added is not None and key in self._added:
+            self._added[key] = value
+        elif self._source_key_is_visible(key):
+            if self._updated is None:
+                self._updated = {}
+            self._updated[key] = value
+        else:
+            if self._added is None:
+                self._added = {}
+            self._added[key] = value
 
     def keys(self) -> KeysView[str]:
         return KeysView(self)
 
     def items(self) -> ItemsView[str, JsonValue]:
-        return ItemsView(self)
+        return _CopyOnWriteItemsView(self)
 
     def values(self) -> ValuesView[JsonValue]:
-        return ValuesView(self)
+        return _CopyOnWriteValuesView(self)
+
+    def _iter_items(self) -> Iterator[tuple[str, JsonValue]]:
+        if self._has_unchanged_scalar_source():
+            return iter(self._source.items())
+        return ((key, self[key]) for key in self)
+
+    def _iter_values(self) -> Iterator[JsonValue]:
+        if self._has_unchanged_scalar_source():
+            return iter(self._source.values())
+        return (self[key] for key in self)
+
+    def _has_unchanged_scalar_source(self) -> bool:
+        if (
+            self._source_cleared
+            or self._updated is not None
+            or self._added is not None
+            or self._deleted is not None
+        ):
+            return False
+        if self._source_has_only_scalars is None:
+            self._source_has_only_scalars = all(
+                not isinstance(value, (dict, list)) for value in self._source.values()
+            )
+        return self._source_has_only_scalars
 
     @classmethod
     def fromkeys(
@@ -206,9 +367,12 @@ class _CopyOnWriteJsonDict(dict[str, JsonValue]):
         return default
 
     def popitem(self) -> tuple[str, JsonValue]:
-        key, raw_value = dict.popitem(self)
-        value = self._owner.wrap(raw_value)
-        self._owner.changed()
+        try:
+            key = next(reversed(self))
+        except StopIteration:
+            raise KeyError("popitem(): dictionary is empty") from None
+        value = self[key]
+        del self[key]
         return key, value
 
     def setdefault(self, key: str, default: JsonValue = None) -> JsonValue:
@@ -219,7 +383,10 @@ class _CopyOnWriteJsonDict(dict[str, JsonValue]):
 
     def clear(self) -> None:
         if self:
-            dict.clear(self)
+            self._source_cleared = True
+            self._updated = None
+            self._added = None
+            self._deleted = None
             self._owner.changed()
 
     def update(
@@ -232,7 +399,8 @@ class _CopyOnWriteJsonDict(dict[str, JsonValue]):
         updates.update(kwargs)
         cloned = _clone_json_dict(updates)
         if cloned:
-            dict.update(self, cloned)
+            for key, value in cloned.items():
+                self._set_cloned(key, value)
             self._owner.changed()
 
     def copy(self) -> JsonObject:
@@ -264,17 +432,58 @@ class _CopyOnWriteJsonDict(dict[str, JsonValue]):
         return self
 
 
-class _CopyOnWriteJsonList(list[JsonValue]):
-    __slots__ = ("_owner",)
+class _CopyOnWriteItemsView(ItemsView[str, JsonValue]):
+    __slots__ = ()
 
-    def __init__(self, source: list[JsonValue], owner: _CopyOnWriteOwner) -> None:
-        # As with dictionaries, real shallow storage preserves compatibility
-        # with CPython APIs that read list subclasses without calling __iter__.
-        super().__init__(source)
+    def __iter__(self) -> Iterator[tuple[str, JsonValue]]:
+        mapping = self._mapping
+        if not isinstance(mapping, _CopyOnWriteJsonDict):  # pragma: no cover
+            raise AssertionError("COW items view lost its mapping")
+        return mapping._iter_items()
+
+
+class _CopyOnWriteValuesView(ValuesView[JsonValue]):
+    __slots__ = ()
+
+    def __iter__(self) -> Iterator[JsonValue]:
+        mapping = self._mapping
+        if not isinstance(mapping, _CopyOnWriteJsonDict):  # pragma: no cover
+            raise AssertionError("COW values view lost its mapping")
+        return mapping._iter_values()
+
+
+class _CopyOnWriteJsonList(list[JsonValue]):
+    __slots__ = ("_owner", "_source", "_source_has_only_scalars", "_wrapped")
+
+    def __init__(
+        self,
+        source: list[JsonValue],
+        owner: _CopyOnWriteOwner,
+        source_has_only_scalars: bool | None,
+    ) -> None:
+        # As with dictionaries, a sentinel ensures that CPython's JSON encoder
+        # invokes the overridden iterator even for a logically empty source.
+        super().__init__([_COW_SENTINEL])  # type: ignore[list-item]
         self._owner = owner
+        self._source: list[JsonValue] | None = source
+        self._source_has_only_scalars = source_has_only_scalars
+        self._wrapped: dict[int, JsonValue] | None = None
 
     def __len__(self) -> int:
+        if self._source is not None:
+            return len(self._source)
         return list.__len__(self)
+
+    def _materialize(self) -> None:
+        if self._source is None:
+            return
+        values = self._source.copy()
+        if self._wrapped is not None:
+            for index, value in self._wrapped.items():
+                values[index] = value
+        list.__setitem__(self, slice(None), values)
+        self._source = None
+        self._wrapped = None
 
     @overload
     def __getitem__(self, index: int) -> JsonValue: ...
@@ -285,10 +494,26 @@ class _CopyOnWriteJsonList(list[JsonValue]):
     def __getitem__(self, index: int | slice) -> JsonValue | list[JsonValue]:
         if isinstance(index, slice):
             return [self[item_index] for item_index in range(*index.indices(len(self)))]
-        value = list.__getitem__(self, index)
+        if self._source is None:
+            value = list.__getitem__(self, index)
+            normalized_index = index if index >= 0 else len(self) + index
+        else:
+            value = self._source[index]
+            if self._wrapped is None:
+                normalized_index = index
+            else:
+                normalized_index = index if index >= 0 else len(self._source) + index
+                if normalized_index in self._wrapped:
+                    value = self._wrapped[normalized_index]
         wrapped = self._owner.wrap(value)
         if wrapped is not value:
-            list.__setitem__(self, index, wrapped)
+            if self._source is None:
+                list.__setitem__(self, index, wrapped)
+            else:
+                if self._wrapped is None:
+                    self._wrapped = {}
+                    normalized_index = index if index >= 0 else len(self._source) + index
+                self._wrapped[normalized_index] = wrapped
         return wrapped
 
     @overload
@@ -306,16 +531,33 @@ class _CopyOnWriteJsonList(list[JsonValue]):
             if not isinstance(value, Iterable):
                 raise TypeError("can only assign an iterable")
             cloned: JsonValue | list[JsonValue] = [_clone_json_value(item) for item in value]
+            self._materialize()
+            list.__setitem__(self, index, cloned)
         else:
             cloned = _clone_json_value(value)
-        list.__setitem__(self, index, cloned)  # type: ignore[arg-type]
+            if self._source is None:
+                list.__setitem__(self, index, cloned)
+            else:
+                self._source[index]
+                normalized_index = index if index >= 0 else len(self._source) + index
+                if self._wrapped is None:
+                    self._wrapped = {}
+                self._wrapped[normalized_index] = cloned
         self._owner.changed()
 
     def __delitem__(self, index: int | slice) -> None:
+        self._materialize()
         list.__delitem__(self, index)
         self._owner.changed()
 
     def __iter__(self) -> Iterator[JsonValue]:
+        if self._source is not None and self._wrapped is None:
+            if self._source_has_only_scalars is None:
+                self._source_has_only_scalars = all(
+                    not isinstance(value, (dict, list)) for value in self._source
+                )
+            if self._source_has_only_scalars:
+                return iter(self._source)
         return (self[index] for index in range(len(self)))
 
     def __reversed__(self) -> Iterator[JsonValue]:
@@ -325,44 +567,50 @@ class _CopyOnWriteJsonList(list[JsonValue]):
         return any(item == value for item in self)
 
     def __repr__(self) -> str:
-        return list.__repr__(self)
+        return repr(self.copy())
 
     def __eq__(self, other: object) -> bool:
-        return list.__eq__(self, other)
+        if isinstance(other, _CopyOnWriteJsonList):
+            other = other.copy()
+        return self.copy() == other
 
     def __ne__(self, other: object) -> bool:
-        return list.__ne__(self, other)
+        return not self == other
 
     def __lt__(self, other: list[JsonValue]) -> bool:
-        return list.__lt__(self, other)
+        return self.copy() < list(other)
 
     def __le__(self, other: list[JsonValue]) -> bool:
-        return list.__le__(self, other)
+        return self.copy() <= list(other)
 
     def __gt__(self, other: list[JsonValue]) -> bool:
-        return list.__gt__(self, other)
+        return self.copy() > list(other)
 
     def __ge__(self, other: list[JsonValue]) -> bool:
-        return list.__ge__(self, other)
+        return self.copy() >= list(other)
 
     def append(self, value: JsonValue) -> None:
         cloned = _clone_json_value(value)
+        self._materialize()
         list.append(self, cloned)
         self._owner.changed()
 
     def extend(self, values: Iterable[JsonValue]) -> None:
         cloned = [_clone_json_value(value) for value in values]
         if cloned:
+            self._materialize()
             list.extend(self, cloned)
             self._owner.changed()
 
     def insert(self, index: int, value: JsonValue) -> None:
         cloned = _clone_json_value(value)
+        self._materialize()
         list.insert(self, index, cloned)
         self._owner.changed()
 
     def pop(self, index: int = -1) -> JsonValue:
         value = self[index]
+        self._materialize()
         list.pop(self, index)
         self._owner.changed()
         return value
@@ -376,6 +624,8 @@ class _CopyOnWriteJsonList(list[JsonValue]):
 
     def clear(self) -> None:
         if self:
+            self._source = None
+            self._wrapped = None
             list.clear(self)
             self._owner.changed()
 
@@ -394,12 +644,15 @@ class _CopyOnWriteJsonList(list[JsonValue]):
         return sum(item == value for item in self)
 
     def reverse(self) -> None:
+        self._materialize()
         list.reverse(self)
         self._owner.changed()
 
     def sort(self, *, key: Callable[[JsonValue], Any] | None = None, reverse: bool = False) -> None:
         sorted_values = self.copy()
         sorted_values.sort(key=key, reverse=reverse)
+        self._source = None
+        self._wrapped = None
         list.__setitem__(self, slice(None), sorted_values)
         self._owner.changed()
 
@@ -434,6 +687,7 @@ class _CopyOnWriteJsonList(list[JsonValue]):
         return self * count
 
     def __imul__(self, count: int) -> _CopyOnWriteJsonList:
+        self._materialize()
         list.__imul__(self, count)
         self._owner.changed()
         return self
