@@ -444,16 +444,20 @@ parser, `EventScope`, callback action-объекта и специальный r
 ## Очередь входящих событий
 
 `WebSocketStreamDockConnection` разбирает frame в потоке WebSocket reader и
-помещает валидное событие в bounded queue. Callback-и плагина вызывает
-отдельный dispatcher, который сохраняет порядок событий для каждого action
-context. При штатном завершении соединения очередь дренируется до возврата из
-`run_forever()` и до освобождения actions и services средой выполнения.
+помещает валидное событие в bounded queue. Keyed-serial пул workers вызывает
+callback-и плагина: один action context остаётся строго последовательным, а
+разные contexts могут выполняться параллельно. `willAppear`, `willDisappear`,
+broadcast- и unknown-события служат эксклюзивными ordering barriers: каждое
+ждёт завершения предшествующих context callbacks и завершается до запуска
+последующих. При штатном завершении соединения очередь дренируется до возврата
+из `run_forever()` и до освобождения actions и services средой выполнения.
 
-По умолчанию очередь вмещает 1024 события. Lifecycle-, settings-, input-,
-broadcast-, unknown- и все остальные события, кроме `dialRotate`, считаются
-lossless. `dialRotate` явно классифицирован как coalescable и может быть
-отброшен при переполнении. Лимит и overflow policy для discardable-событий
-задаются при создании соединения:
+По умолчанию пул содержит четыре worker-а, а очередь вмещает 1024 события.
+Lifecycle-, settings-, input-, broadcast-, unknown- и все остальные события,
+кроме `dialRotate`, считаются lossless. `dialRotate` явно классифицирован как
+coalescable и может быть отброшен при переполнении. Конкурентность workers,
+лимит и overflow policy для discardable-событий задаются при создании
+соединения:
 
 ```python
 from mirabox_sdk import InboundOverflowPolicy, WebSocketStreamDockConnection
@@ -461,6 +465,7 @@ from mirabox_sdk import InboundOverflowPolicy, WebSocketStreamDockConnection
 connection = WebSocketStreamDockConnection(
     arguments.port,
     inbound_queue_limit=512,
+    inbound_worker_count=4,
     overflow_policy=InboundOverflowPolicy.DROP_OLDEST,
     coalesce_dial_rotations=True,
     inbound_shutdown_timeout=5.0,
@@ -535,7 +540,7 @@ Runtime явно распределяет владение между поток
 |---|---|
 | `configure_logging()` и `StreamDockPlugin.run()` / `stop()` | Lifecycle-поток приложения; logging настраивается до `run()`, а `stop()` вызывается после его возврата |
 | Разбор WebSocket и `on_stream_dock_connected()` | Поток WebSocket loop/reader |
-| `on_stream_dock_event()` и все callback-и `Action` | Один inbound dispatcher соединения; callback-и не выполняются одновременно |
+| `on_stream_dock_event()` и все callback-и `Action` | Inbound workers соединения; callback-и последовательны внутри context и могут пересекаться между contexts, а lifecycle-, broadcast- и unknown-barriers выполняются эксклюзивно |
 | `StreamDockSender.send()` и helpers исходящих команд `Action` | Любой поток приложения, service или action callback; перекрывающиеся вызовы поддерживаются |
 | `WebSocketStreamDockConnection.close()` | Любой поток приложения или action callback; вызовы идемпотентны и могут перекрываться |
 | `set_listener()` | Lifecycle-поток до запуска `run_forever()` |

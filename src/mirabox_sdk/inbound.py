@@ -1,4 +1,4 @@
-"""Bounded asynchronous dispatch for inbound Stream Dock events."""
+"""Bounded keyed-serial dispatch for inbound Stream Dock events."""
 
 from __future__ import annotations
 
@@ -8,8 +8,15 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from threading import Condition, Thread, current_thread
+from time import monotonic
 
-from .events import ActionEvent, DialRotateEvent, StreamDockEvent
+from .events import (
+    ActionEvent,
+    DialRotateEvent,
+    StreamDockEvent,
+    WillAppearEvent,
+    WillDisappearEvent,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -64,24 +71,29 @@ class _QueuedEvent:
 
 
 class _InboundEventDispatcher:
-    """Own a bounded queue and invoke one callback from a dedicated thread."""
+    """Own a bounded queue and dispatch callbacks serially per action context."""
 
     def __init__(
         self,
         *,
         queue_limit: int,
+        worker_count: int,
         overflow_policy: InboundOverflowPolicy,
         coalesce_dial_rotations: bool,
         dispatch: Callable[[StreamDockEvent], bool],
     ) -> None:
         self._queue_limit = queue_limit
+        self._worker_count = worker_count
         self._overflow_policy = overflow_policy
         self._coalesce_dial_rotations = coalesce_dial_rotations
         self._dispatch = dispatch
         self._condition = Condition()
         self._queue: deque[_QueuedEvent] = deque()
         self._last_queued_by_context: dict[str, _QueuedEvent] = {}
-        self._thread: Thread | None = None
+        self._threads: tuple[Thread, ...] = ()
+        self._active_contexts: set[str] = set()
+        self._active_callbacks = 0
+        self._barrier_active = False
         self._started = False
         self._accepting = True
         self._shutdown_requested = False
@@ -99,7 +111,7 @@ class _InboundEventDispatcher:
         self._callback_failures = 0
 
     def start(self) -> None:
-        """Start the single event-dispatch thread exactly once."""
+        """Start the event-dispatch worker pool exactly once."""
 
         with self._condition:
             if self._started:
@@ -107,13 +119,17 @@ class _InboundEventDispatcher:
             if self._shutdown_requested:
                 raise RuntimeError("Inbound event dispatcher has already been stopped")
             self._started = True
-            thread = Thread(
-                target=self._run,
-                name="mirabox-inbound-events",
-                daemon=True,
+            threads = tuple(
+                Thread(
+                    target=self._run,
+                    name=f"mirabox-inbound-events-{index + 1}",
+                    daemon=True,
+                )
+                for index in range(self._worker_count)
             )
-            self._thread = thread
-            thread.start()
+            self._threads = threads
+            for thread in threads:
+                thread.start()
 
     def submit(self, event: StreamDockEvent) -> bool:
         """Enqueue one event, blocking only to preserve lossless overflow."""
@@ -158,10 +174,10 @@ class _InboundEventDispatcher:
 
             queued = _QueuedEvent(event)
             self._queue.append(queued)
-            context = self._event_context(event)
+            context = self._dispatch_context(event)
             if context is None:
-                # Broadcast and unknown events may affect every action. Treat
-                # them as ordering barriers for context-local coalescing.
+                # Lifecycle, broadcast, and unknown events are ordering
+                # barriers for every context and context-local coalescing.
                 self._last_queued_by_context.clear()
             else:
                 self._last_queued_by_context[context] = queued
@@ -178,10 +194,10 @@ class _InboundEventDispatcher:
             self._condition.notify_all()
 
     def is_dispatch_thread(self) -> bool:
-        """Return whether the caller is this dispatcher's worker thread."""
+        """Return whether the caller is one of this dispatcher's workers."""
 
         with self._condition:
-            return self._thread is current_thread()
+            return current_thread() in self._threads
 
     def shutdown(self, *, timeout: float | None) -> bool:
         """Stop after draining queued events, optionally bounded by ``timeout``."""
@@ -189,19 +205,28 @@ class _InboundEventDispatcher:
         with self._condition:
             self._accepting = False
             self._shutdown_requested = True
-            thread = self._thread
-            if thread is None:
+            threads = self._threads
+            if not threads:
                 self._discard_queued_events()
                 return True
             self._condition.notify_all()
 
-        if thread is current_thread():
+        if current_thread() in threads:
             with self._condition:
                 self._discard_queued_events()
-            return True
+                deadline = None if timeout is None else monotonic() + timeout
+                while self._active_callbacks > 1:
+                    remaining = None if deadline is None else deadline - monotonic()
+                    if remaining is not None and remaining <= 0:
+                        return False
+                    self._condition.wait(remaining)
+                return True
 
-        thread.join(timeout)
-        if not thread.is_alive():
+        deadline = None if timeout is None else monotonic() + timeout
+        for thread in threads:
+            remaining = None if deadline is None else max(0.0, deadline - monotonic())
+            thread.join(remaining)
+        if not any(thread.is_alive() for thread in threads):
             return True
 
         with self._condition:
@@ -232,13 +257,12 @@ class _InboundEventDispatcher:
     def _run(self) -> None:
         while True:
             with self._condition:
-                while not self._queue and not self._shutdown_requested:
+                queued = self._take_next_queued_event()
+                while queued is None:
+                    if not self._queue and self._shutdown_requested:
+                        return
                     self._condition.wait()
-                if not self._queue:
-                    return
-                queued = self._queue.popleft()
-                self._forget_queued_event(queued)
-                self._condition.notify_all()
+                    queued = self._take_next_queued_event()
 
             try:
                 delivered = self._dispatch(queued.event)
@@ -255,6 +279,40 @@ class _InboundEventDispatcher:
                         self._dispatched += 1
                     else:
                         self._dropped_without_listener += 1
+            finally:
+                with self._condition:
+                    self._finish_dispatch(queued.event)
+
+    def _take_next_queued_event(self) -> _QueuedEvent | None:
+        if self._barrier_active:
+            return None
+
+        for index, queued in enumerate(self._queue):
+            context = self._dispatch_context(queued.event)
+            if context is None:
+                if index != 0 or self._active_callbacks:
+                    return None
+                self._barrier_active = True
+            elif context in self._active_contexts:
+                continue
+            else:
+                self._active_contexts.add(context)
+
+            del self._queue[index]
+            self._forget_queued_event(queued)
+            self._active_callbacks += 1
+            self._condition.notify_all()
+            return queued
+        return None
+
+    def _finish_dispatch(self, event: StreamDockEvent) -> None:
+        context = self._dispatch_context(event)
+        if context is None:
+            self._barrier_active = False
+        else:
+            self._active_contexts.remove(context)
+        self._active_callbacks -= 1
+        self._condition.notify_all()
 
     def _coalesce(self, event: StreamDockEvent) -> bool:
         if not self._coalesce_dial_rotations or not isinstance(event, DialRotateEvent):
@@ -278,7 +336,7 @@ class _InboundEventDispatcher:
         return True
 
     def _break_context_coalescing(self, event: StreamDockEvent) -> None:
-        context = self._event_context(event)
+        context = self._dispatch_context(event)
         if context is None:
             self._last_queued_by_context.clear()
         else:
@@ -304,7 +362,7 @@ class _InboundEventDispatcher:
         return False
 
     def _forget_queued_event(self, queued: _QueuedEvent) -> None:
-        context = self._event_context(queued.event)
+        context = self._dispatch_context(queued.event)
         if context is not None and self._last_queued_by_context.get(context) is queued:
             del self._last_queued_by_context[context]
 
@@ -314,7 +372,9 @@ class _InboundEventDispatcher:
         self._last_queued_by_context.clear()
 
     @staticmethod
-    def _event_context(event: StreamDockEvent) -> str | None:
+    def _dispatch_context(event: StreamDockEvent) -> str | None:
+        if isinstance(event, (WillAppearEvent, WillDisappearEvent)):
+            return None
         return event.context if isinstance(event, ActionEvent) else None
 
     @staticmethod

@@ -42,10 +42,11 @@ logger = logging.getLogger(__name__)
 class ActionStore(Generic[DependenciesT]):
     """Own active action instances and their context lookup.
 
-    Event dispatch is intentionally serialized by the connection, but snapshot
-    reads and lifecycle removal may occur from another thread during shutdown.
-    The store therefore protects its mapping and never exposes the mutable
-    backing dictionary.
+    Event dispatch is serialized per context by the connection, while
+    callbacks for different contexts may overlap. Lifecycle and broadcast
+    events use exclusive barriers, and shutdown may remove actions from another
+    thread. The store therefore protects its mapping and never exposes the
+    mutable backing dictionary.
     """
 
     def __init__(

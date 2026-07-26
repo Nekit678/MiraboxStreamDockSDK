@@ -93,6 +93,8 @@ class WebSocketStreamDockConnection(StreamDockConnection):
         port: Loopback WebSocket port supplied in the plugin launch arguments.
         inbound_queue_limit: Maximum number of parsed events waiting for
             callback dispatch.
+        inbound_worker_count: Maximum number of action contexts whose callbacks
+            may run concurrently.
         overflow_policy: Policy applied to discardable events when the queue is
             full. Lossless events apply reader backpressure instead.
         coalesce_dial_rotations: Combine compatible queued rotations for the
@@ -111,10 +113,11 @@ class WebSocketStreamDockConnection(StreamDockConnection):
         application explicitly opts in with ``configure_logging``.
 
         Configure the listener before starting ``run_forever()``. The WebSocket
-        reader parses and enqueues frames, one inbound dispatcher serializes all
-        event callbacks, and one outbound writer serializes all commands.
-        ``send()`` and ``close()`` are thread-safe; mutable event, action, and
-        command payload views must not be accessed concurrently.
+        reader parses and enqueues frames. Inbound workers serialize callbacks
+        per action context while lifecycle, broadcast, and unknown events act
+        as exclusive ordering barriers. One outbound writer serializes all
+        commands. ``send()`` and ``close()`` are thread-safe; mutable event,
+        action, and command payload views must not be accessed concurrently.
     """
 
     def __init__(
@@ -122,6 +125,7 @@ class WebSocketStreamDockConnection(StreamDockConnection):
         port: int,
         *,
         inbound_queue_limit: int = 1024,
+        inbound_worker_count: int = 4,
         overflow_policy: InboundOverflowPolicy = InboundOverflowPolicy.DROP_NEWEST,
         coalesce_dial_rotations: bool = False,
         inbound_shutdown_timeout: float | None = None,
@@ -133,6 +137,8 @@ class WebSocketStreamDockConnection(StreamDockConnection):
 
         if type(inbound_queue_limit) is not int or inbound_queue_limit <= 0:
             raise ValueError("inbound_queue_limit must be a positive integer")
+        if type(inbound_worker_count) is not int or inbound_worker_count <= 0:
+            raise ValueError("inbound_worker_count must be a positive integer")
         try:
             overflow_policy = InboundOverflowPolicy(overflow_policy)
         except (TypeError, ValueError):
@@ -171,6 +177,7 @@ class WebSocketStreamDockConnection(StreamDockConnection):
         self._outbound_shutdown_timeout = outbound_shutdown_timeout
         self._inbound = _InboundEventDispatcher(
             queue_limit=inbound_queue_limit,
+            worker_count=inbound_worker_count,
             overflow_policy=overflow_policy,
             coalesce_dial_rotations=coalesce_dial_rotations,
             dispatch=self._dispatch_inbound_event,

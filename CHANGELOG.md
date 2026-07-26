@@ -32,6 +32,9 @@ change public APIs between minor versions.
 - Drive known-event parsing, routing scope, callbacks, and special runtime
   handling from one validated, read-only `EVENT_REGISTRY`.
 - Move plugin callbacks out of the `websocket-client` reader thread.
+- Replace the single inbound callback worker with a configurable keyed-serial
+  pool: action contexts can progress concurrently, while lifecycle, broadcast,
+  and unknown events retain global ordering through exclusive barriers.
 - Route every outbound command through the connection-owned writer while
   preserving synchronous serialization and transport error reporting.
 - Route SDK records through one managed logging queue so destination stream and

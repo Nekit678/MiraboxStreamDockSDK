@@ -442,16 +442,19 @@ exists.
 ## Inbound event queue
 
 `WebSocketStreamDockConnection` parses frames in the WebSocket reader and puts
-valid events into a bounded queue. A dedicated dispatcher invokes plugin
-callbacks and preserves event order for every action context. On normal
+valid events into a bounded queue. A keyed-serial worker pool invokes plugin
+callbacks: one action context remains strictly ordered, while different
+contexts can make progress concurrently. `willAppear`, `willDisappear`,
+broadcast, and unknown events are exclusive ordering barriers; each waits for
+earlier context callbacks and completes before later callbacks start. On normal
 connection shutdown, the queue drains before `run_forever()` returns and before
 the runtime releases actions and services.
 
-The queue defaults to 1,024 events. Lifecycle, settings, input, broadcast,
-unknown, and every other event except `dialRotate` are lossless by default.
-`dialRotate` is explicitly coalescable and may be discarded on overflow.
-Configure the limit and overflow behavior for discardable events when
-constructing the connection:
+The pool defaults to four workers and the queue defaults to 1,024 events.
+Lifecycle, settings, input, broadcast, unknown, and every other event except
+`dialRotate` are lossless by default. `dialRotate` is explicitly coalescable
+and may be discarded on overflow. Configure worker concurrency, the limit, and
+overflow behavior for discardable events when constructing the connection:
 
 ```python
 from mirabox_sdk import InboundOverflowPolicy, WebSocketStreamDockConnection
@@ -459,6 +462,7 @@ from mirabox_sdk import InboundOverflowPolicy, WebSocketStreamDockConnection
 connection = WebSocketStreamDockConnection(
     arguments.port,
     inbound_queue_limit=512,
+    inbound_worker_count=4,
     overflow_policy=InboundOverflowPolicy.DROP_OLDEST,
     coalesce_dial_rotations=True,
     inbound_shutdown_timeout=5.0,
@@ -531,7 +535,7 @@ The runtime uses explicit thread ownership:
 |---|---|
 | `configure_logging()` and `StreamDockPlugin.run()` / `stop()` | Application lifecycle thread; configure logging before `run()`, and call `stop()` after it returns |
 | WebSocket parsing and `on_stream_dock_connected()` | WebSocket loop/reader thread |
-| `on_stream_dock_event()` and every `Action` callback | One connection-owned inbound dispatcher; callbacks never overlap |
+| `on_stream_dock_event()` and every `Action` callback | Connection-owned inbound workers; callbacks are serial per context and may overlap across contexts, while lifecycle, broadcast, and unknown barriers run exclusively |
 | `StreamDockSender.send()` and action command helpers | Any application, service, or action-callback thread; overlapping calls are supported |
 | `WebSocketStreamDockConnection.close()` | Any application or action-callback thread; calls are idempotent and may overlap |
 | `set_listener()` | Lifecycle thread before `run_forever()` starts |

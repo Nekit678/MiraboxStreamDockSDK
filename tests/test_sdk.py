@@ -128,6 +128,22 @@ def dial_rotate_message(context: str, *, ticks: int = 1) -> str:
     )
 
 
+def key_down_message(context: str, *, sequence: int = 0) -> str:
+    return json.dumps(
+        {
+            "event": "keyDown",
+            "action": "action-uuid",
+            "context": context,
+            "device": "device-uuid",
+            "payload": {
+                "settings": {"sequence": sequence},
+                "coordinates": {"column": 0, "row": 0},
+                "isInMultiAction": False,
+            },
+        }
+    )
+
+
 def will_appear_message(context: str) -> str:
     return json.dumps(
         {
@@ -1377,6 +1393,45 @@ class WebSocketStreamDockConnectionTests(unittest.TestCase):
         app_factory.return_value.close.assert_called_once_with()
 
     @patch("mirabox_sdk.connection.websocket.WebSocketApp")
+    def test_callback_close_waits_for_other_in_flight_context(
+        self,
+        app_factory: Mock,
+    ) -> None:
+        listener = Mock()
+        other_started = Event()
+        closer_started = Event()
+        close_returned = Event()
+        release_other = Event()
+
+        def on_event(event: KeyDownEvent) -> None:
+            if event.context == "other":
+                other_started.set()
+                release_other.wait(1)
+                return
+            closer_started.set()
+            connection.close()
+            close_returned.set()
+
+        def read_frames() -> None:
+            connection._on_message(app_factory.return_value, key_down_message("other"))
+            self.assertTrue(other_started.wait(1))
+            connection._on_message(app_factory.return_value, key_down_message("closer"))
+            self.assertTrue(closer_started.wait(1))
+            self.assertFalse(close_returned.is_set())
+            release_other.set()
+            self.assertTrue(close_returned.wait(1))
+
+        connection = WebSocketStreamDockConnection(12345)
+        connection.set_listener(listener)
+        listener.on_stream_dock_event.side_effect = on_event
+        app_factory.return_value.run_forever.side_effect = read_frames
+
+        connection.run_forever()
+
+        self.assertEqual(connection.inbound_queue_metrics.dispatched, 2)
+        app_factory.return_value.close.assert_called_once_with()
+
+    @patch("mirabox_sdk.connection.websocket.WebSocketApp")
     def test_outbound_shutdown_timeout_discards_waiting_commands(
         self,
         app_factory: Mock,
@@ -1829,6 +1884,145 @@ class WebSocketStreamDockConnectionTests(unittest.TestCase):
         self.assertEqual(lifecycle_failures, [])
 
     @patch("mirabox_sdk.connection.websocket.WebSocketApp")
+    def test_slow_context_does_not_block_another_context(
+        self,
+        app_factory: Mock,
+    ) -> None:
+        listener = Mock()
+        slow_started = Event()
+        fast_finished = Event()
+        release_slow = Event()
+
+        def on_event(event: KeyDownEvent) -> None:
+            if event.context == "slow":
+                slow_started.set()
+                release_slow.wait(1)
+            else:
+                fast_finished.set()
+
+        def read_frames() -> None:
+            connection._on_message(app_factory.return_value, key_down_message("slow"))
+            self.assertTrue(slow_started.wait(1))
+            connection._on_message(app_factory.return_value, key_down_message("fast"))
+            try:
+                self.assertTrue(fast_finished.wait(0.1))
+            finally:
+                release_slow.set()
+
+        connection = WebSocketStreamDockConnection(12345)
+        connection.set_listener(listener)
+        listener.on_stream_dock_event.side_effect = on_event
+        app_factory.return_value.run_forever.side_effect = read_frames
+
+        connection.run_forever()
+
+        self.assertEqual(connection.inbound_queue_metrics.dispatched, 2)
+
+    @patch("mirabox_sdk.connection.websocket.WebSocketApp")
+    def test_does_not_overlap_callbacks_for_same_context(
+        self,
+        app_factory: Mock,
+    ) -> None:
+        listener = Mock()
+        first_started = Event()
+        second_started = Event()
+        release_first = Event()
+        received: list[int] = []
+
+        def on_event(event: KeyDownEvent) -> None:
+            sequence = event.settings["sequence"]
+            received.append(sequence)
+            if sequence == 1:
+                first_started.set()
+                release_first.wait(1)
+            else:
+                second_started.set()
+
+        def read_frames() -> None:
+            connection._on_message(
+                app_factory.return_value,
+                key_down_message("button", sequence=1),
+            )
+            self.assertTrue(first_started.wait(1))
+            connection._on_message(
+                app_factory.return_value,
+                key_down_message("button", sequence=2),
+            )
+            try:
+                self.assertFalse(second_started.wait(0.02))
+            finally:
+                release_first.set()
+
+        connection = WebSocketStreamDockConnection(12345)
+        connection.set_listener(listener)
+        listener.on_stream_dock_event.side_effect = on_event
+        app_factory.return_value.run_forever.side_effect = read_frames
+
+        connection.run_forever()
+
+        self.assertEqual(received, [1, 2])
+
+    @patch("mirabox_sdk.connection.websocket.WebSocketApp")
+    def test_lifecycle_and_broadcast_events_are_exclusive_barriers(
+        self,
+        app_factory: Mock,
+    ) -> None:
+        def assert_barrier(barrier_message: str, barrier_name: str) -> None:
+            listener = Mock()
+            slow_started = Event()
+            barrier_started = Event()
+            after_started = Event()
+            release_slow = Event()
+            received: list[str] = []
+
+            def on_event(event: object) -> None:
+                if event.event_name == "keyDown":
+                    label = event.context
+                else:
+                    label = event.event_name
+                received.append(label)
+                if label == "slow":
+                    slow_started.set()
+                    release_slow.wait(1)
+                elif label == barrier_name:
+                    barrier_started.set()
+                elif label == "after":
+                    after_started.set()
+
+            def read_frames() -> None:
+                connection._on_message(
+                    app_factory.return_value,
+                    key_down_message("slow"),
+                )
+                self.assertTrue(slow_started.wait(1))
+                connection._on_message(app_factory.return_value, barrier_message)
+                connection._on_message(
+                    app_factory.return_value,
+                    key_down_message("after"),
+                )
+                try:
+                    self.assertFalse(barrier_started.wait(0.02))
+                    self.assertFalse(after_started.is_set())
+                finally:
+                    release_slow.set()
+
+            connection = WebSocketStreamDockConnection(12345)
+            connection.set_listener(listener)
+            listener.on_stream_dock_event.side_effect = on_event
+            app_factory.return_value.run_forever.side_effect = read_frames
+
+            connection.run_forever()
+
+            self.assertEqual(received, ["slow", barrier_name, "after"])
+
+        for barrier_message, barrier_name in (
+            (will_appear_message("lifecycle"), "willAppear"),
+            ('{"event":"systemDidWakeUp"}', "systemDidWakeUp"),
+        ):
+            with self.subTest(barrier=barrier_name):
+                assert_barrier(barrier_message, barrier_name)
+
+    @patch("mirabox_sdk.connection.websocket.WebSocketApp")
     def test_preserves_per_context_order(self, app_factory: Mock) -> None:
         listener = Mock()
         received: list[tuple[str, int]] = []
@@ -1847,32 +2041,18 @@ class WebSocketStreamDockConnectionTests(unittest.TestCase):
         ):
             connection._on_message(
                 app_factory.return_value,
-                json.dumps(
-                    {
-                        "event": "keyDown",
-                        "action": "action-uuid",
-                        "context": context,
-                        "device": "device-uuid",
-                        "payload": {
-                            "settings": {"sequence": sequence},
-                            "coordinates": {"column": 0, "row": 0},
-                            "isInMultiAction": False,
-                        },
-                    }
-                ),
+                key_down_message(context, sequence=sequence),
             )
 
         connection.run_forever()
 
         self.assertEqual(
-            received,
-            [
-                ("dial-a", 1),
-                ("dial-b", 1),
-                ("dial-a", 2),
-                ("dial-b", 2),
-                ("dial-a", 3),
-            ],
+            [sequence for context, sequence in received if context == "dial-a"],
+            [1, 2, 3],
+        )
+        self.assertEqual(
+            [sequence for context, sequence in received if context == "dial-b"],
+            [1, 2],
         )
 
     @patch("mirabox_sdk.connection.websocket.WebSocketApp")
@@ -2096,6 +2276,16 @@ class WebSocketStreamDockConnectionTests(unittest.TestCase):
                 WebSocketStreamDockConnection(
                     12345,
                     inbound_queue_limit=queue_limit,  # type: ignore[arg-type]
+                )
+
+        for worker_count in (0, -1, True, 1.5):
+            with (
+                self.subTest(inbound_worker_count=worker_count),
+                self.assertRaisesRegex(ValueError, "positive integer"),
+            ):
+                WebSocketStreamDockConnection(
+                    12345,
+                    inbound_worker_count=worker_count,  # type: ignore[arg-type]
                 )
 
         with self.assertRaisesRegex(ValueError, "overflow_policy"):
