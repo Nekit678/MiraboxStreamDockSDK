@@ -1274,7 +1274,6 @@ class WebSocketStreamDockConnectionTests(unittest.TestCase):
         app_factory.return_value.close.side_effect = close_web_socket
         connection = WebSocketStreamDockConnection(12345)
         callers = [Thread(target=connection.close) for _ in range(8)]
-
         callers[0].start()
         self.assertTrue(close_started.wait(1))
         for caller in callers[1:]:
@@ -1287,6 +1286,61 @@ class WebSocketStreamDockConnectionTests(unittest.TestCase):
         app_factory.return_value.close.assert_called_once_with()
         with self.assertRaises(OutboundCommandBusClosedError):
             connection.send(LogMessageCommand("too late"))
+
+    @patch("mirabox_sdk.connection.websocket.WebSocketApp")
+    def test_callback_close_does_not_wait_for_overlapping_external_close(
+        self,
+        app_factory: Mock,
+    ) -> None:
+        external_shutdown_started = Event()
+        allow_callback_close = Event()
+        callback_started = Event()
+        callback_close_returned = Event()
+        callback_state_at_web_socket_close: list[bool] = []
+
+        def on_event(_event: object) -> None:
+            callback_started.set()
+            if not allow_callback_close.wait(1):
+                raise AssertionError("timed out waiting to call close from callback")
+            connection.close()
+            callback_close_returned.set()
+
+        def close_web_socket() -> None:
+            callback_state_at_web_socket_close.append(callback_close_returned.is_set())
+
+        listener = Mock()
+        listener.on_stream_dock_event.side_effect = on_event
+        app_factory.return_value.close.side_effect = close_web_socket
+        connection = WebSocketStreamDockConnection(
+            12345,
+            inbound_shutdown_timeout=0.05,
+        )
+        connection.set_listener(listener)
+        original_stop_accepting = connection._inbound.stop_accepting
+
+        def stop_accepting() -> None:
+            original_stop_accepting()
+            external_shutdown_started.set()
+
+        with patch.object(
+            connection._inbound,
+            "stop_accepting",
+            side_effect=stop_accepting,
+        ):
+            connection._inbound.start()
+            connection._on_message(app_factory.return_value, '{"event":"firstEvent"}')
+            self.assertTrue(callback_started.wait(1))
+
+            external_close = Thread(target=connection.close, daemon=True)
+            external_close.start()
+            self.assertTrue(external_shutdown_started.wait(1))
+            allow_callback_close.set()
+            external_close.join(1)
+
+        self.assertFalse(external_close.is_alive())
+        self.assertTrue(callback_close_returned.wait(1))
+        self.assertEqual(callback_state_at_web_socket_close, [True])
+        app_factory.return_value.close.assert_called_once_with()
 
     @patch("mirabox_sdk.connection.websocket.WebSocketApp")
     def test_outbound_shutdown_timeout_discards_waiting_commands(

@@ -149,6 +149,12 @@ class _InboundEventDispatcher:
         with self._condition:
             self._accepting = False
 
+    def is_dispatch_thread(self) -> bool:
+        """Return whether the caller is this dispatcher's worker thread."""
+
+        with self._condition:
+            return self._thread is current_thread()
+
     def shutdown(self, *, timeout: float | None) -> bool:
         """Stop after draining queued events, optionally bounded by ``timeout``."""
 

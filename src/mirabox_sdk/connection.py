@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 import logging
 import math
-from threading import Lock
+from enum import Enum, auto
+from threading import Event, Lock
 from typing import Any
 
 import websocket
@@ -27,6 +28,12 @@ logger = logging.getLogger(__name__)
 
 _REDACTED = "<redacted>"
 _LOGGABLE_PROTOCOL_FIELDS = ("event", "action", "context", "device", "uuid")
+
+
+class _CloseState(Enum):
+    OPEN = auto()
+    CLOSING = auto()
+    CLOSED = auto()
 
 
 def _reject_non_finite_json_constant(value: str) -> None:
@@ -157,7 +164,8 @@ class WebSocketStreamDockConnection(StreamDockConnection):
 
         self._listener: StreamDockListener | None = None
         self._close_lock = Lock()
-        self._closed = False
+        self._close_state = _CloseState.OPEN
+        self._close_completed = Event()
         self._inbound_shutdown_timeout = inbound_shutdown_timeout
         self._outbound_shutdown_timeout = outbound_shutdown_timeout
         self._inbound = _InboundEventDispatcher(
@@ -219,10 +227,20 @@ class WebSocketStreamDockConnection(StreamDockConnection):
         """
 
         with self._close_lock:
-            if self._closed:
+            if self._close_state is _CloseState.CLOSED:
                 return
-            self._closed = True
+            if self._close_state is _CloseState.CLOSING:
+                owns_shutdown = False
+            else:
+                self._close_state = _CloseState.CLOSING
+                owns_shutdown = True
 
+        if not owns_shutdown:
+            if not self._inbound.is_dispatch_thread():
+                self._close_completed.wait()
+            return
+
+        try:
             self._inbound.stop_accepting()
             try:
                 self._shutdown_inbound_dispatcher()
@@ -232,6 +250,10 @@ class WebSocketStreamDockConnection(StreamDockConnection):
                     self._shutdown_outbound_bus()
                 finally:
                     self._ws.close()
+        finally:
+            with self._close_lock:
+                self._close_state = _CloseState.CLOSED
+            self._close_completed.set()
 
     @property
     def inbound_queue_metrics(self) -> InboundQueueMetrics:
