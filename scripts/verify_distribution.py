@@ -13,6 +13,7 @@ from verify_version import verify_version
 WHEEL_REQUIRED_SUFFIXES = {
     "mirabox_sdk/__init__.py",
     "mirabox_sdk/inbound.py",
+    "mirabox_sdk/outbound.py",
     "mirabox_sdk/py.typed",
     "mirabox_sdk/property_inspector/mirabox-sdk.js",
 }
@@ -30,6 +31,7 @@ SDIST_REQUIRED_SUFFIXES = {
     "pyproject.toml",
     "src/mirabox_sdk/py.typed",
     "src/mirabox_sdk/inbound.py",
+    "src/mirabox_sdk/outbound.py",
     "src/mirabox_sdk/property_inspector/mirabox-sdk.js",
 }
 

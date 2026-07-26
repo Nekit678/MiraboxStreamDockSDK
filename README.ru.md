@@ -64,6 +64,7 @@
 - [Карта API](#карта-api)
 - [Ошибки и неизвестные события](#ошибки-и-неизвестные-события)
 - [Очередь входящих событий](#очередь-входящих-событий)
+- [Исходящая шина команд](#исходящая-шина-команд)
 - [Логирование](#логирование)
 - [Структура проекта](#структура-проекта)
 - [Разработка](#разработка)
@@ -397,7 +398,7 @@ wire-событие и команду с Python-моделью или вспом
 | Область | Публичный API |
 |---|---|
 | Среда выполнения | `Action`, `ActionRegistry`, `StreamDockPlugin`, `LifecycleService` |
-| Соединение | `WebSocketStreamDockConnection`, `InboundOverflowPolicy`, `InboundQueueMetrics`, `StreamDockConnection`, `StreamDockSender`, `StreamDockListener` |
+| Соединение | `WebSocketStreamDockConnection`, метрики и ошибки входящей/исходящей очередей, `StreamDockConnection`, `StreamDockSender`, `StreamDockListener` |
 | Запуск и регистрация | `PluginLaunchArguments`, модели регистрации, `parse_plugin_cli_arguments`, `run_plugin_cli` |
 | Входящие события | Типизированные модели и read-only `EVENT_REGISTRY` с parser, scope, callback и stateful runtime handler |
 | Исходящие команды | Модели регистрации, настроек, заголовка, изображения, состояния, обратной связи, URL, логов и Property Inspector; `ValidatedWireMessage` |
@@ -420,6 +421,8 @@ wire-событие и команду с Python-моделью или вспом
 | `UnsupportedEventError` | Неизвестное событие разобрано с `allow_unknown=False`. |
 | `JsonCodecDecodeError` | Настройки или сообщения плагина не удалось декодировать. |
 | `JsonCodecEncodeError` | Кодек создал значение, которое нельзя отправить как JSON. |
+| `OutboundQueueFullError` | Ограниченная очередь исходящих команд заполнена. |
+| `OutboundCommandBusClosedError` | Команда отправлена после начала shutdown исходящей шины. |
 
 По умолчанию `parse_stream_dock_event()` сохраняет неизвестный, но структурно
 корректный конверт как `UnknownStreamDockEvent`. Это позволяет SDK переживать
@@ -474,6 +477,46 @@ unknown event разрывает объединение.
 callback-ов. По умолчанию `inbound_shutdown_timeout=None` ждёт полного
 дренирования. Числовой timeout ограничивает ожидание; оставшиеся в очереди
 события после его истечения отбрасываются.
+
+## Исходящая шина команд
+
+Каждый `WebSocketStreamDockConnection` владеет одним отдельным outbound writer.
+Вызов `send()` помещает типизированную команду в ограниченную FIFO-очередь;
+только writer валидирует и сериализует команду, записывает protocol log и
+вызывает WebSocket transport. Поэтому конкурентные потоки плагина не могут
+перемешать frame-ы. `send()` ждёт результат своей команды, так что ошибки
+сериализации и транспорта по-прежнему возвращаются вызывающему коду, а helpers
+обновления настроек сохраняют rollback-семантику.
+
+По умолчанию исходящая очередь вмещает 1024 ожидающие команды. При переполнении
+команды не теряются молча: `send()` выбрасывает `OutboundQueueFullError`.
+Размер очереди и timeout штатного дренирования задаются в соединении:
+
+```python
+from mirabox_sdk import WebSocketStreamDockConnection
+
+connection = WebSocketStreamDockConnection(
+    arguments.port,
+    outbound_queue_limit=512,
+    coalesce_outbound_commands=True,
+    outbound_shutdown_timeout=5.0,
+)
+```
+
+Coalescing включается явно. Совместимые соседние ожидающие команды `setState`,
+`setTitle`, `setImage`, `setSettings` или `setGlobalSettings` для одной
+семантической цели заменяются самым новым значением. Команда другого типа или
+для другой цели служит ordering barrier. Все вызывающие потоки, чьи команды
+были объединены, получают результат итоговой записи.
+
+Свойство `connection.outbound_queue_metrics` возвращает атомарный snapshot
+`OutboundQueueMetrics`: текущую и пиковую глубину, постановку и объединение
+команд, успешную сериализацию и отправку, отказы очереди, сброс при остановке, а
+также ошибки сериализации и транспорта. После начала shutdown новые команды
+получают `OutboundCommandBusClosedError`; уже поставленные команды дренируются
+до закрытия WebSocket, если не истёк `outbound_shutdown_timeout`. Уже начатую
+запись после timeout нельзя отменить: она ещё может завершиться, хотя вызывающий
+код получит ошибку shutdown.
 
 ## Логирование
 
@@ -547,6 +590,7 @@ MiraboxStreamDockSDK/
 │   ├── commands.py                    # Типизированные исходящие команды
 │   ├── events.py                      # Модели входящих событий
 │   ├── inbound.py                     # Ограниченная очередь входящих событий
+│   ├── outbound.py                    # Ограниченная single-writer шина команд
 │   ├── parser.py                      # Строгий разбор сообщений
 │   ├── plugin.py                      # Среда выполнения и диспетчер жизненного цикла
 │   ├── connection.py                  # WebSocket-транспорт

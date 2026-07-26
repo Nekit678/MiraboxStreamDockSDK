@@ -119,6 +119,13 @@ validates and owns that output before the transport receives it. The transport
 therefore serializes one uniform validated-message contract and retains
 `allow_nan=False` as a final encoder safeguard.
 
+One connection-owned outbound writer performs validation, serialization,
+logging, and WebSocket writes in FIFO queue order. The bounded queue rejects
+overflow explicitly instead of silently dropping protocol commands. Optional
+coalescing replaces only compatible adjacent pending state-setting commands,
+so intervening commands remain ordering barriers. `send()` waits for the
+writer's result and propagates serialization and transport errors to its caller.
+
 Per-message protocol logs are emitted only at DEBUG and contain routing metadata
 such as the event and context. Message payloads are redacted by default because
 settings and Property Inspector messages may contain secrets under plugin-defined

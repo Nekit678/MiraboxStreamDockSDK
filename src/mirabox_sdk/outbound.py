@@ -1,0 +1,327 @@
+"""Bounded single-writer dispatch for outbound Stream Dock commands."""
+
+from __future__ import annotations
+
+import logging
+from collections import deque
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from threading import Condition, Event, Thread, current_thread
+
+from .commands import (
+    SetGlobalSettingsCommand,
+    SetImageCommand,
+    SetSettingsCommand,
+    SetStateCommand,
+    SetTitleCommand,
+    StreamDockCommand,
+)
+
+logger = logging.getLogger(__name__)
+
+
+class OutboundCommandBusError(RuntimeError):
+    """Base error raised while submitting a command to the outbound bus."""
+
+
+class OutboundQueueFullError(OutboundCommandBusError):
+    """Raised when the bounded outbound queue cannot accept another command."""
+
+
+class OutboundCommandBusClosedError(OutboundCommandBusError):
+    """Raised when a command is submitted after outbound shutdown begins."""
+
+
+@dataclass(frozen=True, slots=True)
+class OutboundQueueMetrics:
+    """Thread-safe point-in-time counters for one outbound command queue."""
+
+    queue_limit: int
+    current_depth: int
+    peak_depth: int
+    submitted: int
+    enqueued: int
+    coalesced: int
+    serialized: int
+    sent: int
+    rejected_full: int
+    rejected_after_shutdown: int
+    discarded_after_shutdown: int
+    serialization_failures: int
+    transport_failures: int
+
+    @property
+    def rejected(self) -> int:
+        """Return the number of submissions rejected before queueing."""
+
+        return self.rejected_full + self.rejected_after_shutdown
+
+    @property
+    def failures(self) -> int:
+        """Return the number of serialization and transport failures."""
+
+        return self.serialization_failures + self.transport_failures
+
+
+@dataclass(slots=True)
+class _Submission:
+    completed: Event = field(default_factory=Event)
+    error: Exception | None = None
+
+
+@dataclass(slots=True)
+class _QueuedCommand:
+    command: StreamDockCommand
+    submissions: list[_Submission]
+
+
+class _OutboundCommandBus:
+    """Serialize and write commands in order from one dedicated thread."""
+
+    def __init__(
+        self,
+        *,
+        queue_limit: int,
+        coalesce_commands: bool,
+        serialize: Callable[[StreamDockCommand], str],
+        write: Callable[[str], object],
+    ) -> None:
+        self._queue_limit = queue_limit
+        self._coalesce_commands = coalesce_commands
+        self._serialize = serialize
+        self._write = write
+        self._condition = Condition()
+        self._queue: deque[_QueuedCommand] = deque()
+        self._in_flight: _QueuedCommand | None = None
+        self._thread: Thread | None = None
+        self._started = False
+        self._accepting = True
+        self._shutdown_requested = False
+
+        self._peak_depth = 0
+        self._submitted = 0
+        self._enqueued = 0
+        self._coalesced = 0
+        self._serialized = 0
+        self._sent = 0
+        self._rejected_full = 0
+        self._rejected_after_shutdown = 0
+        self._discarded_after_shutdown = 0
+        self._serialization_failures = 0
+        self._transport_failures = 0
+
+    def start(self) -> None:
+        """Start the writer lazily and leave an existing writer unchanged."""
+
+        with self._condition:
+            self._start_locked()
+
+    def submit(self, command: StreamDockCommand) -> None:
+        """Queue a command and wait until the writer has processed it.
+
+        Both serialization and transport errors are returned to the submitting
+        thread without allowing that thread to encode or write WebSocket
+        frames.
+        """
+
+        submission = _Submission()
+        with self._condition:
+            self._submitted += 1
+            if not self._accepting:
+                self._rejected_after_shutdown += 1
+                raise OutboundCommandBusClosedError(
+                    "Outbound command bus is no longer accepting commands"
+                )
+            if current_thread() is self._thread:
+                raise OutboundCommandBusError(
+                    "The outbound writer cannot submit a command to itself"
+                )
+
+            self._start_locked()
+            if self._coalesce(command, submission):
+                self._coalesced += 1
+                self._condition.notify()
+            else:
+                if len(self._queue) >= self._queue_limit:
+                    self._rejected_full += 1
+                    raise OutboundQueueFullError(
+                        f"Outbound command queue is full (limit={self._queue_limit})"
+                    )
+                self._queue.append(_QueuedCommand(command, [submission]))
+                self._enqueued += 1
+                self._peak_depth = max(self._peak_depth, len(self._queue))
+                self._condition.notify()
+
+        submission.completed.wait()
+        if submission.error is not None:
+            raise submission.error
+
+    def stop_accepting(self) -> None:
+        """Reject new commands while allowing already queued work to drain."""
+
+        with self._condition:
+            self._accepting = False
+
+    def shutdown(self, *, timeout: float | None) -> bool:
+        """Stop after draining queued commands, optionally bounded by ``timeout``."""
+
+        with self._condition:
+            self._accepting = False
+            self._shutdown_requested = True
+            thread = self._thread
+            if thread is None:
+                self._discard_queued_commands()
+                return True
+            self._condition.notify_all()
+
+        if thread is current_thread():
+            with self._condition:
+                self._discard_queued_commands()
+            return True
+
+        thread.join(timeout)
+        if not thread.is_alive():
+            return True
+
+        with self._condition:
+            error = OutboundCommandBusClosedError(
+                "Outbound command was not processed before shutdown timed out"
+            )
+            self._discard_queued_commands(error=error)
+            if self._in_flight is not None:
+                self._finish_submissions(self._in_flight, error=error)
+            self._condition.notify_all()
+        return False
+
+    def metrics(self) -> OutboundQueueMetrics:
+        """Return an atomic snapshot of queue counters and depth."""
+
+        with self._condition:
+            return OutboundQueueMetrics(
+                queue_limit=self._queue_limit,
+                current_depth=len(self._queue),
+                peak_depth=self._peak_depth,
+                submitted=self._submitted,
+                enqueued=self._enqueued,
+                coalesced=self._coalesced,
+                serialized=self._serialized,
+                sent=self._sent,
+                rejected_full=self._rejected_full,
+                rejected_after_shutdown=self._rejected_after_shutdown,
+                discarded_after_shutdown=self._discarded_after_shutdown,
+                serialization_failures=self._serialization_failures,
+                transport_failures=self._transport_failures,
+            )
+
+    def _start_locked(self) -> None:
+        if self._started:
+            return
+        if self._shutdown_requested:
+            raise OutboundCommandBusClosedError("Outbound command bus has already been stopped")
+        thread = Thread(
+            target=self._run,
+            name="mirabox-outbound-commands",
+            daemon=True,
+        )
+        self._thread = thread
+        self._started = True
+        try:
+            thread.start()
+        except Exception:
+            self._thread = None
+            self._started = False
+            raise
+
+    def _run(self) -> None:
+        while True:
+            with self._condition:
+                while not self._queue and not self._shutdown_requested:
+                    self._condition.wait()
+                if not self._queue:
+                    return
+                queued = self._queue.popleft()
+                self._in_flight = queued
+
+            try:
+                raw_message = self._serialize(queued.command)
+            except Exception as exc:
+                with self._condition:
+                    self._serialization_failures += 1
+                    self._finish_submissions(queued, error=exc)
+                    self._in_flight = None
+                logger.exception(
+                    "Failed to serialize outbound Stream Dock command %s",
+                    type(queued.command).__name__,
+                )
+                continue
+
+            with self._condition:
+                self._serialized += 1
+
+            try:
+                self._write(raw_message)
+            except Exception as exc:
+                with self._condition:
+                    self._transport_failures += 1
+                    self._finish_submissions(queued, error=exc)
+                logger.exception(
+                    "Failed to send outbound Stream Dock command %s",
+                    type(queued.command).__name__,
+                )
+            else:
+                with self._condition:
+                    self._sent += 1
+                    self._finish_submissions(queued)
+            finally:
+                with self._condition:
+                    self._in_flight = None
+
+    def _coalesce(self, command: StreamDockCommand, submission: _Submission) -> bool:
+        if not self._coalesce_commands or not self._queue:
+            return False
+
+        queued = self._queue[-1]
+        key = self._coalescing_key(command)
+        if key is None or key != self._coalescing_key(queued.command):
+            return False
+
+        queued.command = command
+        queued.submissions.append(submission)
+        return True
+
+    @staticmethod
+    def _coalescing_key(command: StreamDockCommand) -> tuple[object, ...] | None:
+        if type(command) is SetStateCommand:
+            return (SetStateCommand, command.context)
+        if type(command) is SetTitleCommand:
+            return (SetTitleCommand, command.context, command.target, command.state)
+        if type(command) is SetImageCommand:
+            return (SetImageCommand, command.context, command.target, command.state)
+        if type(command) is SetSettingsCommand:
+            return (SetSettingsCommand, command.context)
+        if type(command) is SetGlobalSettingsCommand:
+            return (SetGlobalSettingsCommand, command.context)
+        return None
+
+    @staticmethod
+    def _finish_submissions(
+        queued: _QueuedCommand,
+        *,
+        error: Exception | None = None,
+    ) -> None:
+        for submission in queued.submissions:
+            if submission.completed.is_set():
+                continue
+            submission.error = error
+            submission.completed.set()
+
+    def _discard_queued_commands(
+        self,
+        *,
+        error: Exception | None = None,
+    ) -> None:
+        if error is None:
+            error = OutboundCommandBusClosedError("Outbound command was discarded during shutdown")
+        self._discarded_after_shutdown += len(self._queue)
+        while self._queue:
+            self._finish_submissions(self._queue.popleft(), error=error)

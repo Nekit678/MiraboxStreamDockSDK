@@ -17,6 +17,9 @@ change public APIs between minor versions.
 - Add a bounded asynchronous inbound event queue with configurable overflow,
   metrics, graceful draining, per-context ordering, and optional dial-rotation
   coalescing.
+- Add a bounded outbound command bus with one serialization and WebSocket
+  writer thread, FIFO ordering, explicit overflow and shutdown errors, metrics,
+  graceful draining, and optional state-command coalescing.
 
 ### Changed
 
@@ -27,6 +30,8 @@ change public APIs between minor versions.
 - Drive known-event parsing, routing scope, callbacks, and special runtime
   handling from one validated, read-only `EVENT_REGISTRY`.
 - Move plugin callbacks out of the `websocket-client` reader thread.
+- Route every outbound command through the connection-owned writer while
+  preserving synchronous serialization and transport error reporting.
 
 ### Fixed
 

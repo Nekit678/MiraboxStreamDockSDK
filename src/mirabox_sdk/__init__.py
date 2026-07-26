@@ -97,6 +97,12 @@ from .events import (
 from .inbound import InboundOverflowPolicy, InboundQueueMetrics
 from .json_types import JsonObject, JsonValue, OwnedJsonPayload, ValidatedJsonObject
 from .logging_config import configure_logging
+from .outbound import (
+    OutboundCommandBusClosedError,
+    OutboundCommandBusError,
+    OutboundQueueFullError,
+    OutboundQueueMetrics,
+)
 from .parser import EVENT_REGISTRY, parse_stream_dock_event
 from .plugin import StreamDockPlugin
 from .protocols import (
@@ -170,6 +176,10 @@ __all__ = [
     "LogMessageCommand",
     "MalformedEventError",
     "OpenUrlCommand",
+    "OutboundCommandBusClosedError",
+    "OutboundCommandBusError",
+    "OutboundQueueFullError",
+    "OutboundQueueMetrics",
     "OwnedJsonPayload",
     "PropertyInspectorDidAppearEvent",
     "PropertyInspectorDidDisappearEvent",

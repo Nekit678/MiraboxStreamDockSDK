@@ -14,7 +14,7 @@ class StreamDockSender(Protocol):
 
     @abstractmethod
     def send(self, command: StreamDockCommand) -> None:
-        """Serialize and send one command to Stream Dock.
+        """Submit one command to the connection's outbound writer.
 
         Args:
             command: Typed command to transmit.

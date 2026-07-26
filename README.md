@@ -64,6 +64,7 @@ behavior is verified.
 - [API overview](#api-overview)
 - [Errors and unknown events](#errors-and-unknown-events)
 - [Inbound event queue](#inbound-event-queue)
+- [Outbound command bus](#outbound-command-bus)
 - [Logging](#logging)
 - [Project structure](#project-structure)
 - [Development](#development)
@@ -396,7 +397,7 @@ behavior implemented by this SDK.
 | Area | Public API |
 |---|---|
 | Runtime | `Action`, `ActionRegistry`, `StreamDockPlugin`, `LifecycleService` |
-| Connection | `WebSocketStreamDockConnection`, `InboundOverflowPolicy`, `InboundQueueMetrics`, `StreamDockConnection`, `StreamDockSender`, `StreamDockListener` |
+| Connection | `WebSocketStreamDockConnection`, inbound/outbound queue metrics and errors, `StreamDockConnection`, `StreamDockSender`, `StreamDockListener` |
 | Launch and registration | `PluginLaunchArguments`, registration dataclasses, `parse_plugin_cli_arguments`, `run_plugin_cli` |
 | Input events | Typed models plus the read-only `EVENT_REGISTRY` describing parser, scope, callback, and stateful runtime handler |
 | Output commands | Registration, settings, title, image, state, feedback, URL, log, and Property Inspector command models; `ValidatedWireMessage` |
@@ -419,6 +420,8 @@ also exported there.
 | `UnsupportedEventError` | An unknown event was parsed with `allow_unknown=False`. |
 | `JsonCodecDecodeError` | Plugin-owned settings or messages could not be decoded. |
 | `JsonCodecEncodeError` | A codec produced a value that cannot be sent as JSON. |
+| `OutboundQueueFullError` | The bounded outbound command queue is full. |
+| `OutboundCommandBusClosedError` | A command was submitted after outbound shutdown began. |
 
 By default, `parse_stream_dock_event()` preserves an unknown but structurally
 valid envelope as `UnknownStreamDockEvent`. This lets the SDK tolerate protocol
@@ -471,6 +474,46 @@ Read `connection.inbound_queue_metrics` for an atomic
 enqueued, coalesced, dispatched, dropped, and callback-failure counts. The
 default `inbound_shutdown_timeout=None` waits for a complete drain. A numeric
 timeout bounds the wait and discards events still queued when it expires.
+
+## Outbound command bus
+
+Every `WebSocketStreamDockConnection` owns one dedicated outbound writer.
+Calling `send()` puts the typed command into a bounded FIFO queue; only that
+writer validates and serializes the command, emits its protocol log, and calls
+the WebSocket transport. Concurrent plugin threads therefore cannot interleave
+frames. `send()` waits for its command's result, so serialization and transport
+errors still reach the caller and state-update helpers retain their rollback
+behavior.
+
+The outbound queue holds 1,024 waiting commands by default. It never silently
+drops a command when full: `send()` raises `OutboundQueueFullError`. Configure
+the queue and graceful-drain timeout on the connection:
+
+```python
+from mirabox_sdk import WebSocketStreamDockConnection
+
+connection = WebSocketStreamDockConnection(
+    arguments.port,
+    outbound_queue_limit=512,
+    coalesce_outbound_commands=True,
+    outbound_shutdown_timeout=5.0,
+)
+```
+
+Coalescing is opt-in. Compatible adjacent pending `setState`, `setTitle`,
+`setImage`, `setSettings`, or `setGlobalSettings` commands for the same
+semantic target are replaced by their newest value. Commands of another type or
+target are ordering barriers. All callers whose commands were combined receive
+the final write result.
+
+Read `connection.outbound_queue_metrics` for an atomic `OutboundQueueMetrics`
+snapshot. It reports current and peak depth, submissions, enqueues, coalescing,
+successful serialization and writes, queue rejections, shutdown discards, and
+serialization or transport failures. Once shutdown starts, new submissions
+raise `OutboundCommandBusClosedError`; queued commands drain before the
+WebSocket closes unless `outbound_shutdown_timeout` expires. A timed-out write
+already in progress cannot be cancelled and may still complete while its caller
+receives a shutdown error.
 
 ## Logging
 
@@ -542,6 +585,7 @@ MiraboxStreamDockSDK/
 │   ├── commands.py                    # Typed outbound commands
 │   ├── events.py                      # Typed inbound event models
 │   ├── inbound.py                     # Bounded inbound event dispatcher
+│   ├── outbound.py                    # Bounded single-writer command bus
 │   ├── parser.py                      # Strict wire-message parser
 │   ├── plugin.py                      # Runtime and lifecycle dispatcher
 │   ├── connection.py                  # WebSocket transport
