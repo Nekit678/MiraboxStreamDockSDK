@@ -4,17 +4,26 @@ from __future__ import annotations
 
 import logging
 from concurrent.futures import InvalidStateError
-from dataclasses import dataclass
 from math import isfinite
 from threading import Condition, Thread, current_thread
 from time import monotonic
 
 from ..protocol.ports import StreamDockCommandEncoder
 from ..transport.frames import OutboundFrame, TransportReceipt
+from ..transport.ports import (
+    QueueAcceptanceControl as TransportQueueAcceptanceControl,
+)
 from ..transport.ports import RawOutboundSink
+from .metrics import CommandWriterMetrics
 from .models import CommandFuture, CommandSubmission
 from .outbound import OutboundCommandQueueClosedError
-from .ports import OutboundCommandSource
+from .ports import (
+    CommandWriterWorker,
+    OutboundCommandSource,
+)
+from .ports import (
+    QueueAcceptanceControl as MessagingQueueAcceptanceControl,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -37,21 +46,7 @@ class CommandWriterStoppedError(CommandWriterError):
     """Report a command whose transport completion outlived the writer."""
 
 
-@dataclass(frozen=True, slots=True)
-class CommandWriterMetrics:
-    """Immutable point-in-time counters for the outbound writer."""
-
-    commands_received: int
-    serialized: int
-    frames_enqueued: int
-    serialization_failures: int
-    raw_outbound_failures: int
-    completed: int
-    completion_failures: int
-    discarded_during_shutdown: int
-
-
-class CommandWriter:
+class CommandWriter(CommandWriterWorker):
     """Encode accepted commands in FIFO order and bridge transport receipts."""
 
     def __init__(
@@ -313,11 +308,13 @@ class CommandWriter:
 
     @staticmethod
     def _stop_accepting(port: object, port_name: str) -> None:
-        stop_accepting = getattr(port, "stop_accepting", None)
-        if not callable(stop_accepting):
+        if not isinstance(
+            port,
+            (MessagingQueueAcceptanceControl, TransportQueueAcceptanceControl),
+        ):
             return
         try:
-            stop_accepting()
+            port.stop_accepting()
         except Exception as exc:
             logger.error(
                 "%s shutdown failed with %s",

@@ -3,16 +3,25 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
 from math import isfinite
 from threading import Condition, Thread, current_thread
 from time import monotonic
 
 from ...events import UnknownStreamDockEvent
 from ..protocol.ports import StreamDockEventDecoder
+from ..transport.ports import (
+    QueueAcceptanceControl as TransportQueueAcceptanceControl,
+)
 from ..transport.ports import RawInboundSource
 from ..transport.queues import TransportQueueClosedError
-from .ports import InboundEventSink
+from .metrics import EventReaderMetrics
+from .ports import (
+    EventReaderWorker,
+    InboundEventSink,
+)
+from .ports import (
+    QueueAcceptanceControl as MessagingQueueAcceptanceControl,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -23,20 +32,7 @@ class EventReaderLifecycleError(RuntimeError):
     """Report an invalid EventReader lifecycle transition."""
 
 
-@dataclass(frozen=True, slots=True)
-class EventReaderMetrics:
-    """Immutable point-in-time counters for the inbound reader."""
-
-    frames_received: int
-    decoded: int
-    submitted: int
-    rejected: int
-    protocol_failures: int
-    unknown_events: int
-    sink_failures: int
-
-
-class EventReader:
+class EventReader(EventReaderWorker):
     """Decode raw frames in wire order on one dedicated worker thread."""
 
     def __init__(
@@ -231,11 +227,13 @@ class EventReader:
 
     @staticmethod
     def _stop_accepting(port: object, port_name: str) -> None:
-        stop_accepting = getattr(port, "stop_accepting", None)
-        if not callable(stop_accepting):
+        if not isinstance(
+            port,
+            (MessagingQueueAcceptanceControl, TransportQueueAcceptanceControl),
+        ):
             return
         try:
-            stop_accepting()
+            port.stop_accepting()
         except Exception as exc:
             logger.error(
                 "%s shutdown failed with %s",

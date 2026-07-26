@@ -4,13 +4,13 @@ from __future__ import annotations
 
 from collections import deque
 from collections.abc import Callable
-from dataclasses import dataclass
 from math import isfinite
 from threading import Condition
 from time import monotonic
 from typing import Generic, TypeVar
 
 from .frames import OutboundFrame, TextFrame
+from .metrics import TransportQueueMetrics
 from .ports import (
     RawInboundSink,
     RawInboundSource,
@@ -18,6 +18,7 @@ from .ports import (
     RawOutboundSource,
     SessionEventSink,
     SessionEventSource,
+    TransportQueueControl,
 )
 from .session import SessionEvent
 
@@ -34,28 +35,6 @@ class TransportQueueClosedError(TransportQueueError):
 
 class TransportQueueFullError(TransportQueueError):
     """Report that bounded backpressure expired before capacity became free."""
-
-
-@dataclass(frozen=True, slots=True)
-class TransportQueueMetrics:
-    """Immutable point-in-time metrics for one transport queue."""
-
-    queue_limit: int
-    current_depth: int
-    peak_depth: int
-    submitted: int
-    enqueued: int
-    dequeued: int
-    backpressured: int
-    rejected_full: int
-    rejected_after_shutdown: int
-    discarded_during_shutdown: int
-
-    @property
-    def rejected(self) -> int:
-        """Return the number of items refused before queueing."""
-
-        return self.rejected_full + self.rejected_after_shutdown
 
 
 class _BoundedTransportQueue(Generic[ItemT]):
@@ -217,7 +196,7 @@ class _BoundedTransportQueue(Generic[ItemT]):
             self._reject(item, error)
 
 
-class RawInboundQueue(RawInboundSource, RawInboundSink):
+class RawInboundQueue(RawInboundSource, RawInboundSink, TransportQueueControl):
     """Bounded lossless queue of WebSocket text frames."""
 
     __slots__ = ("_queue",)
@@ -260,7 +239,7 @@ class RawInboundQueue(RawInboundSource, RawInboundSink):
         return self._queue.metrics()
 
 
-class RawOutboundQueue(RawOutboundSource, RawOutboundSink):
+class RawOutboundQueue(RawOutboundSource, RawOutboundSink, TransportQueueControl):
     """Bounded queue of serialized frames with per-frame receipts."""
 
     __slots__ = ("_queue",)
@@ -312,7 +291,7 @@ class RawOutboundQueue(RawOutboundSource, RawOutboundSink):
         frame.receipt._finish(error=error)
 
 
-class SessionEventQueue(SessionEventSource, SessionEventSink):
+class SessionEventQueue(SessionEventSource, SessionEventSink, TransportQueueControl):
     """Bounded lossless queue of typed transport lifecycle events."""
 
     __slots__ = ("_queue",)

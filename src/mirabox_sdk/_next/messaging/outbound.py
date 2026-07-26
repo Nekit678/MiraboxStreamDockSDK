@@ -16,8 +16,9 @@ from ...commands import (
     SetTitleCommand,
     StreamDockCommand,
 )
+from .metrics import OutboundCommandQueueMetrics
 from .models import CommandFuture, CommandSubmission
-from .ports import OutboundCommandSink, OutboundCommandSource
+from .ports import OutboundCommandQueueControl, OutboundCommandSink, OutboundCommandSource
 
 
 class OutboundCommandQueueError(RuntimeError):
@@ -30,28 +31,6 @@ class OutboundQueueFullError(OutboundCommandQueueError):
 
 class OutboundCommandQueueClosedError(OutboundCommandQueueError):
     """Report submission after typed outbound shutdown began."""
-
-
-@dataclass(frozen=True, slots=True)
-class OutboundCommandQueueMetrics:
-    """Immutable point-in-time metrics for the typed outbound queue."""
-
-    queue_limit: int
-    current_depth: int
-    peak_depth: int
-    submitted: int
-    enqueued: int
-    coalesced: int
-    dequeued: int
-    rejected_full: int
-    rejected_after_shutdown: int
-    discarded_during_shutdown: int
-
-    @property
-    def rejected(self) -> int:
-        """Return the number of commands refused before acceptance."""
-
-        return self.rejected_full + self.rejected_after_shutdown
 
 
 @dataclass(slots=True)
@@ -75,7 +54,11 @@ class _CoalescedCommandFuture(CommandFuture):
             completion._finish(error=error)
 
 
-class OutboundCommandQueue(OutboundCommandSource, OutboundCommandSink):
+class OutboundCommandQueue(
+    OutboundCommandSource,
+    OutboundCommandSink,
+    OutboundCommandQueueControl,
+):
     """Accept commands without I/O and expose one FIFO writer source."""
 
     def __init__(self, queue_limit: int, *, coalesce_commands: bool = False) -> None:

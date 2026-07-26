@@ -7,25 +7,44 @@ import unittest
 from concurrent.futures import InvalidStateError
 from dataclasses import FrozenInstanceError
 from importlib.util import resolve_name
+from inspect import signature
 from pathlib import Path
 
 import mirabox_sdk
 from mirabox_sdk import RegisterPluginCommand, StreamDockCommand, StreamDockEvent
 from mirabox_sdk._next.boundary.config import BoundaryQueueConfig
 from mirabox_sdk._next.boundary.ports import StreamDockBoundary
+from mirabox_sdk._next.messaging.inbound import InboundEventQueue
 from mirabox_sdk._next.messaging.models import CommandFuture, CommandSubmission
+from mirabox_sdk._next.messaging.outbound import OutboundCommandQueue
 from mirabox_sdk._next.messaging.ports import (
+    CommandWriterWorker,
+    EventReaderWorker,
+    InboundEventQueueControl,
     InboundEventSink,
     InboundEventSource,
+    OutboundCommandQueueControl,
     OutboundCommandSink,
     OutboundCommandSource,
 )
+from mirabox_sdk._next.messaging.ports import (
+    QueueAcceptanceControl as MessagingQueueAcceptanceControl,
+)
+from mirabox_sdk._next.messaging.reader import EventReader
+from mirabox_sdk._next.messaging.writer import CommandWriter
+from mirabox_sdk._next.protocol.adapters.legacy import LegacyEventParserAdapter
+from mirabox_sdk._next.protocol.decoder import JsonStreamDockEventDecoder
+from mirabox_sdk._next.protocol.encoder import JsonStreamDockCommandEncoder
 from mirabox_sdk._next.protocol.ports import (
     DecodedEventParser,
     StreamDockCommandEncoder,
     StreamDockEventDecoder,
 )
 from mirabox_sdk._next.transport.frames import OutboundFrame, TransportReceipt
+from mirabox_sdk._next.transport.metrics import WebSocketConnectorMetrics
+from mirabox_sdk._next.transport.ports import (
+    QueueAcceptanceControl as TransportQueueAcceptanceControl,
+)
 from mirabox_sdk._next.transport.ports import (
     RawInboundSink,
     RawInboundSource,
@@ -33,7 +52,13 @@ from mirabox_sdk._next.transport.ports import (
     RawOutboundSource,
     SessionEventSink,
     SessionEventSource,
+    TransportQueueControl,
     WebSocketConnector,
+)
+from mirabox_sdk._next.transport.queues import (
+    RawInboundQueue,
+    RawOutboundQueue,
+    SessionEventQueue,
 )
 from mirabox_sdk._next.transport.session import (
     Connected,
@@ -169,13 +194,85 @@ class BoundaryContractTests(unittest.TestCase):
                 self.assertIsInstance(value, contract)
 
         self.assertIs(inbound_source.receive(), event)
-        self.assertTrue(inbound_sink.submit(event))
+        self.assertTrue(inbound_sink.submit(event, timeout=0))
         self.assertIs(command_sink.send_async(command).result(timeout=0), None)
         command_sink.send(command)
         connector.run_forever()
         connector.close()
+        self.assertIsInstance(connector.metrics(), WebSocketConnectorMetrics)
         boundary.run_forever()
         boundary.close()
+
+    def test_explicit_implementations_match_port_signatures(self) -> None:
+        implementations = (
+            (InboundEventSource, InboundEventQueue, ("receive",)),
+            (InboundEventSink, InboundEventQueue, ("submit",)),
+            (OutboundCommandSource, OutboundCommandQueue, ("receive",)),
+            (OutboundCommandSink, OutboundCommandQueue, ("send", "send_async")),
+            (
+                InboundEventQueueControl,
+                InboundEventQueue,
+                ("stop_accepting", "drain", "shutdown", "metrics"),
+            ),
+            (
+                OutboundCommandQueueControl,
+                OutboundCommandQueue,
+                ("stop_accepting", "drain", "shutdown", "metrics"),
+            ),
+            (EventReaderWorker, EventReader, ("start", "drain", "stop", "metrics")),
+            (CommandWriterWorker, CommandWriter, ("start", "drain", "stop", "metrics")),
+            (DecodedEventParser, LegacyEventParserAdapter, ("parse",)),
+            (StreamDockEventDecoder, JsonStreamDockEventDecoder, ("decode",)),
+            (StreamDockCommandEncoder, JsonStreamDockCommandEncoder, ("encode",)),
+            (RawInboundSource, RawInboundQueue, ("receive",)),
+            (RawInboundSink, RawInboundQueue, ("submit",)),
+            (RawOutboundSource, RawOutboundQueue, ("receive",)),
+            (RawOutboundSink, RawOutboundQueue, ("submit",)),
+            (SessionEventSource, SessionEventQueue, ("receive",)),
+            (SessionEventSink, SessionEventQueue, ("submit",)),
+            (
+                TransportQueueControl,
+                RawInboundQueue,
+                ("stop_accepting", "drain", "shutdown", "metrics"),
+            ),
+            (
+                TransportQueueControl,
+                RawOutboundQueue,
+                ("stop_accepting", "drain", "shutdown", "metrics"),
+            ),
+            (
+                TransportQueueControl,
+                SessionEventQueue,
+                ("stop_accepting", "drain", "shutdown", "metrics"),
+            ),
+        )
+
+        for port, implementation, methods in implementations:
+            for method_name in methods:
+                with self.subTest(
+                    port=port.__name__,
+                    implementation=implementation.__name__,
+                    method=method_name,
+                ):
+                    self.assertEqual(
+                        signature(getattr(implementation, method_name)),
+                        signature(getattr(port, method_name)),
+                    )
+
+    def test_concrete_components_explicitly_inherit_their_control_ports(self) -> None:
+        implementations = (
+            (InboundEventQueue, InboundEventQueueControl),
+            (OutboundCommandQueue, OutboundCommandQueueControl),
+            (RawInboundQueue, TransportQueueControl),
+            (RawOutboundQueue, TransportQueueControl),
+            (SessionEventQueue, TransportQueueControl),
+            (EventReader, EventReaderWorker),
+            (CommandWriter, CommandWriterWorker),
+        )
+
+        for implementation, port in implementations:
+            with self.subTest(implementation=implementation.__name__, port=port.__name__):
+                self.assertIn(port, implementation.__bases__)
 
     def test_queue_configuration_uses_positive_integer_limits(self) -> None:
         field_names = (
@@ -212,6 +309,7 @@ class PackageIsolationTests(unittest.TestCase):
             "mirabox_sdk._next.boundary.ports",
             "mirabox_sdk._next.messaging",
             "mirabox_sdk._next.messaging.inbound",
+            "mirabox_sdk._next.messaging.metrics",
             "mirabox_sdk._next.messaging.models",
             "mirabox_sdk._next.messaging.outbound",
             "mirabox_sdk._next.messaging.ports",
@@ -225,9 +323,11 @@ class PackageIsolationTests(unittest.TestCase):
             "mirabox_sdk._next.protocol.ports",
             "mirabox_sdk._next.transport",
             "mirabox_sdk._next.transport.frames",
+            "mirabox_sdk._next.transport.metrics",
             "mirabox_sdk._next.transport.ports",
             "mirabox_sdk._next.transport.queues",
             "mirabox_sdk._next.transport.session",
+            "mirabox_sdk._next.transport.websocket",
         )
         script = (
             "import importlib\n"
@@ -305,6 +405,11 @@ class PackageIsolationTests(unittest.TestCase):
             InboundEventSink,
             OutboundCommandSource,
             OutboundCommandSink,
+            MessagingQueueAcceptanceControl,
+            InboundEventQueueControl,
+            OutboundCommandQueueControl,
+            EventReaderWorker,
+            CommandWriterWorker,
             DecodedEventParser,
             StreamDockEventDecoder,
             StreamDockCommandEncoder,
@@ -314,6 +419,8 @@ class PackageIsolationTests(unittest.TestCase):
             RawOutboundSink,
             SessionEventSource,
             SessionEventSink,
+            TransportQueueAcceptanceControl,
+            TransportQueueControl,
             WebSocketConnector,
         )
 
@@ -326,15 +433,24 @@ class PackageIsolationTests(unittest.TestCase):
             "BoundaryQueueConfig",
             "CommandSubmission",
             "CommandWriter",
+            "CommandWriterMetrics",
+            "CommandWriterWorker",
             "Connected",
             "EventReader",
+            "EventReaderMetrics",
+            "EventReaderWorker",
+            "InboundEventQueue",
             "InboundEventSource",
+            "InboundEventQueueControl",
+            "InboundEventQueueMetrics",
             "JsonStreamDockCommandEncoder",
             "JsonStreamDockEventDecoder",
-            "InboundEventQueue",
             "OutboundCommandSink",
             "OutboundCommandQueue",
+            "OutboundCommandQueueControl",
+            "OutboundCommandQueueMetrics",
             "OutboundFrame",
+            "QueueAcceptanceControl",
             "RawInboundQueue",
             "RawOutboundQueue",
             "SessionEventQueue",
@@ -343,6 +459,10 @@ class PackageIsolationTests(unittest.TestCase):
             "StreamDockCommandEncoder",
             "StreamDockEventDecoder",
             "TransportReceipt",
+            "TransportQueueControl",
+            "TransportQueueMetrics",
+            "WebSocketConnector",
+            "WebSocketConnectorMetrics",
         }
 
         self.assertTrue(private_contracts.isdisjoint(mirabox_sdk.__all__))
@@ -357,7 +477,7 @@ class _Source:
 
 
 class _Sink:
-    def submit(self, value: object) -> bool:
+    def submit(self, value: object, *, timeout: float | None = None) -> bool:
         return True
 
 
@@ -377,6 +497,24 @@ class _Connector(WebSocketConnector):
 
     def close(self) -> None:
         pass
+
+    def metrics(self) -> WebSocketConnectorMetrics:
+        return WebSocketConnectorMetrics(
+            connect_count=0,
+            disconnect_count=0,
+            last_close_code=None,
+            transport_error_count=0,
+            session_events_rejected=0,
+            inbound_frames_received=0,
+            inbound_frames_forwarded=0,
+            inbound_frames_rejected=0,
+            binary_frames_rejected=0,
+            outbound_frames_received=0,
+            outbound_frames_sent=0,
+            outbound_send_failures=0,
+            outbound_drain_timeouts=0,
+            outbound_discarded_during_shutdown=0,
+        )
 
 
 class _Boundary(StreamDockBoundary):

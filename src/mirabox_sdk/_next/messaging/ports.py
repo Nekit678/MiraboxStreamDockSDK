@@ -7,6 +7,12 @@ from typing import Protocol, runtime_checkable
 
 from ...commands import StreamDockCommand
 from ...events import StreamDockEvent
+from .metrics import (
+    CommandWriterMetrics,
+    EventReaderMetrics,
+    InboundEventQueueMetrics,
+    OutboundCommandQueueMetrics,
+)
 from .models import CommandFuture, CommandSubmission
 
 
@@ -15,7 +21,7 @@ class InboundEventSource(Protocol):
     """Source of decoded Stream Dock events for the next SDK layer."""
 
     @abstractmethod
-    def receive(self) -> StreamDockEvent:
+    def receive(self, *, timeout: float | None = None) -> StreamDockEvent:
         """Return the next accepted typed event."""
 
         ...
@@ -26,7 +32,7 @@ class InboundEventSink(Protocol):
     """Sink used by the protocol reader to submit decoded events."""
 
     @abstractmethod
-    def submit(self, event: StreamDockEvent) -> bool:
+    def submit(self, event: StreamDockEvent, *, timeout: float | None = None) -> bool:
         """Submit one event according to the typed queue policy."""
 
         ...
@@ -56,5 +62,120 @@ class OutboundCommandSink(Protocol):
     @abstractmethod
     def send_async(self, command: StreamDockCommand) -> CommandFuture:
         """Submit a command and return its completion handle."""
+
+        ...
+
+
+@runtime_checkable
+class QueueAcceptanceControl(Protocol):
+    """Optional queue capability used to unblock work during shutdown."""
+
+    @abstractmethod
+    def stop_accepting(self) -> None:
+        """Reject new items while allowing accepted items to drain."""
+
+        ...
+
+
+@runtime_checkable
+class InboundEventQueueControl(QueueAcceptanceControl, Protocol):
+    """Lifecycle and observability contract for a typed inbound queue."""
+
+    @abstractmethod
+    def drain(self, *, timeout: float | None = None) -> bool:
+        """Wait until all accepted events have been received."""
+
+        ...
+
+    @abstractmethod
+    def shutdown(self, *, timeout: float | None = None) -> bool:
+        """Stop submissions and drain within the optional timeout."""
+
+        ...
+
+    @abstractmethod
+    def metrics(self) -> InboundEventQueueMetrics:
+        """Return an immutable point-in-time queue metrics snapshot."""
+
+        ...
+
+
+@runtime_checkable
+class OutboundCommandQueueControl(QueueAcceptanceControl, Protocol):
+    """Lifecycle and observability contract for a typed outbound queue."""
+
+    @abstractmethod
+    def drain(self, *, timeout: float | None = None) -> bool:
+        """Wait until all accepted commands have been received by a writer."""
+
+        ...
+
+    @abstractmethod
+    def shutdown(self, *, timeout: float | None = None) -> bool:
+        """Stop submissions and drain within the optional timeout."""
+
+        ...
+
+    @abstractmethod
+    def metrics(self) -> OutboundCommandQueueMetrics:
+        """Return an immutable point-in-time queue metrics snapshot."""
+
+        ...
+
+
+@runtime_checkable
+class EventReaderWorker(Protocol):
+    """Lifecycle and observability contract for an inbound protocol worker."""
+
+    @abstractmethod
+    def start(self) -> None:
+        """Start the worker."""
+
+        ...
+
+    @abstractmethod
+    def drain(self, *, timeout: float | None = None) -> bool:
+        """Wait until the worker has no available or in-flight frame."""
+
+        ...
+
+    @abstractmethod
+    def stop(self, *, timeout: float | None = None) -> bool:
+        """Request graceful worker shutdown."""
+
+        ...
+
+    @abstractmethod
+    def metrics(self) -> EventReaderMetrics:
+        """Return an immutable point-in-time worker metrics snapshot."""
+
+        ...
+
+
+@runtime_checkable
+class CommandWriterWorker(Protocol):
+    """Lifecycle and observability contract for an outbound protocol worker."""
+
+    @abstractmethod
+    def start(self) -> None:
+        """Start the worker."""
+
+        ...
+
+    @abstractmethod
+    def drain(self, *, timeout: float | None = None) -> bool:
+        """Wait until the worker has no pending or in-flight command."""
+
+        ...
+
+    @abstractmethod
+    def stop(self, *, timeout: float | None = None) -> bool:
+        """Request graceful worker shutdown."""
+
+        ...
+
+    @abstractmethod
+    def metrics(self) -> CommandWriterMetrics:
+        """Return an immutable point-in-time worker metrics snapshot."""
 
         ...

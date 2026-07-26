@@ -16,7 +16,8 @@ from ...events import (
     WillAppearEvent,
     WillDisappearEvent,
 )
-from .ports import InboundEventSink, InboundEventSource
+from .metrics import InboundEventQueueMetrics
+from .ports import InboundEventQueueControl, InboundEventSink, InboundEventSource
 
 
 class InboundOverflowPolicy(StrEnum):
@@ -26,43 +27,12 @@ class InboundOverflowPolicy(StrEnum):
     DROP_OLDEST = "drop_oldest"
 
 
-@dataclass(frozen=True, slots=True)
-class InboundEventQueueMetrics:
-    """Immutable point-in-time metrics for the typed inbound queue."""
-
-    queue_limit: int
-    current_depth: int
-    peak_depth: int
-    submitted: int
-    enqueued: int
-    coalesced: int
-    dequeued: int
-    backpressured: int
-    dropped_newest: int
-    dropped_oldest: int
-    rejected_full: int
-    rejected_after_shutdown: int
-    discarded_during_shutdown: int
-
-    @property
-    def dropped(self) -> int:
-        """Return every event explicitly not delivered by this queue."""
-
-        return (
-            self.dropped_newest
-            + self.dropped_oldest
-            + self.rejected_full
-            + self.rejected_after_shutdown
-            + self.discarded_during_shutdown
-        )
-
-
 @dataclass(slots=True)
 class _QueuedEvent:
     event: StreamDockEvent
 
 
-class InboundEventQueue(InboundEventSource, InboundEventSink):
+class InboundEventQueue(InboundEventSource, InboundEventSink, InboundEventQueueControl):
     """Preserve lossless events and coalesce compatible dial rotations."""
 
     def __init__(
