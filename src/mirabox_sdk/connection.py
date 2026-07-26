@@ -93,7 +93,8 @@ class WebSocketStreamDockConnection(StreamDockConnection):
         port: Loopback WebSocket port supplied in the plugin launch arguments.
         inbound_queue_limit: Maximum number of parsed events waiting for
             callback dispatch.
-        overflow_policy: Non-blocking policy applied when the queue is full.
+        overflow_policy: Policy applied to discardable events when the queue is
+            full. Lossless events apply reader backpressure instead.
         coalesce_dial_rotations: Combine compatible queued rotations for the
             same action context by summing their ticks.
         inbound_shutdown_timeout: Maximum seconds to wait for queued callbacks

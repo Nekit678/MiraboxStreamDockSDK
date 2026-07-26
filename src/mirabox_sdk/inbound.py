@@ -15,10 +15,17 @@ logger = logging.getLogger(__name__)
 
 
 class InboundOverflowPolicy(StrEnum):
-    """Policy applied when the inbound event queue reaches its limit."""
+    """Policy applied to discardable events when the inbound queue is full."""
 
     DROP_NEWEST = "drop_newest"
     DROP_OLDEST = "drop_oldest"
+
+
+class _InboundEventClass(StrEnum):
+    """Delivery guarantee used by the bounded inbound queue."""
+
+    LOSSLESS = "lossless"
+    COALESCABLE = "coalescable"
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +44,7 @@ class InboundQueueMetrics:
     dropped_after_shutdown: int
     dropped_without_listener: int
     callback_failures: int
+    backpressured: int = 0
 
     @property
     def dropped(self) -> int:
@@ -82,6 +90,7 @@ class _InboundEventDispatcher:
         self._received = 0
         self._enqueued = 0
         self._coalesced = 0
+        self._backpressured = 0
         self._dispatched = 0
         self._dropped_newest = 0
         self._dropped_oldest = 0
@@ -107,7 +116,7 @@ class _InboundEventDispatcher:
             thread.start()
 
     def submit(self, event: StreamDockEvent) -> bool:
-        """Enqueue one event without blocking the WebSocket reader."""
+        """Enqueue one event, blocking only to preserve lossless overflow."""
 
         with self._condition:
             self._received += 1
@@ -119,15 +128,33 @@ class _InboundEventDispatcher:
                 self._coalesced += 1
                 return True
 
-            if len(self._queue) == self._queue_limit:
+            event_class = self._classify_event(event)
+            backpressured = False
+            while len(self._queue) == self._queue_limit:
+                if event_class is _InboundEventClass.LOSSLESS:
+                    if self._drop_queued_discardable_event():
+                        break
+                    if not backpressured:
+                        self._backpressured += 1
+                        backpressured = True
+                    self._condition.wait()
+                    if not self._accepting:
+                        self._dropped_after_shutdown += 1
+                        return False
+                    continue
+
                 if self._overflow_policy is InboundOverflowPolicy.DROP_NEWEST:
                     self._dropped_newest += 1
                     self._break_context_coalescing(event)
                     return False
 
-                dropped = self._queue.popleft()
-                self._forget_queued_event(dropped)
-                self._dropped_oldest += 1
+                if self._drop_queued_discardable_event():
+                    break
+
+                # A discardable event must not displace queued lossless state.
+                self._dropped_newest += 1
+                self._break_context_coalescing(event)
+                return False
 
             queued = _QueuedEvent(event)
             self._queue.append(queued)
@@ -148,6 +175,7 @@ class _InboundEventDispatcher:
 
         with self._condition:
             self._accepting = False
+            self._condition.notify_all()
 
     def is_dispatch_thread(self) -> bool:
         """Return whether the caller is this dispatcher's worker thread."""
@@ -192,6 +220,7 @@ class _InboundEventDispatcher:
                 received=self._received,
                 enqueued=self._enqueued,
                 coalesced=self._coalesced,
+                backpressured=self._backpressured,
                 dispatched=self._dispatched,
                 dropped_newest=self._dropped_newest,
                 dropped_oldest=self._dropped_oldest,
@@ -209,6 +238,7 @@ class _InboundEventDispatcher:
                     return
                 queued = self._queue.popleft()
                 self._forget_queued_event(queued)
+                self._condition.notify_all()
 
             try:
                 delivered = self._dispatch(queued.event)
@@ -254,6 +284,25 @@ class _InboundEventDispatcher:
         else:
             self._last_queued_by_context.pop(context, None)
 
+    def _drop_queued_discardable_event(self) -> bool:
+        indexes = range(len(self._queue))
+        if self._overflow_policy is InboundOverflowPolicy.DROP_NEWEST:
+            indexes = reversed(indexes)
+
+        for index in indexes:
+            queued = self._queue[index]
+            if self._classify_event(queued.event) is _InboundEventClass.LOSSLESS:
+                continue
+
+            del self._queue[index]
+            self._forget_queued_event(queued)
+            if self._overflow_policy is InboundOverflowPolicy.DROP_NEWEST:
+                self._dropped_newest += 1
+            else:
+                self._dropped_oldest += 1
+            return True
+        return False
+
     def _forget_queued_event(self, queued: _QueuedEvent) -> None:
         context = self._event_context(queued.event)
         if context is not None and self._last_queued_by_context.get(context) is queued:
@@ -267,3 +316,9 @@ class _InboundEventDispatcher:
     @staticmethod
     def _event_context(event: StreamDockEvent) -> str | None:
         return event.context if isinstance(event, ActionEvent) else None
+
+    @staticmethod
+    def _classify_event(event: StreamDockEvent) -> _InboundEventClass:
+        if isinstance(event, DialRotateEvent):
+            return _InboundEventClass.COALESCABLE
+        return _InboundEventClass.LOSSLESS

@@ -443,13 +443,15 @@ exists.
 
 `WebSocketStreamDockConnection` parses frames in the WebSocket reader and puts
 valid events into a bounded queue. A dedicated dispatcher invokes plugin
-callbacks, so a slow callback does not block the reader. One dispatcher
-preserves event order for every action context. On normal connection shutdown,
-the queue drains before `run_forever()` returns and before the runtime releases
-actions and services.
+callbacks and preserves event order for every action context. On normal
+connection shutdown, the queue drains before `run_forever()` returns and before
+the runtime releases actions and services.
 
-The queue defaults to 1,024 events and drops the incoming event when full.
-Configure the limit and overflow behavior when constructing the connection:
+The queue defaults to 1,024 events. Lifecycle, settings, input, broadcast,
+unknown, and every other event except `dialRotate` are lossless by default.
+`dialRotate` is explicitly coalescable and may be discarded on overflow.
+Configure the limit and overflow behavior for discardable events when
+constructing the connection:
 
 ```python
 from mirabox_sdk import InboundOverflowPolicy, WebSocketStreamDockConnection
@@ -463,18 +465,23 @@ connection = WebSocketStreamDockConnection(
 )
 ```
 
-`DROP_NEWEST` (the default) preserves events already waiting in the queue.
-`DROP_OLDEST` keeps the most recently received event instead. Both policies are
-non-blocking. Rotation coalescing is opt-in: compatible pending `dialRotate`
-events for the same context and pressed state are combined by summing `ticks`;
-an intervening event for that context, or any broadcast/unknown event, prevents
-coalescing.
+`DROP_NEWEST` (the default) discards the newest eligible `dialRotate`;
+`DROP_OLDEST` discards the oldest eligible rotation. Neither policy may evict a
+lossless event. If the queue contains only lossless events, another lossless
+event applies backpressure to the WebSocket reader until the dispatcher frees
+space; an incoming rotation is discarded instead. This keeps memory bounded
+without allowing overflow to corrupt runtime state.
+
+Rotation coalescing is opt-in: compatible pending `dialRotate` events for the
+same context and pressed state are combined by summing `ticks`; an intervening
+event for that context, or any broadcast/unknown event, prevents coalescing.
 
 Read `connection.inbound_queue_metrics` for an atomic
 `InboundQueueMetrics` snapshot. It reports current and peak depth, received,
-enqueued, coalesced, dispatched, dropped, and callback-failure counts. The
-default `inbound_shutdown_timeout=None` waits for a complete drain. A numeric
-timeout bounds the wait and discards events still queued when it expires.
+enqueued, coalesced, backpressured, dispatched, dropped, and callback-failure
+counts. The default `inbound_shutdown_timeout=None` waits for a complete drain.
+A numeric timeout bounds the wait and discards events still queued when it
+expires.
 
 ## Outbound command bus
 

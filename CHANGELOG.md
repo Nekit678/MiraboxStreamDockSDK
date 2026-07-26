@@ -41,6 +41,10 @@ change public APIs between minor versions.
 
 ### Fixed
 
+- Prevent inbound overflow from discarding lifecycle, settings, broadcast,
+  unknown, and other stateful events; only explicitly coalescable rotations are
+  eligible for dropping, while a full lossless queue applies bounded
+  backpressure.
 - Isolate action settings from both caller-owned values and outbound command
   payloads after a successful settings update.
 - Validate and isolate mutations of runtime global settings before committing

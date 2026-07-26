@@ -445,13 +445,15 @@ parser, `EventScope`, callback action-объекта и специальный r
 
 `WebSocketStreamDockConnection` разбирает frame в потоке WebSocket reader и
 помещает валидное событие в bounded queue. Callback-и плагина вызывает
-отдельный dispatcher, поэтому медленный callback не блокирует reader. Один
-dispatcher сохраняет порядок событий для каждого action context. При штатном
-завершении соединения очередь дренируется до возврата из `run_forever()` и до
-освобождения actions и services средой выполнения.
+отдельный dispatcher, который сохраняет порядок событий для каждого action
+context. При штатном завершении соединения очередь дренируется до возврата из
+`run_forever()` и до освобождения actions и services средой выполнения.
 
-По умолчанию очередь вмещает 1024 события и при переполнении отбрасывает новое.
-Лимит и overflow policy задаются при создании соединения:
+По умолчанию очередь вмещает 1024 события. Lifecycle-, settings-, input-,
+broadcast-, unknown- и все остальные события, кроме `dialRotate`, считаются
+lossless. `dialRotate` явно классифицирован как coalescable и может быть
+отброшен при переполнении. Лимит и overflow policy для discardable-событий
+задаются при создании соединения:
 
 ```python
 from mirabox_sdk import InboundOverflowPolicy, WebSocketStreamDockConnection
@@ -465,19 +467,25 @@ connection = WebSocketStreamDockConnection(
 )
 ```
 
-`DROP_NEWEST` (значение по умолчанию) сохраняет уже ожидающие в очереди события.
-`DROP_OLDEST` сохраняет самое свежее полученное событие. Обе политики не
-блокируют reader. Coalescing rotation-событий включается явно: совместимые
-ожидающие `dialRotate` одного context и состояния `pressed` объединяются
-суммированием `ticks`; другое событие того же context, а также broadcast или
-unknown event разрывает объединение.
+`DROP_NEWEST` (значение по умолчанию) отбрасывает самое новое допустимое к
+потере событие `dialRotate`, а `DROP_OLDEST` — самое старое. Ни одна политика не
+может вытеснить lossless-событие. Если очередь целиком состоит из lossless
+events, следующее lossless-событие создаёт backpressure для WebSocket reader до
+освобождения места dispatcher-ом; входящий rotation вместо этого отбрасывается.
+Так лимит памяти остаётся жёстким без рассинхронизации runtime state.
+
+Coalescing rotation-событий включается явно: совместимые ожидающие `dialRotate`
+одного context и состояния `pressed` объединяются суммированием `ticks`; другое
+событие того же context, а также broadcast или unknown event разрывает
+объединение.
 
 Свойство `connection.inbound_queue_metrics` возвращает атомарный snapshot
 `InboundQueueMetrics`: текущую и пиковую глубину, числа полученных, поставленных
-в очередь, объединённых, доставленных и отброшенных событий, а также ошибок
-callback-ов. По умолчанию `inbound_shutdown_timeout=None` ждёт полного
-дренирования. Числовой timeout ограничивает ожидание; оставшиеся в очереди
-события после его истечения отбрасываются.
+в очередь, объединённых, приостановленных backpressure, доставленных и
+отброшенных событий, а также ошибок callback-ов. По умолчанию
+`inbound_shutdown_timeout=None` ждёт полного дренирования. Числовой timeout
+ограничивает ожидание; оставшиеся в очереди события после его истечения
+отбрасываются.
 
 ## Исходящая шина команд
 
