@@ -37,7 +37,7 @@ class OutboundCommandSource(Protocol):
     """Source of accepted command submissions for the command writer."""
 
     @abstractmethod
-    def receive(self) -> CommandSubmission:
+    def receive(self, *, timeout: float | None = None) -> CommandSubmission:
         """Return the next accepted command submission in FIFO order."""
 
         ...

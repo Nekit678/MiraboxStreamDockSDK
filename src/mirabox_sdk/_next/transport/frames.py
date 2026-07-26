@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from concurrent.futures import Future
 from dataclasses import dataclass
 from typing import TypeAlias
@@ -43,6 +44,14 @@ class TransportReceipt:
             self._future.set_result(None)
         else:
             self._future.set_exception(error)
+
+    def _add_done_callback(
+        self,
+        callback: Callable[[Exception | None], None],
+    ) -> None:
+        """Notify an internal boundary component when transport finishes."""
+
+        self._future.add_done_callback(lambda future: callback(future.exception()))
 
 
 @dataclass(slots=True)

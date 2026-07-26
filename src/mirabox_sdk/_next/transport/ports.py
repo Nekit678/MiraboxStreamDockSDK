@@ -14,7 +14,7 @@ class RawInboundSource(Protocol):
     """Source of WebSocket text frames for the protocol reader."""
 
     @abstractmethod
-    def receive(self) -> TextFrame:
+    def receive(self, *, timeout: float | None = None) -> TextFrame:
         """Return the next accepted inbound text frame."""
 
         ...

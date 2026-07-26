@@ -215,6 +215,8 @@ class PackageIsolationTests(unittest.TestCase):
             "mirabox_sdk._next.messaging.models",
             "mirabox_sdk._next.messaging.outbound",
             "mirabox_sdk._next.messaging.ports",
+            "mirabox_sdk._next.messaging.reader",
+            "mirabox_sdk._next.messaging.writer",
             "mirabox_sdk._next.protocol",
             "mirabox_sdk._next.protocol.adapters",
             "mirabox_sdk._next.protocol.adapters.legacy",
@@ -323,7 +325,9 @@ class PackageIsolationTests(unittest.TestCase):
         private_contracts = {
             "BoundaryQueueConfig",
             "CommandSubmission",
+            "CommandWriter",
             "Connected",
+            "EventReader",
             "InboundEventSource",
             "JsonStreamDockCommandEncoder",
             "JsonStreamDockEventDecoder",
@@ -348,7 +352,7 @@ class _Source:
     def __init__(self, value: object) -> None:
         self._value = value
 
-    def receive(self) -> object:
+    def receive(self, *, timeout: float | None = None) -> object:
         return self._value
 
 
