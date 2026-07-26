@@ -128,11 +128,13 @@ from .resources import (
     copy_property_inspector_client,
     property_inspector_client_bytes,
 )
+from .stores import ActionStore, GlobalSettingsStore
 
 __all__ = [
     "__version__",
     "Action",
     "ActionRegistry",
+    "ActionStore",
     "ActionEvent",
     "ActionPayloadEvent",
     "ApplicationDidLaunchEvent",
@@ -155,6 +157,7 @@ __all__ = [
     "EventScope",
     "GetGlobalSettingsCommand",
     "GetSettingsCommand",
+    "GlobalSettingsStore",
     "FunctionalJsonCodec",
     "InvalidFieldError",
     "InvalidPluginLaunchArgumentsError",

@@ -88,7 +88,9 @@ class ValidatedJsonObject:
 
     Construction validates and clones the complete object once. The immutable
     backing snapshot can then create multiple isolated copy-on-write payloads
-    without another recursive validation or clone.
+    without another recursive validation or clone. The backing snapshot can be
+    handed between threads after construction; each mutable view created from
+    it must have only one thread accessing or mutating it at a time.
     """
 
     __slots__ = ("_container_has_only_scalars", "_value")
@@ -797,7 +799,9 @@ class OwnedJsonPayload(_CopyOnWriteJsonDict):
     Raw construction performs one validation-and-clone traversal. Constructing
     from :class:`ValidatedJsonObject` reuses its owned snapshot. Every exposed
     mutation is validated and isolated, while :meth:`isolated_copy` cheaply
-    creates an independent copy-on-write view for local SDK state.
+    creates an independent copy-on-write view for local SDK state. Like every
+    mutable copy-on-write view, an instance is not safe for simultaneous access
+    from multiple threads.
     """
 
     __slots__ = ("_current_snapshot",)

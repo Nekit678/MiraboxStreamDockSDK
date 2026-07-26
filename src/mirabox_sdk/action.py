@@ -55,6 +55,11 @@ class Action(Generic[SettingsT, DependenciesT]):
     manifest and register the subclass with :class:`ActionRegistry`. The
     runtime creates a separate instance for every visible Stream Dock context,
     so mutable state stored on ``self`` belongs to one key, dial, or display.
+    The connection invokes all action callbacks sequentially on its inbound
+    dispatcher. Action fields and their mutable JSON views are therefore
+    callback-thread state, not concurrently mutable application state. A
+    background service should use its injected :class:`StreamDockSender`
+    directly instead of mutating an action instance.
 
     ``SettingsT`` is the plugin-owned settings type. It defaults in practice to
     :class:`JsonObject`; subclasses can assign a custom :attr:`settings_codec`

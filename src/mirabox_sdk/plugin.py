@@ -3,37 +3,24 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from typing import Any, Generic, TypeVar
 
 from .action import Action
 from .action_registry import ActionRegistry
-from .codecs import JSON_OBJECT_CODEC, JsonCodec
-from .commands import (
-    GetGlobalSettingsCommand,
-    RegisterPluginCommand,
-    SetGlobalSettingsCommand,
-)
-from .errors import JsonCodecDecodeError
+from .codecs import JsonCodec
+from .commands import GetGlobalSettingsCommand, RegisterPluginCommand
 from .events import (
-    ActionEvent,
     DidReceiveGlobalSettingsEvent,
     DidReceiveSettingsEvent,
     EventDescriptor,
-    EventScope,
     StreamDockEvent,
     TitleParametersDidChangeEvent,
     UnknownStreamDockEvent,
     WillAppearEvent,
     WillDisappearEvent,
 )
-from .json_types import (
-    JsonObject,
-    _copy_on_write_json_object,
-    _CopyOnWriteJsonSource,
-    _prepare_copy_on_write_json_object,
-    clone_json_object,
-)
+from .json_types import JsonObject
 from .parser import EVENT_REGISTRY
 from .protocols import (
     LifecycleService,
@@ -42,6 +29,7 @@ from .protocols import (
     StreamDockListener,
 )
 from .registration import PluginLaunchArguments
+from .stores import ActionStore, GlobalSettingsStore
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +49,8 @@ class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
     every action constructed by the registry.
 
     Attributes:
-        actions: Active action instances keyed by their opaque context IDs.
+        actions: Read-only snapshot of active action instances keyed by their
+            opaque context IDs.
         global_settings: Isolated copy of the latest raw plugin-wide settings.
         launch_arguments: Validated values supplied by Stream Dock at startup.
         plugin_uuid: UUID used for registration and global-settings commands.
@@ -70,6 +59,8 @@ class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
         stream_dock: Connection used for incoming events and outgoing commands.
         action_registry: Registry used to resolve manifest action UUIDs.
         action_dependencies: Shared dependency container passed to new actions.
+        action_store: Context-indexed owner of active action instances.
+        global_settings_store: Owner of global-settings state and persistence.
     """
 
     def __init__(
@@ -94,14 +85,6 @@ class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
                 order and stop in reverse order.
         """
 
-        self.actions: dict[str, Action[Any, DependenciesT]] = {}
-        self._global_settings_snapshot: JsonObject = {}
-        self._global_settings_source = _prepare_copy_on_write_json_object(
-            self._global_settings_snapshot
-        )
-        self._global_settings: JsonObject = _copy_on_write_json_object(self._global_settings_source)
-        self._global_settings_snapshot_dirty = False
-        self._global_settings_loaded = False
         self.launch_arguments = launch_arguments
         self.plugin_uuid = launch_arguments.plugin_uuid
         self.register_event = launch_arguments.register_event
@@ -109,11 +92,25 @@ class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
         self.stream_dock = stream_dock
         self.action_registry = action_registry
         self.action_dependencies = action_dependencies
+        self.action_store = ActionStore(action_registry, action_dependencies)
+        self.global_settings_store = GlobalSettingsStore(self.plugin_uuid, stream_dock)
         self._services = tuple(services)
         self._started_services: list[LifecycleService] = []
         self._has_run = False
         self._stopped = False
         self.stream_dock.set_listener(self)
+
+    @property
+    def actions(self) -> Mapping[str, Action[Any, DependenciesT]]:
+        """Return a read-only point-in-time snapshot of active actions."""
+
+        return self.action_store.actions
+
+    @actions.setter
+    def actions(self, actions: Mapping[str, Action[Any, DependenciesT]]) -> None:
+        """Replace active actions; retained for test and migration compatibility."""
+
+        self.action_store.replace(actions)
 
     @property
     def global_settings(self) -> JsonObject:
@@ -123,20 +120,18 @@ class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
         Invalid JSON values raise :class:`ValueError` without changing settings.
         """
 
-        return self._global_settings
+        return self.global_settings_store.settings
 
     @global_settings.setter
     def global_settings(self, settings: JsonObject) -> None:
-        loaded = self._global_settings_loaded
-        self._replace_global_settings(clone_json_object(settings))
-        self._global_settings_loaded = loaded
+        self.global_settings_store.replace_local(settings)
 
     def run(self) -> None:
         """Start services and process Stream Dock events until disconnection.
 
-        A runtime is single-use: it cannot be run more than once or restarted
-        after :meth:`stop`. Successfully started services are recorded for
-        reverse-order cleanup by :meth:`stop`.
+        Call this once on the application's lifecycle thread. A runtime cannot
+        be restarted after return or after :meth:`stop`. Successfully started
+        services are recorded for reverse-order cleanup by :meth:`stop`.
 
         Raises:
             RuntimeError: If this runtime was already run or stopped.
@@ -160,8 +155,11 @@ class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
 
         The connection first stops accepting and drains inbound events. Active
         actions then receive ``on_will_disappear(None)`` and services stop in
-        reverse startup order. Cleanup failures are logged and do not prevent
-        the remaining resources from being released; repeated calls are no-ops.
+        reverse startup order. Call this on the lifecycle thread after
+        :meth:`run` returns; another thread that needs to interrupt the blocking
+        loop should call ``stream_dock.close()``. Cleanup failures are logged
+        and do not prevent the remaining resources from being released;
+        repeated calls are no-ops.
         """
 
         if self._stopped:
@@ -173,12 +171,11 @@ class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
         except Exception:
             logger.exception("Failed to close Stream Dock connection")
 
-        for action in tuple(self.actions.values()):
+        for action in self.action_store.clear():
             try:
                 action.on_will_disappear()
             except Exception:
                 logger.exception("Failed to release action context %s", action.context)
-        self.actions.clear()
 
         for service in reversed(self._started_services):
             try:
@@ -257,17 +254,7 @@ class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
         event: StreamDockEvent,
         descriptor: EventDescriptor,
     ) -> None:
-        if descriptor.scope is EventScope.BROADCAST:
-            self._dispatch_broadcast_event(event, descriptor)
-            return
-
-        if not isinstance(event, ActionEvent):  # pragma: no cover - registry invariant
-            raise AssertionError(f"Action-scoped event {event.event_name!r} lacks action routing")
-
-        action = self.actions.get(event.context)
-        if action is None:
-            return
-        self._invoke_action_callback(action, event, descriptor)
+        self.action_store.dispatch(event, descriptor)
 
     def _handle_will_appear_event(
         self,
@@ -285,9 +272,7 @@ class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
     ) -> None:
         if not isinstance(event, WillDisappearEvent):  # pragma: no cover - registry invariant
             raise AssertionError("willDisappear descriptor received the wrong event class")
-        action = self.actions.pop(event.context, None)
-        if action is not None:
-            self._invoke_action_callback(action, event, descriptor)
+        self.action_store.remove_and_dispatch(event, descriptor)
 
     def _handle_did_receive_settings_event(
         self,
@@ -296,18 +281,7 @@ class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
     ) -> None:
         if not isinstance(event, DidReceiveSettingsEvent):  # pragma: no cover
             raise AssertionError("didReceiveSettings descriptor received the wrong event class")
-        action = self.actions.get(event.context)
-        if action is None:
-            return
-        try:
-            action.update_settings_from_wire(event.settings)
-        except JsonCodecDecodeError as exc:
-            raise JsonCodecDecodeError(
-                exc.reason,
-                event_name=event.event_name,
-                path=("payload", "settings", *exc.path),
-            ) from exc
-        self._invoke_action_callback(action, event, descriptor)
+        self.action_store.update_settings_and_dispatch(event, descriptor)
 
     def _handle_title_parameters_did_change_event(
         self,
@@ -318,12 +292,7 @@ class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
             raise AssertionError(
                 "titleParametersDidChange descriptor received the wrong event class"
             )
-        action = self.actions.get(event.context)
-        if action is None:
-            return
-        action.title = event.title
-        action.title_parameters = event.title_parameters
-        self._invoke_action_callback(action, event, descriptor)
+        self.action_store.update_title_and_dispatch(event, descriptor)
 
     def _handle_did_receive_global_settings_event(
         self,
@@ -334,142 +303,34 @@ class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
             raise AssertionError(
                 "didReceiveGlobalSettings descriptor received the wrong event class"
             )
-        snapshot = clone_json_object(event.settings)
-        self._replace_global_settings(snapshot)
-        self._dispatch_global_settings(self._global_settings_source, descriptor)
+        source = self.global_settings_store.receive(event.settings)
+        self.action_store.broadcast_factory(
+            lambda: self.global_settings_store.new_event(source),
+            descriptor,
+        )
 
     def _create_action(
         self,
         event: WillAppearEvent,
         descriptor: EventDescriptor,
     ) -> None:
-        if event.context in self.actions:
-            return
-
-        try:
-            action = self.action_registry.create(
-                event.action,
-                event.context,
-                event.settings,
-                self.action_dependencies,
-            )
-        except JsonCodecDecodeError as exc:
-            raise JsonCodecDecodeError(
-                exc.reason,
-                event_name=event.event_name,
-                path=("payload", "settings", *exc.path),
-            ) from exc
+        action = self.action_store.create_and_dispatch(event, descriptor)
         if action is None:
-            logger.error("Unknown action UUID: %s", event.action)
             return
-        self.actions[event.context] = action
-        try:
-            self._invoke_action_callback(action, event, descriptor)
-        except Exception:
-            self.actions.pop(event.context, None)
-            try:
-                action.on_will_disappear()
-            except Exception:
-                logger.exception("Failed to roll back action context %s", event.context)
-            raise
 
-        if self._global_settings_loaded:
+        if self.global_settings_store.loaded:
             global_settings_event = self._new_global_settings_event()
             global_settings_descriptor = self._descriptor_for_event(global_settings_event)
             if global_settings_descriptor is None:  # pragma: no cover - registry invariant
                 raise AssertionError("Global settings event is not registered")
-            self._dispatch_broadcast_event_to_action_safely(
+            self.action_store.dispatch_safely(
                 action,
                 global_settings_event,
                 global_settings_descriptor,
             )
 
-    @staticmethod
-    def _invoke_action_callback(
-        action: Action[Any, DependenciesT],
-        event: StreamDockEvent,
-        descriptor: EventDescriptor,
-    ) -> None:
-        callback = getattr(action, descriptor.callback)
-        callback(event)
-
-    def _dispatch_broadcast_event(
-        self,
-        event: StreamDockEvent,
-        descriptor: EventDescriptor,
-    ) -> None:
-        for action in tuple(self.actions.values()):
-            self._dispatch_broadcast_event_to_action_safely(action, event, descriptor)
-
-    def _dispatch_global_settings(
-        self,
-        source: _CopyOnWriteJsonSource,
-        descriptor: EventDescriptor,
-    ) -> None:
-        for action in tuple(self.actions.values()):
-            self._dispatch_broadcast_event_to_action_safely(
-                action,
-                DidReceiveGlobalSettingsEvent(settings=_copy_on_write_json_object(source)),
-                descriptor,
-            )
-
     def _new_global_settings_event(self) -> DidReceiveGlobalSettingsEvent:
-        return DidReceiveGlobalSettingsEvent(
-            settings=_copy_on_write_json_object(self._current_global_settings_source())
-        )
-
-    def _current_global_settings_source(self) -> _CopyOnWriteJsonSource:
-        """Materialize pending public mutations for the next isolated replay."""
-
-        if self._global_settings_snapshot_dirty:
-            self._global_settings_snapshot = clone_json_object(self._global_settings)
-            self._global_settings_source = _prepare_copy_on_write_json_object(
-                self._global_settings_snapshot
-            )
-            self._global_settings_snapshot_dirty = False
-        return self._global_settings_source
-
-    def _replace_global_settings(
-        self,
-        snapshot: JsonObject | _CopyOnWriteJsonSource,
-    ) -> None:
-        global_settings: JsonObject
-
-        def mark_snapshot_dirty_after_mutation() -> None:
-            if self._global_settings is global_settings:
-                self._global_settings_snapshot_dirty = True
-
-        if isinstance(snapshot, _CopyOnWriteJsonSource):
-            source = snapshot
-            owned_snapshot = source._value
-        else:
-            source = _prepare_copy_on_write_json_object(snapshot)
-            owned_snapshot = snapshot
-        global_settings = _copy_on_write_json_object(
-            source,
-            on_mutation=mark_snapshot_dirty_after_mutation,
-        )
-        self._global_settings_snapshot = owned_snapshot
-        self._global_settings_source = source
-        self._global_settings = global_settings
-        self._global_settings_snapshot_dirty = False
-        self._global_settings_loaded = True
-
-    def _dispatch_broadcast_event_to_action_safely(
-        self,
-        action: Action[Any, DependenciesT],
-        event: StreamDockEvent,
-        descriptor: EventDescriptor,
-    ) -> None:
-        try:
-            self._invoke_action_callback(action, event, descriptor)
-        except Exception:
-            logger.exception(
-                "Failed to process broadcast Stream Dock event %s for action %s context %s",
-                event.event_name,
-                action.action,
-                action.context,
-            )
+        return self.global_settings_store.new_event()
 
     def update_global_settings(self, update: Callable[[JsonObject], None]) -> None:
         """Atomically update and persist raw global settings.
@@ -490,9 +351,7 @@ class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
                 command.
         """
 
-        draft = _copy_on_write_json_object(self._current_global_settings_source())
-        update(draft)
-        self.set_global_settings(draft)
+        self.global_settings_store.update(update)
 
     def set_global_settings(self, settings: JsonObject) -> None:
         """Validate and persist raw plugin-wide settings.
@@ -507,12 +366,7 @@ class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
             JsonCodecEncodeError: If ``settings`` is not a finite JSON object.
         """
 
-        command = SetGlobalSettingsCommand.from_settings(
-            self.plugin_uuid,
-            settings,
-            JSON_OBJECT_CODEC,
-        )
-        self._send_global_settings(command)
+        self.global_settings_store.set(settings)
 
     def set_typed_global_settings(
         self,
@@ -532,12 +386,7 @@ class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
             JsonCodecEncodeError: If encoding fails or produces invalid JSON.
         """
 
-        command = SetGlobalSettingsCommand.from_settings(self.plugin_uuid, settings, codec)
-        self._send_global_settings(command)
-
-    def _send_global_settings(self, command: SetGlobalSettingsCommand) -> None:
-        self.stream_dock.send(command)
-        self._replace_global_settings(command._owned_settings_source())
+        self.global_settings_store.set_typed(settings, codec)
 
     def get_global_settings(self) -> None:
         """Request the latest persisted plugin-wide settings.

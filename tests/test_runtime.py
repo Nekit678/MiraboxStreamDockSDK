@@ -5,16 +5,19 @@ from __future__ import annotations
 import json
 import unittest
 from dataclasses import dataclass
+from threading import Event, Thread
 from unittest.mock import Mock, call, patch
 
 from mirabox_sdk import (
     JSON_OBJECT_CODEC,
     Action,
     ActionRegistry,
+    ActionStore,
     Controller,
     Coordinates,
     DidReceiveGlobalSettingsEvent,
     GetGlobalSettingsCommand,
+    GlobalSettingsStore,
     InvalidPluginLaunchArgumentsError,
     JsonCodecEncodeError,
     JsonObject,
@@ -362,6 +365,24 @@ class StreamDockPluginRuntimeTests(unittest.TestCase):
 
         self.assertEqual(runtime.unhandled_events, [event])
 
+    def test_routes_state_through_dedicated_stores(self) -> None:
+        runtime, _stream_dock = self.build_runtime()
+
+        self.assertIsInstance(runtime.action_store, ActionStore)
+        self.assertIsInstance(runtime.global_settings_store, GlobalSettingsStore)
+
+    def test_exposes_read_only_action_snapshots(self) -> None:
+        runtime, _stream_dock = self.build_runtime()
+        runtime.on_stream_dock_event(will_appear_event())
+        actions = runtime.actions
+
+        with self.assertRaises(TypeError):
+            actions["other"] = actions["button"]  # type: ignore[index]
+        runtime.action_store.clear()
+
+        self.assertIn("button", actions)
+        self.assertNotIn("button", runtime.actions)
+
     def test_registers_and_dispatches_events_without_plugin_specific_code(self) -> None:
         runtime, stream_dock = self.build_runtime()
         appear = will_appear_event()
@@ -483,7 +504,7 @@ class StreamDockPluginRuntimeTests(unittest.TestCase):
         global_settings = DidReceiveGlobalSettingsEvent(settings={"theme": "dark"})
         system_wake_up = SystemDidWakeUpEvent()
 
-        with self.assertLogs("mirabox_sdk.plugin", level="ERROR") as logs:
+        with self.assertLogs("mirabox_sdk.stores", level="ERROR") as logs:
             runtime.on_stream_dock_event(global_settings)
             runtime.on_stream_dock_event(system_wake_up)
 
@@ -613,11 +634,11 @@ class StreamDockPluginRuntimeTests(unittest.TestCase):
 
         with (
             patch(
-                "mirabox_sdk.plugin.clone_json_object",
+                "mirabox_sdk.stores.clone_json_object",
                 wraps=clone_json_object,
             ) as clone,
             patch(
-                "mirabox_sdk.plugin._prepare_copy_on_write_json_object",
+                "mirabox_sdk.stores._prepare_copy_on_write_json_object",
                 wraps=_prepare_copy_on_write_json_object,
             ) as prepare,
         ):
@@ -636,11 +657,11 @@ class StreamDockPluginRuntimeTests(unittest.TestCase):
 
         with (
             patch(
-                "mirabox_sdk.plugin.clone_json_object",
+                "mirabox_sdk.stores.clone_json_object",
                 wraps=clone_json_object,
             ) as clone,
             patch(
-                "mirabox_sdk.plugin._prepare_copy_on_write_json_object",
+                "mirabox_sdk.stores._prepare_copy_on_write_json_object",
                 wraps=_prepare_copy_on_write_json_object,
             ) as prepare,
         ):
@@ -761,7 +782,7 @@ class StreamDockPluginRuntimeTests(unittest.TestCase):
         assert isinstance(items, list)
 
         with patch(
-            "mirabox_sdk.plugin.clone_json_object",
+            "mirabox_sdk.stores.clone_json_object",
             wraps=clone_json_object,
         ) as clone:
             for item in range(100):
@@ -784,7 +805,7 @@ class StreamDockPluginRuntimeTests(unittest.TestCase):
         assert isinstance(items, list)
 
         with patch(
-            "mirabox_sdk.plugin.clone_json_object",
+            "mirabox_sdk.stores.clone_json_object",
             wraps=clone_json_object,
         ) as clone:
             with self.assertRaisesRegex(ValueError, "expected a JSON value"):
@@ -832,11 +853,11 @@ class StreamDockPluginRuntimeTests(unittest.TestCase):
                 wraps=_clone_json_object_source,
             ) as own_payload,
             patch(
-                "mirabox_sdk.plugin.clone_json_object",
+                "mirabox_sdk.stores.clone_json_object",
                 wraps=clone_json_object,
             ) as clone,
             patch(
-                "mirabox_sdk.plugin._prepare_copy_on_write_json_object",
+                "mirabox_sdk.stores._prepare_copy_on_write_json_object",
                 wraps=_prepare_copy_on_write_json_object,
             ) as prepare,
         ):
@@ -856,6 +877,52 @@ class StreamDockPluginRuntimeTests(unittest.TestCase):
             runtime.actions["button"].received_events[-1],
             DidReceiveGlobalSettingsEvent(settings=expected),
         )
+
+    def test_serializes_concurrent_global_settings_transactions(self) -> None:
+        runtime, _stream_dock = self.build_runtime()
+        runtime.global_settings = {"count": 0}
+        first_update_started = Event()
+        release_first_update = Event()
+        second_update_attempted = Event()
+        second_update_finished = Event()
+        failures: list[Exception] = []
+
+        def increment(*, wait: bool) -> None:
+            try:
+                if not wait:
+                    second_update_attempted.set()
+
+                def apply(settings: JsonObject) -> None:
+                    count = settings["count"]
+                    assert isinstance(count, int)
+                    if wait:
+                        first_update_started.set()
+                        if not release_first_update.wait(1):
+                            raise AssertionError("timed out waiting to release update")
+                    settings["count"] = count + 1
+
+                runtime.update_global_settings(apply)
+            except Exception as exc:  # pragma: no cover - asserted through failures
+                failures.append(exc)
+            finally:
+                if not wait:
+                    second_update_finished.set()
+
+        first = Thread(target=increment, kwargs={"wait": True})
+        second = Thread(target=increment, kwargs={"wait": False})
+        first.start()
+        self.assertTrue(first_update_started.wait(1))
+        second.start()
+        self.assertTrue(second_update_attempted.wait(1))
+        self.assertFalse(second_update_finished.wait(0.05))
+        release_first_update.set()
+        first.join(1)
+        second.join(1)
+
+        self.assertFalse(first.is_alive())
+        self.assertFalse(second.is_alive())
+        self.assertEqual(failures, [])
+        self.assertEqual(runtime.global_settings, {"count": 2})
 
     def test_rolls_back_runtime_global_settings_transaction_on_callback_failure(
         self,

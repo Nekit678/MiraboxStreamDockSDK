@@ -85,7 +85,8 @@ to `parse_stream_dock_event()` when strict rejection with
 Known-event parsing and runtime delivery are driven by the same read-only
 `EVENT_REGISTRY`. Its `EventDescriptor` entries bind each wire name to its
 parser, typed model, `EventScope`, `Action` callback, and optional stateful
-runtime handler.
+runtime handler. `ActionStore` owns context creation/removal and snapshots;
+`GlobalSettingsStore` owns persistence, COW snapshots, broadcasts, and replays.
 
 ## Events sent by a plugin
 
@@ -126,6 +127,13 @@ coalescing replaces only compatible adjacent pending state-setting commands,
 so intervening commands remain ordering barriers. `send()` waits for the
 writer's result and propagates serialization and transport errors to its caller.
 
+`send()` supports overlapping calls from action callbacks and application
+services. Scalar-only frozen commands may be shared between threads. A mutable
+`OwnedJsonPayload` must have one owner at a time and must not change after any
+thread submits its command. The same single-owner rule applies to mutable COW
+event and settings views; immutable `ValidatedJsonObject` backing snapshots may
+be handed between threads.
+
 Per-message protocol logs are emitted only at DEBUG and contain routing metadata
 such as the event and context. Message payloads are redacted by default because
 settings and Property Inspector messages may contain secrets under plugin-defined
@@ -133,7 +141,10 @@ field names. Pass `include_payload=True` to `configure_logging()` to include
 complete messages temporarily in a trusted development environment.
 SDK logging is disabled and isolated from the root logger by default. Use
 `configure_logging()` to select a level and write to stderr or a rotating UTF-8
-file, then call it with `enabled=False` to restore the silent default.
+file. Records reach that destination through a managed queue, so file I/O does
+not run in the WebSocket reader or protocol dispatcher. Call
+`configure_logging(enabled=False)` to drain the queue and restore the silent
+default.
 
 ## Property Inspector API
 

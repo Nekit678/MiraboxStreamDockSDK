@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+from threading import Lock
 from typing import Any
 
 import websocket
@@ -100,6 +101,12 @@ class WebSocketStreamDockConnection(StreamDockConnection):
     Note:
         Payload fields are redacted from DEBUG protocol logs unless the
         application explicitly opts in with ``configure_logging``.
+
+        Configure the listener before starting ``run_forever()``. The WebSocket
+        reader parses and enqueues frames, one inbound dispatcher serializes all
+        event callbacks, and one outbound writer serializes all commands.
+        ``send()`` and ``close()`` are thread-safe; mutable event, action, and
+        command payload views must not be accessed concurrently.
     """
 
     def __init__(
@@ -149,6 +156,8 @@ class WebSocketStreamDockConnection(StreamDockConnection):
             )
 
         self._listener: StreamDockListener | None = None
+        self._close_lock = Lock()
+        self._closed = False
         self._inbound_shutdown_timeout = inbound_shutdown_timeout
         self._outbound_shutdown_timeout = outbound_shutdown_timeout
         self._inbound = _InboundEventDispatcher(
@@ -174,6 +183,10 @@ class WebSocketStreamDockConnection(StreamDockConnection):
     def set_listener(self, listener: StreamDockListener) -> None:
         """Replace the listener receiving connection and parsed event callbacks.
 
+        Configure the listener on the lifecycle thread before
+        :meth:`run_forever`; replacing it while the connection is running is
+        outside the supported concurrency contract.
+
         Args:
             listener: Object implementing :class:`StreamDockListener`.
         """
@@ -181,7 +194,7 @@ class WebSocketStreamDockConnection(StreamDockConnection):
         self._listener = listener
 
     def run_forever(self) -> None:
-        """Run the WebSocket loop and drain callbacks and commands after it closes."""
+        """Run once on the lifecycle thread and drain work after disconnection."""
 
         self._outbound.start()
         self._inbound.start()
@@ -201,18 +214,24 @@ class WebSocketStreamDockConnection(StreamDockConnection):
         New inbound events are rejected first. Queued callbacks drain while
         outbound commands are still accepted, then the single writer drains
         before the WebSocket closes. Configured shutdown timeouts can bound
-        either wait.
+        either wait. The method is thread-safe and idempotent, including when
+        called from an action callback on the inbound dispatcher.
         """
 
-        self._inbound.stop_accepting()
-        try:
-            self._shutdown_inbound_dispatcher()
-        finally:
-            self._outbound.stop_accepting()
+        with self._close_lock:
+            if self._closed:
+                return
+            self._closed = True
+
+            self._inbound.stop_accepting()
             try:
-                self._shutdown_outbound_bus()
+                self._shutdown_inbound_dispatcher()
             finally:
-                self._ws.close()
+                self._outbound.stop_accepting()
+                try:
+                    self._shutdown_outbound_bus()
+                finally:
+                    self._ws.close()
 
     @property
     def inbound_queue_metrics(self) -> InboundQueueMetrics:
@@ -240,9 +259,11 @@ class WebSocketStreamDockConnection(StreamDockConnection):
             OutboundCommandBusClosedError: If connection shutdown has begun.
             WebSocketException: If the writer cannot send the frame.
 
-        The single writer completes serialization and transport I/O before this
-        method returns, preserving direct error reporting without writing from
-        the caller's thread.
+        Calls may overlap from action callbacks and background application
+        threads. The single writer completes serialization and transport I/O
+        before each call returns, preserving direct error reporting without
+        writing from the caller's thread. A payload-bearing ``command`` must not
+        be mutated once any thread begins sending it.
         """
 
         self._outbound.submit(command)

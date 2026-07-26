@@ -20,6 +20,8 @@ change public APIs between minor versions.
 - Add a bounded outbound command bus with one serialization and WebSocket
   writer thread, FIFO ordering, explicit overflow and shutdown errors, metrics,
   graceful draining, and optional state-command coalescing.
+- Add `ActionStore` and `GlobalSettingsStore` as the dedicated owners of
+  runtime action routing and global-settings state.
 
 ### Changed
 
@@ -32,6 +34,10 @@ change public APIs between minor versions.
 - Move plugin callbacks out of the `websocket-client` reader thread.
 - Route every outbound command through the connection-owned writer while
   preserving synchronous serialization and transport error reporting.
+- Route SDK records through one managed logging queue so destination stream and
+  rotating-file I/O does not run on protocol or application worker threads.
+- Formalize the supported lifecycle, callback, command, COW-view, concurrent
+  send, and shutdown thread contract.
 
 ### Fixed
 

@@ -10,11 +10,14 @@ from .events import StreamDockEvent
 
 
 class StreamDockSender(Protocol):
-    """Minimal outbound command channel required by action helpers."""
+    """Minimal thread-safe outbound command channel required by helpers."""
 
     @abstractmethod
     def send(self, command: StreamDockCommand) -> None:
         """Submit one command to the connection's outbound writer.
+
+        Calls from application threads may overlap. The relative FIFO order of
+        overlapping calls is whichever order the command bus accepts them.
 
         Args:
             command: Typed command to transmit.
@@ -48,24 +51,26 @@ class StreamDockConnection(StreamDockSender, Protocol):
 
     A plugin runtime installs one listener, then calls :meth:`run_forever`.
     Implementations are responsible for delivering parsed incoming events and
-    accepting typed outgoing commands.
+    accepting typed outgoing commands. ``set_listener()`` and ``run_forever()``
+    belong to the lifecycle thread; ``send()`` and ``close()`` may be called
+    concurrently from application or callback threads.
     """
 
     @abstractmethod
     def set_listener(self, listener: StreamDockListener) -> None:
-        """Set the listener that receives connection callbacks."""
+        """Set the listener before starting the connection loop."""
 
         ...
 
     @abstractmethod
     def run_forever(self) -> None:
-        """Process WebSocket traffic until the connection closes."""
+        """Process WebSocket traffic once, blocking the lifecycle thread."""
 
         ...
 
     @abstractmethod
     def close(self) -> None:
-        """Request connection shutdown and release transport resources."""
+        """Idempotently request shutdown from an application or callback thread."""
 
         ...
 

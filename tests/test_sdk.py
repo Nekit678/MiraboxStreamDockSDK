@@ -1093,6 +1093,33 @@ class WebSocketStreamDockConnectionTests(unittest.TestCase):
         self.assertEqual(metrics.sent, 3)
 
     @patch("mirabox_sdk.connection.websocket.WebSocketApp")
+    def test_sends_one_immutable_command_from_concurrent_threads(
+        self,
+        app_factory: Mock,
+    ) -> None:
+        command = LogMessageCommand("shared")
+        connection = WebSocketStreamDockConnection(12345)
+        failures: list[Exception] = []
+
+        def submit() -> None:
+            try:
+                connection.send(command)
+            except Exception as exc:  # pragma: no cover - asserted through failures
+                failures.append(exc)
+
+        producers = [Thread(target=submit) for _ in range(16)]
+        for producer in producers:
+            producer.start()
+        for producer in producers:
+            producer.join(1)
+            self.assertFalse(producer.is_alive())
+        connection.close()
+
+        self.assertEqual(failures, [])
+        self.assertEqual(app_factory.return_value.send.call_count, 16)
+        self.assertEqual(connection.outbound_queue_metrics.sent, 16)
+
+    @patch("mirabox_sdk.connection.websocket.WebSocketApp")
     def test_rejects_command_when_outbound_queue_is_full(self, app_factory: Mock) -> None:
         first_write_started = Event()
         release_first_write = Event()
@@ -1233,6 +1260,33 @@ class WebSocketStreamDockConnectionTests(unittest.TestCase):
         self.assertEqual(metrics.rejected_after_shutdown, 1)
         self.assertEqual(metrics.rejected, 1)
         app_factory.return_value.send.assert_not_called()
+
+    @patch("mirabox_sdk.connection.websocket.WebSocketApp")
+    def test_close_is_idempotent_across_concurrent_callers(self, app_factory: Mock) -> None:
+        close_started = Event()
+        release_close = Event()
+
+        def close_web_socket() -> None:
+            close_started.set()
+            if not release_close.wait(1):
+                raise AssertionError("timed out waiting to release close")
+
+        app_factory.return_value.close.side_effect = close_web_socket
+        connection = WebSocketStreamDockConnection(12345)
+        callers = [Thread(target=connection.close) for _ in range(8)]
+
+        callers[0].start()
+        self.assertTrue(close_started.wait(1))
+        for caller in callers[1:]:
+            caller.start()
+        release_close.set()
+        for caller in callers:
+            caller.join(1)
+            self.assertFalse(caller.is_alive())
+
+        app_factory.return_value.close.assert_called_once_with()
+        with self.assertRaises(OutboundCommandBusClosedError):
+            connection.send(LogMessageCommand("too late"))
 
     @patch("mirabox_sdk.connection.websocket.WebSocketApp")
     def test_outbound_shutdown_timeout_discards_waiting_commands(
@@ -1893,3 +1947,24 @@ class WebSocketStreamDockConnectionTests(unittest.TestCase):
 
         web_socket.run_forever.assert_called_once_with()
         web_socket.close.assert_called_once_with()
+
+    @patch("mirabox_sdk.connection.websocket.WebSocketApp")
+    def test_connected_callback_runs_on_websocket_loop_thread(self, app_factory: Mock) -> None:
+        loop_thread_ids: list[int] = []
+        callback_thread_ids: list[int] = []
+        listener = Mock()
+        listener.on_stream_dock_connected.side_effect = lambda: callback_thread_ids.append(
+            get_ident()
+        )
+        connection = WebSocketStreamDockConnection(12345)
+        connection.set_listener(listener)
+
+        def run_websocket_loop() -> None:
+            loop_thread_ids.append(get_ident())
+            connection._on_open(app_factory.return_value)
+
+        app_factory.return_value.run_forever.side_effect = run_websocket_loop
+
+        connection.run_forever()
+
+        self.assertEqual(callback_thread_ids, loop_thread_ids)

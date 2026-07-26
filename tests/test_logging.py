@@ -8,7 +8,10 @@ import sys
 import tempfile
 import unittest
 from io import StringIO
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from threading import Thread, get_ident
+from unittest.mock import patch
 
 from mirabox_sdk import configure_logging
 
@@ -42,6 +45,29 @@ assert any(isinstance(handler, logging.NullHandler) for handler in sdk_logger.ha
 
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_process_shutdown_drains_managed_logging_queue(self) -> None:
+        script = """
+import logging
+import sys
+
+from mirabox_sdk import configure_logging
+
+configure_logging(level="ERROR", log_file=sys.argv[1])
+logging.getLogger("mirabox_sdk.connection").error("final record")
+"""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            log_file = Path(temporary_directory) / "plugin.log"
+
+            result = subprocess.run(
+                [sys.executable, "-c", script, str(log_file)],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("final record", log_file.read_text(encoding="utf-8"))
+
     def setUp(self) -> None:
         self.sdk_logger = logging.getLogger("mirabox_sdk")
         self.original_handlers = tuple(self.sdk_logger.handlers)
@@ -70,6 +96,7 @@ assert any(isinstance(handler, logging.NullHandler) for handler in sdk_logger.ha
         configured_logger = configure_logging(level="INFO", stream=stream)
         logging.getLogger("mirabox_sdk.connection").debug("hidden")
         logging.getLogger("mirabox_sdk.connection").info("connected")
+        configure_logging(enabled=False)
 
         self.assertIs(configured_logger, self.sdk_logger)
         self.assertEqual(root_logger.level, original_root_level)
@@ -84,6 +111,7 @@ assert any(isinstance(handler, logging.NullHandler) for handler in sdk_logger.ha
 
         configure_logging(level="WARNING", stream=second_stream)
         logging.getLogger("mirabox_sdk.plugin").warning("stopped")
+        configure_logging(enabled=False)
 
         self.assertEqual(first_stream.getvalue(), "")
         self.assertEqual(second_stream.getvalue().count("stopped"), 1)
@@ -94,6 +122,7 @@ assert any(isinstance(handler, logging.NullHandler) for handler in sdk_logger.ha
             configure_logging(level=logging.ERROR, log_file=log_file)
 
             logging.getLogger("mirabox_sdk.cli").error("Ошибка запуска")
+            configure_logging(enabled=False)
 
             self.assertIn("Ошибка запуска", log_file.read_text(encoding="utf-8"))
 
@@ -110,6 +139,7 @@ assert any(isinstance(handler, logging.NullHandler) for handler in sdk_logger.ha
             logger = logging.getLogger("mirabox_sdk.connection")
             for index in range(20):
                 logger.info("message %d %s", index, "x" * 80)
+            configure_logging(enabled=False)
 
             log_files = tuple(Path(temporary_directory).glob("plugin.log*"))
             self.assertTrue(log_file.is_file())
@@ -126,6 +156,68 @@ assert any(isinstance(handler, logging.NullHandler) for handler in sdk_logger.ha
 
         self.assertIn("before", stream.getvalue())
         self.assertNotIn("after", stream.getvalue())
+
+    def test_destination_io_runs_on_managed_logging_thread(self) -> None:
+        class ThreadRecordingStream(StringIO):
+            def __init__(self) -> None:
+                super().__init__()
+                self.write_thread_ids: list[int] = []
+
+            def write(self, value: str) -> int:
+                self.write_thread_ids.append(get_ident())
+                return super().write(value)
+
+        stream = ThreadRecordingStream()
+        producer_thread_ids: list[int] = []
+        configure_logging(level="WARNING", stream=stream)
+
+        def log_from_reader() -> None:
+            producer_thread_ids.append(get_ident())
+            logging.getLogger("mirabox_sdk.connection").warning("invalid frame")
+
+        reader = Thread(target=log_from_reader, name="simulated-websocket-reader")
+        reader.start()
+        reader.join(1)
+        self.assertFalse(reader.is_alive())
+        configure_logging(enabled=False)
+
+        self.assertIn("invalid frame", stream.getvalue())
+        self.assertTrue(stream.write_thread_ids)
+        self.assertTrue(set(producer_thread_ids).isdisjoint(stream.write_thread_ids))
+
+    def test_file_handler_emit_does_not_run_on_reader_thread(self) -> None:
+        producer_thread_ids: list[int] = []
+        file_thread_ids: list[int] = []
+        original_emit = RotatingFileHandler.emit
+
+        def record_file_emit(
+            handler: RotatingFileHandler,
+            record: logging.LogRecord,
+        ) -> None:
+            file_thread_ids.append(get_ident())
+            original_emit(handler, record)
+
+        with (
+            tempfile.TemporaryDirectory() as temporary_directory,
+            patch.object(RotatingFileHandler, "emit", new=record_file_emit),
+        ):
+            configure_logging(
+                level="WARNING",
+                log_file=Path(temporary_directory) / "plugin.log",
+            )
+
+            def log_from_reader() -> None:
+                producer_thread_ids.append(get_ident())
+                logging.getLogger("mirabox_sdk.connection").warning("malformed event")
+
+            reader = Thread(target=log_from_reader, name="simulated-websocket-reader")
+            reader.start()
+            reader.join(1)
+            self.assertFalse(reader.is_alive())
+            configure_logging(enabled=False)
+
+        self.assertTrue(file_thread_ids)
+        self.assertTrue(set(producer_thread_ids).isdisjoint(file_thread_ids))
 
     def test_rejects_invalid_configuration(self) -> None:
         self.sdk_logger.disabled = True

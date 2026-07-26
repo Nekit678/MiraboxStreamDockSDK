@@ -65,6 +65,7 @@ behavior is verified.
 - [Errors and unknown events](#errors-and-unknown-events)
 - [Inbound event queue](#inbound-event-queue)
 - [Outbound command bus](#outbound-command-bus)
+- [Concurrency contract](#concurrency-contract)
 - [Logging](#logging)
 - [Project structure](#project-structure)
 - [Development](#development)
@@ -396,7 +397,7 @@ behavior implemented by this SDK.
 
 | Area | Public API |
 |---|---|
-| Runtime | `Action`, `ActionRegistry`, `StreamDockPlugin`, `LifecycleService` |
+| Runtime | `Action`, `ActionRegistry`, `ActionStore`, `GlobalSettingsStore`, `StreamDockPlugin`, `LifecycleService` |
 | Connection | `WebSocketStreamDockConnection`, inbound/outbound queue metrics and errors, `StreamDockConnection`, `StreamDockSender`, `StreamDockListener` |
 | Launch and registration | `PluginLaunchArguments`, registration dataclasses, `parse_plugin_cli_arguments`, `run_plugin_cli` |
 | Input events | Typed models plus the read-only `EVENT_REGISTRY` describing parser, scope, callback, and stateful runtime handler |
@@ -515,6 +516,42 @@ WebSocket closes unless `outbound_shutdown_timeout` expires. A timed-out write
 already in progress cannot be cancelled and may still complete while its caller
 receives a shutdown error.
 
+## Concurrency contract
+
+The runtime uses explicit thread ownership:
+
+| Surface | Supported caller or owner |
+|---|---|
+| `configure_logging()` and `StreamDockPlugin.run()` / `stop()` | Application lifecycle thread; configure logging before `run()`, and call `stop()` after it returns |
+| WebSocket parsing and `on_stream_dock_connected()` | WebSocket loop/reader thread |
+| `on_stream_dock_event()` and every `Action` callback | One connection-owned inbound dispatcher; callbacks never overlap |
+| `StreamDockSender.send()` and action command helpers | Any application, service, or action-callback thread; overlapping calls are supported |
+| `WebSocketStreamDockConnection.close()` | Any application or action-callback thread; calls are idempotent and may overlap |
+| `set_listener()` | Lifecycle thread before `run_forever()` starts |
+
+The outbound queue establishes FIFO order when it accepts commands. Calls that
+do not overlap retain caller order; the relative order of simultaneous calls
+is intentionally unspecified. Each `send()` waits only for its own accepted
+submission (or the final coalesced write) and receives its serialization,
+transport, overflow, or shutdown result.
+
+Scalar-only frozen command objects may be shared between threads.
+Payload-bearing commands own mutable `OwnedJsonPayload` data: do not mutate a
+command or its payload once any thread begins `send()`. `ValidatedJsonObject`
+backing snapshots are safe to hand between threads after construction, but
+every mutable COW view—event settings, `Action.settings`,
+`runtime.global_settings`, and `OwnedJsonPayload`—allows only one accessing or
+mutating thread at a time. Use `update_global_settings()` for serialized,
+rollback-safe updates from background services; do not share a live mutable
+view between threads.
+
+Shutdown rejects new inbound events, drains the inbound dispatcher while
+outbound commands are still accepted, rejects and drains outbound commands,
+then closes the WebSocket. `StreamDockPlugin.stop()` subsequently releases
+actions and stops services in reverse startup order. A background thread that
+needs to interrupt `run()` should call `connection.close()` and leave final
+plugin cleanup to the lifecycle thread.
+
 ## Logging
 
 SDK logging is disabled by default: it does not propagate to the application's
@@ -562,8 +599,9 @@ configure_logging(
 ```
 
 Repeated calls replace the handler previously installed by
-`configure_logging()`, so the level or destination can be changed without
-duplicating messages. Return the SDK to its default silent state with:
+`configure_logging()`, draining its queue first, so the level or destination can
+be changed without duplicating messages. Return the SDK to its default silent
+state and flush pending records with:
 
 ```python
 configure_logging(enabled=False)
@@ -572,7 +610,12 @@ configure_logging(enabled=False)
 `INFO` records cover connection lifecycle and operational status. Per-message
 protocol direction, event, and context are emitted only at `DEBUG`. Message
 payloads remain redacted unless `include_payload=True` is explicitly configured.
-Handlers installed manually by the application remain its responsibility.
+SDK records are handed to one managed logging thread, so stream and rotating
+file I/O never runs in the WebSocket reader, inbound dispatcher, outbound
+writer, or calling service thread. Handlers installed manually by the
+application remain its responsibility and are outside that guarantee. The
+managed queue is unbounded to keep protocol threads non-blocking; choose a
+destination that can keep up with the configured log volume.
 
 ## Project structure
 
@@ -587,6 +630,7 @@ MiraboxStreamDockSDK/
 │   ├── inbound.py                     # Bounded inbound event dispatcher
 │   ├── outbound.py                    # Bounded single-writer command bus
 │   ├── parser.py                      # Strict wire-message parser
+│   ├── stores.py                      # Action and global-settings state stores
 │   ├── plugin.py                      # Runtime and lifecycle dispatcher
 │   ├── connection.py                  # WebSocket transport
 │   ├── logging_config.py              # Isolated SDK logging configuration

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import logging
-from logging.handlers import RotatingFileHandler
+from logging.handlers import QueueHandler, QueueListener, RotatingFileHandler
 from pathlib import Path
+from queue import SimpleQueue
+from threading import Lock
 from typing import TextIO
 
 _SDK_LOGGER_NAME = "mirabox_sdk"
@@ -14,6 +16,38 @@ _DEFAULT_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 _DEFAULT_MAX_BYTES = 5 * 1024 * 1024
 _DEFAULT_BACKUP_COUNT = 3
 _include_protocol_payload = False
+
+
+class _ManagedQueueHandler(QueueHandler):
+    """Queue SDK records and own the single destination listener."""
+
+    def __init__(self, destination: logging.Handler) -> None:
+        self._destination = destination
+        self._state_lock = Lock()
+        self._closed = False
+        queue: SimpleQueue[logging.LogRecord | None] = SimpleQueue()
+        super().__init__(queue)
+        self._listener = QueueListener(
+            queue,
+            destination,
+            respect_handler_level=True,
+        )
+        self._listener.start()
+
+    def emit(self, record: logging.LogRecord) -> None:
+        with self._state_lock:
+            if self._closed:
+                return
+            super().emit(record)
+
+    def close(self) -> None:
+        with self._state_lock:
+            if self._closed:
+                return
+            self._closed = True
+        self._listener.stop()
+        self._destination.close()
+        super().close()
 
 
 def _normalize_level(level: int | str) -> int:
@@ -82,11 +116,14 @@ def configure_logging(
 ) -> logging.Logger:
     """Configure isolated SDK logging without changing the root logger.
 
-    Repeated calls replace the handler previously installed by this function.
-    Set ``enabled=False`` to silence that output. Protocol payloads remain
-    redacted unless ``include_payload=True`` is explicitly requested; full
-    payloads are emitted only by DEBUG records. Handlers installed directly by
-    the application remain under application control.
+    Records are queued without destination I/O in the calling thread; one
+    managed listener writes them to the selected stream or file. Repeated calls
+    drain and replace the handler previously installed by this function. Set
+    ``enabled=False`` to drain pending records and silence subsequent output.
+    Protocol payloads remain redacted unless ``include_payload=True`` is
+    explicitly requested; full payloads are emitted only by DEBUG records.
+    Handlers installed directly by the application remain under application
+    control and may still perform I/O in their caller's thread.
 
     Args:
         level: Numeric logging level or case-insensitive standard level name.
@@ -144,7 +181,9 @@ def configure_logging(
 
     handler.setLevel(normalized_level)
     handler.setFormatter(logging.Formatter(_DEFAULT_FORMAT, _DEFAULT_DATE_FORMAT))
-    _replace_managed_handler(logger, handler)
+    queue_handler = _ManagedQueueHandler(handler)
+    queue_handler.setLevel(normalized_level)
+    _replace_managed_handler(logger, queue_handler)
     _set_protocol_payload_logging(include_payload)
     logger.disabled = False
     logger.propagate = False

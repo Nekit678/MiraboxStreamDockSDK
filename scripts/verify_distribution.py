@@ -15,6 +15,7 @@ WHEEL_REQUIRED_SUFFIXES = {
     "mirabox_sdk/inbound.py",
     "mirabox_sdk/outbound.py",
     "mirabox_sdk/py.typed",
+    "mirabox_sdk/stores.py",
     "mirabox_sdk/property_inspector/mirabox-sdk.js",
 }
 SDIST_REQUIRED_SUFFIXES = {
@@ -32,6 +33,7 @@ SDIST_REQUIRED_SUFFIXES = {
     "src/mirabox_sdk/py.typed",
     "src/mirabox_sdk/inbound.py",
     "src/mirabox_sdk/outbound.py",
+    "src/mirabox_sdk/stores.py",
     "src/mirabox_sdk/property_inspector/mirabox-sdk.js",
 }
 
