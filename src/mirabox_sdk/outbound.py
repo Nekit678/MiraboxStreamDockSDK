@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from collections import deque
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from threading import Condition, Event, Thread, current_thread
 
 from .commands import (
@@ -30,6 +30,58 @@ class OutboundQueueFullError(OutboundCommandBusError):
 
 class OutboundCommandBusClosedError(OutboundCommandBusError):
     """Raised when a command is submitted after outbound shutdown begins."""
+
+
+class CommandFuture:
+    """Read-only completion handle returned for an accepted outbound command.
+
+    Queue-capacity and shutdown rejections are raised by ``send_async()``
+    before a future is returned. Serialization and transport failures happen
+    on the writer thread and are re-raised by :meth:`result`.
+    """
+
+    __slots__ = ("_completed", "_error")
+
+    def __init__(self) -> None:
+        self._completed = Event()
+        self._error: Exception | None = None
+
+    def done(self) -> bool:
+        """Return whether serialization and transport processing has finished."""
+
+        return self._completed.is_set()
+
+    def wait(self, timeout: float | None = None) -> bool:
+        """Wait up to ``timeout`` seconds and return whether the command finished."""
+
+        return self._completed.wait(timeout)
+
+    def result(self, timeout: float | None = None) -> None:
+        """Wait for completion and re-raise any writer-side failure.
+
+        Raises:
+            TimeoutError: If the command is still pending after ``timeout``.
+            Exception: The serialization, transport, or shutdown error recorded
+                by the outbound writer.
+        """
+
+        if not self.wait(timeout):
+            raise TimeoutError("Outbound command did not complete before the timeout")
+        if self._error is not None:
+            raise self._error
+
+    def exception(self, timeout: float | None = None) -> Exception | None:
+        """Wait for completion and return the recorded failure, if any."""
+
+        if not self.wait(timeout):
+            raise TimeoutError("Outbound command did not complete before the timeout")
+        return self._error
+
+    def _finish(self, *, error: Exception | None = None) -> None:
+        if self._completed.is_set():
+            return
+        self._error = error
+        self._completed.set()
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,15 +116,9 @@ class OutboundQueueMetrics:
 
 
 @dataclass(slots=True)
-class _Submission:
-    completed: Event = field(default_factory=Event)
-    error: Exception | None = None
-
-
-@dataclass(slots=True)
 class _QueuedCommand:
     command: StreamDockCommand
-    submissions: list[_Submission]
+    submissions: list[CommandFuture]
 
 
 class _OutboundCommandBus:
@@ -124,7 +170,17 @@ class _OutboundCommandBus:
         frames.
         """
 
-        submission = _Submission()
+        self.submit_async(command).result()
+
+    def submit_async(self, command: StreamDockCommand) -> CommandFuture:
+        """Queue a command and return without waiting for writer-side I/O.
+
+        Queue-capacity and shutdown errors are raised synchronously because no
+        command was accepted. Once accepted, serialization, transport, and
+        shutdown errors are recorded on the returned future.
+        """
+
+        submission = CommandFuture()
         with self._condition:
             self._submitted += 1
             if not self._accepting:
@@ -152,9 +208,7 @@ class _OutboundCommandBus:
                 self._peak_depth = max(self._peak_depth, len(self._queue))
                 self._condition.notify()
 
-        submission.completed.wait()
-        if submission.error is not None:
-            raise submission.error
+        return submission
 
     def stop_accepting(self) -> None:
         """Reject new commands while allowing already queued work to drain."""
@@ -276,7 +330,7 @@ class _OutboundCommandBus:
                 with self._condition:
                     self._in_flight = None
 
-    def _coalesce(self, command: StreamDockCommand, submission: _Submission) -> bool:
+    def _coalesce(self, command: StreamDockCommand, submission: CommandFuture) -> bool:
         if not self._coalesce_commands or not self._queue:
             return False
 
@@ -310,10 +364,7 @@ class _OutboundCommandBus:
         error: Exception | None = None,
     ) -> None:
         for submission in queued.submissions:
-            if submission.completed.is_set():
-                continue
-            submission.error = error
-            submission.completed.set()
+            submission._finish(error=error)
 
     def _discard_queued_commands(
         self,

@@ -90,8 +90,10 @@ runtime handler. `ActionStore` owns context creation/removal and snapshots;
 
 ## Events sent by a plugin
 
-Commands can be constructed directly and passed to `StreamDockSender.send()`.
-The `Action` and `StreamDockPlugin` helpers cover the common cases.
+Commands can be constructed directly and passed to `StreamDockSender.send()`
+or `send_async()`. The latter returns a `CommandFuture` without waiting for
+serialization or WebSocket I/O. The `Action` and `StreamDockPlugin` helpers
+cover the common cases.
 
 | Wire event | Command model | Convenience API |
 |---|---|---|
@@ -100,9 +102,9 @@ The `Action` and `StreamDockPlugin` helpers cover the common cases.
 | `getSettings` | `GetSettingsCommand` | `Action.get_settings()` |
 | `setGlobalSettings` | `SetGlobalSettingsCommand` | `StreamDockPlugin.set_global_settings()` / `set_typed_global_settings()` |
 | `getGlobalSettings` | `GetGlobalSettingsCommand` | `StreamDockPlugin.get_global_settings()` |
-| `setTitle` | `SetTitleCommand` | `Action.set_title()` |
-| `setImage` | `SetImageCommand` | `Action.set_image()` |
-| `setState` | `SetStateCommand` | `Action.set_state()` |
+| `setTitle` | `SetTitleCommand` | `Action.set_title()` / `set_title_async()` |
+| `setImage` | `SetImageCommand` | `Action.set_image()` / `set_image_async()` |
+| `setState` | `SetStateCommand` | `Action.set_state()` / `set_state_async()` |
 | `showOk` | `ShowOkCommand` | `Action.show_ok()` |
 | `showAlert` | `ShowAlertCommand` | `Action.show_alert()` |
 | `openUrl` | `OpenUrlCommand` | `Action.open_url()` |

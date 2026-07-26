@@ -239,7 +239,8 @@ Override only the callbacks an action needs:
 Action helper methods cover the common outbound commands: `set_title()`,
 `set_image()`, `set_state()`, `set_settings()`, `get_settings()`, `show_ok()`,
 `show_alert()`, `open_url()`, `log_message()`, and
-`send_to_property_inspector()`.
+`send_to_property_inspector()`. Display-only updates also have non-blocking
+`set_title_async()`, `set_image_async()`, and `set_state_async()` variants.
 
 ### Typed settings
 
@@ -483,9 +484,15 @@ event for that context, or any broadcast/unknown event, prevents coalescing.
 Read `connection.inbound_queue_metrics` for an atomic
 `InboundQueueMetrics` snapshot. It reports current and peak depth, received,
 enqueued, coalesced, backpressured, dispatched, dropped, and callback-failure
-counts. The default `inbound_shutdown_timeout=None` waits for a complete drain.
-A numeric timeout bounds the wait and discards events still queued when it
-expires.
+and callback-timeout counts. The default `inbound_shutdown_timeout=5.0` bounds
+the drain; pass `None` explicitly only when an unbounded wait is required. At a
+timeout, queued events are discarded and each callback still running is logged
+with its event name and context.
+
+Python cannot safely stop a running thread. A callback that exceeds the timeout
+continues on its daemon worker until the callback itself returns, even though
+`close()` proceeds. Callback code should therefore use its own bounded I/O and
+cooperative cancellation where appropriate.
 
 ## Outbound command bus
 
@@ -497,9 +504,18 @@ frames. `send()` waits for its command's result, so serialization and transport
 errors still reach the caller and state-update helpers retain their rollback
 behavior.
 
+`send_async()` performs the same queue acceptance but returns a
+`CommandFuture` before serialization or WebSocket I/O. Queue-full and
+shutdown rejections are raised immediately; call `future.result()` only when
+the eventual writer-side error or completion matters. For high-frequency
+display rendering, `Action.set_image_async()`, `set_title_async()`, and
+`set_state_async()` avoid holding an inbound callback while the writer is slow.
+Rollback-sensitive settings helpers remain synchronous.
+
 The outbound queue holds 1,024 waiting commands by default. It never silently
-drops a command when full: `send()` raises `OutboundQueueFullError`. Configure
-the queue and graceful-drain timeout on the connection:
+drops a command when full: `send()` and `send_async()` raise
+`OutboundQueueFullError`. Configure the queue and graceful-drain timeout on the
+connection:
 
 ```python
 from mirabox_sdk import WebSocketStreamDockConnection
@@ -516,7 +532,8 @@ Coalescing is opt-in. Compatible adjacent pending `setState`, `setTitle`,
 `setImage`, `setSettings`, or `setGlobalSettings` commands for the same
 semantic target are replaced by their newest value. Commands of another type or
 target are ordering barriers. All callers whose commands were combined receive
-the final write result.
+the final write result; every associated `CommandFuture` completes with that
+same result.
 
 Read `connection.outbound_queue_metrics` for an atomic `OutboundQueueMetrics`
 snapshot. It reports current and peak depth, submissions, enqueues, coalescing,
@@ -536,7 +553,7 @@ The runtime uses explicit thread ownership:
 | `configure_logging()` and `StreamDockPlugin.run()` / `stop()` | Application lifecycle thread; configure logging before `run()`, and call `stop()` after it returns |
 | WebSocket parsing and `on_stream_dock_connected()` | WebSocket loop/reader thread |
 | `on_stream_dock_event()` and every `Action` callback | Connection-owned inbound workers; callbacks are serial per context and may overlap across contexts, while lifecycle, broadcast, and unknown barriers run exclusively |
-| `StreamDockSender.send()` and action command helpers | Any application, service, or action-callback thread; overlapping calls are supported |
+| `StreamDockSender.send()` / `send_async()` and action command helpers | Any application, service, or action-callback thread; overlapping calls are supported |
 | `WebSocketStreamDockConnection.close()` | Any application or action-callback thread; calls are idempotent and may overlap |
 | `set_listener()` | Lifecycle thread before `run_forever()` starts |
 
@@ -544,13 +561,14 @@ The outbound queue establishes FIFO order when it accepts commands. Calls that
 do not overlap retain caller order; the relative order of simultaneous calls
 is intentionally unspecified. Each `send()` waits only for its own accepted
 submission (or the final coalesced write) and receives its serialization,
-transport, overflow, or shutdown result.
+transport, overflow, or shutdown result. `send_async()` returns after
+acceptance; the returned `CommandFuture` exposes the later result.
 
 Scalar-only frozen command objects may be shared between threads.
 Payload-bearing commands own mutable `OwnedJsonPayload` data: do not mutate a
-command or its payload once any thread begins `send()`. `ValidatedJsonObject`
-backing snapshots are safe to hand between threads after construction, but
-every mutable COW view—event settings, `Action.settings`,
+command or its payload once any thread begins `send()` or `send_async()`.
+`ValidatedJsonObject` backing snapshots are safe to hand between threads after
+construction, but every mutable COW view—event settings, `Action.settings`,
 `runtime.global_settings`, and `OwnedJsonPayload`—allows only one accessing or
 mutating thread at a time. Use `update_global_settings()` for serialized,
 rollback-safe updates from background services; do not share a live mutable

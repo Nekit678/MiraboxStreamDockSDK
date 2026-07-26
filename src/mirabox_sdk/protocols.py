@@ -7,6 +7,7 @@ from typing import Protocol
 
 from .commands import StreamDockCommand
 from .events import StreamDockEvent
+from .outbound import CommandFuture
 
 
 class StreamDockSender(Protocol):
@@ -21,6 +22,23 @@ class StreamDockSender(Protocol):
 
         Args:
             command: Typed command to transmit.
+        """
+
+        ...
+
+    @abstractmethod
+    def send_async(self, command: StreamDockCommand) -> CommandFuture:
+        """Submit one command without waiting for serialization or transport.
+
+        Queue-capacity and shutdown rejections are raised before this method
+        returns. Writer-side failures are available through the returned
+        completion handle.
+
+        Args:
+            command: Typed command to transmit.
+
+        Returns:
+            Completion handle for the accepted command.
         """
 
         ...
@@ -52,8 +70,9 @@ class StreamDockConnection(StreamDockSender, Protocol):
     A plugin runtime installs one listener, then calls :meth:`run_forever`.
     Implementations are responsible for delivering parsed incoming events and
     accepting typed outgoing commands. ``set_listener()`` and ``run_forever()``
-    belong to the lifecycle thread; ``send()`` and ``close()`` may be called
-    concurrently from application or callback threads.
+    belong to the lifecycle thread; ``send()``, ``send_async()``, and
+    ``close()`` may be called concurrently from application or callback
+    threads.
     """
 
     @abstractmethod

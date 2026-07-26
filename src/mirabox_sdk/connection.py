@@ -20,7 +20,7 @@ from .inbound import (
     _InboundEventDispatcher,
 )
 from .logging_config import _protocol_payload_logging_enabled
-from .outbound import OutboundQueueMetrics, _OutboundCommandBus
+from .outbound import CommandFuture, OutboundQueueMetrics, _OutboundCommandBus
 from .parser import parse_stream_dock_event
 from .protocols import StreamDockConnection, StreamDockListener
 
@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 
 _REDACTED = "<redacted>"
 _LOGGABLE_PROTOCOL_FIELDS = ("event", "action", "context", "device", "uuid")
+_DEFAULT_INBOUND_SHUTDOWN_TIMEOUT = 5.0
 
 
 class _CloseState(Enum):
@@ -100,7 +101,8 @@ class WebSocketStreamDockConnection(StreamDockConnection):
         coalesce_dial_rotations: Combine compatible queued rotations for the
             same action context by summing their ticks.
         inbound_shutdown_timeout: Maximum seconds to wait for queued callbacks
-            during shutdown. ``None`` waits until the queue drains.
+            during shutdown. Defaults to five seconds. ``None`` explicitly
+            requests an unbounded wait.
         outbound_queue_limit: Maximum number of commands waiting for the single
             WebSocket writer.
         coalesce_outbound_commands: Replace adjacent pending state-setting
@@ -116,8 +118,9 @@ class WebSocketStreamDockConnection(StreamDockConnection):
         reader parses and enqueues frames. Inbound workers serialize callbacks
         per action context while lifecycle, broadcast, and unknown events act
         as exclusive ordering barriers. One outbound writer serializes all
-        commands. ``send()`` and ``close()`` are thread-safe; mutable event,
-        action, and command payload views must not be accessed concurrently.
+        commands. ``send()``, ``send_async()``, and ``close()`` are thread-safe;
+        mutable event, action, and command payload views must not be accessed
+        concurrently.
     """
 
     def __init__(
@@ -128,7 +131,7 @@ class WebSocketStreamDockConnection(StreamDockConnection):
         inbound_worker_count: int = 4,
         overflow_policy: InboundOverflowPolicy = InboundOverflowPolicy.DROP_NEWEST,
         coalesce_dial_rotations: bool = False,
-        inbound_shutdown_timeout: float | None = None,
+        inbound_shutdown_timeout: float | None = _DEFAULT_INBOUND_SHUTDOWN_TIMEOUT,
         outbound_queue_limit: int = 1024,
         coalesce_outbound_commands: bool = False,
         outbound_shutdown_timeout: float | None = None,
@@ -232,6 +235,10 @@ class WebSocketStreamDockConnection(StreamDockConnection):
         before the WebSocket closes. Configured shutdown timeouts can bound
         either wait. The method is thread-safe and idempotent, including when
         called from an action callback on the inbound dispatcher.
+
+        Python cannot forcibly stop a running callback thread. A callback that
+        exceeds ``inbound_shutdown_timeout`` continues on its daemon worker
+        until it returns, while this method proceeds with connection shutdown.
         """
 
         with self._close_lock:
@@ -297,6 +304,28 @@ class WebSocketStreamDockConnection(StreamDockConnection):
         """
 
         self._outbound.submit(command)
+
+    def send_async(self, command: StreamDockCommand) -> CommandFuture:
+        """Submit one typed command without waiting for writer-side I/O.
+
+        Args:
+            command: Typed command to enqueue. Payload-bearing commands must not
+                be mutated after this method is called.
+
+        Returns:
+            A completion handle whose :meth:`CommandFuture.result` method
+            reports serialization, transport, or shutdown failures.
+
+        Raises:
+            OutboundQueueFullError: If the bounded command queue is full.
+            OutboundCommandBusClosedError: If connection shutdown has begun.
+
+        Queue acceptance happens on the calling thread. Validation,
+        serialization, protocol logging, and WebSocket writes remain ordered on
+        the connection-owned writer thread.
+        """
+
+        return self._outbound.submit_async(command)
 
     def _serialize_outbound_command(self, command: StreamDockCommand) -> str:
         wire_message = command.to_validated_wire()
@@ -370,6 +399,14 @@ class WebSocketStreamDockConnection(StreamDockConnection):
             timeout = self._inbound_shutdown_timeout
             if timeout is None:  # pragma: no cover - an unbounded join cannot time out
                 raise AssertionError("unbounded inbound queue shutdown timed out")
+            for event_name, context in self._inbound.shutdown_timeout_callbacks():
+                logger.warning(
+                    "Inbound Stream Dock callback still running after %.3f seconds: "
+                    "event=%r context=%r",
+                    timeout,
+                    event_name,
+                    context,
+                )
             logger.warning(
                 "Inbound Stream Dock event queue did not drain within %.3f seconds; "
                 "pending events were discarded",

@@ -18,6 +18,7 @@ from mirabox_sdk import (
     EVENT_REGISTRY,
     JSON_OBJECT_CODEC,
     Action,
+    CommandFuture,
     Controller,
     Coordinates,
     DeviceDidDisconnectEvent,
@@ -962,6 +963,72 @@ class WebSocketStreamDockConnectionTests(unittest.TestCase):
         self.assertIn(StreamDockConnection, WebSocketStreamDockConnection.__mro__)
 
     @patch("mirabox_sdk.connection.websocket.WebSocketApp")
+    def test_send_async_returns_before_writer_io_completes(self, app_factory: Mock) -> None:
+        write_started = Event()
+        release_write = Event()
+
+        def write(_raw_message: str) -> None:
+            write_started.set()
+            if not release_write.wait(1):
+                raise AssertionError("timed out waiting to release write")
+
+        app_factory.return_value.send.side_effect = write
+        connection = WebSocketStreamDockConnection(12345)
+        future = connection.send_async(SetTitleCommand("button", "Count"))
+
+        self.assertIsInstance(future, CommandFuture)
+        self.assertTrue(write_started.wait(1))
+        self.assertFalse(future.done())
+        self.assertFalse(future.wait(0))
+        with self.assertRaisesRegex(TimeoutError, "did not complete"):
+            future.result(0)
+
+        release_write.set()
+        future.result(1)
+        self.assertTrue(future.done())
+        self.assertIsNone(future.exception())
+        connection.close()
+
+    @patch("mirabox_sdk.connection.websocket.WebSocketApp")
+    def test_send_async_returns_before_serialization_completes(
+        self,
+        app_factory: Mock,
+    ) -> None:
+        serialization_started = Event()
+        release_serialization = Event()
+
+        class BlockingCommand(StreamDockCommand):
+            def to_wire(self) -> JsonObject:
+                serialization_started.set()
+                if not release_serialization.wait(1):
+                    raise AssertionError("timed out waiting to release serialization")
+                return {"event": "blockingCommand"}
+
+        connection = WebSocketStreamDockConnection(12345)
+        future = connection.send_async(BlockingCommand())
+
+        self.assertTrue(serialization_started.wait(1))
+        self.assertFalse(future.done())
+        release_serialization.set()
+        future.result(1)
+        app_factory.return_value.send.assert_called_once()
+        connection.close()
+
+    @patch("mirabox_sdk.connection.websocket.WebSocketApp")
+    def test_send_async_reports_writer_failure_through_future(self, app_factory: Mock) -> None:
+        app_factory.return_value.send.side_effect = RuntimeError("transport failed")
+        connection = WebSocketStreamDockConnection(12345)
+
+        with self.assertLogs("mirabox_sdk.outbound", level="ERROR"):
+            future = connection.send_async(SetStateCommand("button", 2))
+            with self.assertRaisesRegex(RuntimeError, "transport failed"):
+                future.result(1)
+
+        error = future.exception()
+        self.assertIsInstance(error, RuntimeError)
+        connection.close()
+
+    @patch("mirabox_sdk.connection.websocket.WebSocketApp")
     def test_rejects_non_json_command_before_sending(self, app_factory: Mock) -> None:
         class CustomCommand(StreamDockCommand):
             def __init__(self, message: object) -> None:
@@ -1198,6 +1265,8 @@ class WebSocketStreamDockConnectionTests(unittest.TestCase):
         self.assertTrue(wait_for(lambda: connection.outbound_queue_metrics.current_depth == 1))
         with self.assertRaisesRegex(OutboundQueueFullError, "limit=1"):
             connection.send(SetStateCommand("button", 2))
+        with self.assertRaisesRegex(OutboundQueueFullError, "limit=1"):
+            connection.send_async(SetStateCommand("button", 3))
 
         release_first_write.set()
         first.join(1)
@@ -1206,8 +1275,8 @@ class WebSocketStreamDockConnectionTests(unittest.TestCase):
 
         self.assertEqual(producer_failures, [])
         metrics = connection.outbound_queue_metrics
-        self.assertEqual(metrics.rejected_full, 1)
-        self.assertEqual(metrics.rejected, 1)
+        self.assertEqual(metrics.rejected_full, 2)
+        self.assertEqual(metrics.rejected, 2)
         self.assertEqual(metrics.sent, 2)
 
     @patch("mirabox_sdk.connection.websocket.WebSocketApp")
@@ -1305,10 +1374,12 @@ class WebSocketStreamDockConnectionTests(unittest.TestCase):
         connection.close()
         with self.assertRaises(OutboundCommandBusClosedError):
             connection.send(LogMessageCommand("too late"))
+        with self.assertRaises(OutboundCommandBusClosedError):
+            connection.send_async(LogMessageCommand("also too late"))
 
         metrics = connection.outbound_queue_metrics
-        self.assertEqual(metrics.rejected_after_shutdown, 1)
-        self.assertEqual(metrics.rejected, 1)
+        self.assertEqual(metrics.rejected_after_shutdown, 2)
+        self.assertEqual(metrics.rejected, 2)
         app_factory.return_value.send.assert_not_called()
 
     @patch("mirabox_sdk.connection.websocket.WebSocketApp")
@@ -1709,6 +1780,7 @@ class WebSocketStreamDockConnectionTests(unittest.TestCase):
                 "dropped_after_shutdown": 0,
                 "dropped_without_listener": 0,
                 "callback_failures": 0,
+                "callback_timeouts": 0,
             },
         )
 
@@ -2219,9 +2291,12 @@ class WebSocketStreamDockConnectionTests(unittest.TestCase):
             callback_finished.set()
 
         def read_frames() -> None:
-            connection._on_message(app_factory.return_value, '{"event":"firstEvent"}')
+            connection._on_message(app_factory.return_value, key_down_message("hung"))
             self.assertTrue(callback_started.wait(1))
-            connection._on_message(app_factory.return_value, '{"event":"secondEvent"}')
+            connection._on_message(
+                app_factory.return_value,
+                key_down_message("hung", sequence=1),
+            )
 
         listener.on_stream_dock_event.side_effect = on_event
         connection = WebSocketStreamDockConnection(
@@ -2231,13 +2306,15 @@ class WebSocketStreamDockConnectionTests(unittest.TestCase):
         connection.set_listener(listener)
         app_factory.return_value.run_forever.side_effect = read_frames
 
-        with self.assertLogs("mirabox_sdk.connection", level="WARNING"):
+        with self.assertLogs("mirabox_sdk.connection", level="WARNING") as logs:
             connection.run_forever()
 
         metrics = connection.inbound_queue_metrics
         self.assertEqual(metrics.current_depth, 0)
         self.assertEqual(metrics.dropped_after_shutdown, 1)
         self.assertEqual(metrics.dispatched, 0)
+        self.assertEqual(metrics.callback_timeouts, 1)
+        self.assertIn("event='keyDown' context='hung'", "\n".join(logs.output))
 
         release_callback.set()
         self.assertTrue(callback_finished.wait(1))
@@ -2268,6 +2345,10 @@ class WebSocketStreamDockConnectionTests(unittest.TestCase):
         self.assertEqual(connection.inbound_queue_metrics.dropped_after_shutdown, 1)
 
     def test_rejects_invalid_queue_configuration(self) -> None:
+        default_connection = WebSocketStreamDockConnection(12345)
+        self.assertEqual(default_connection._inbound_shutdown_timeout, 5.0)
+        default_connection.close()
+
         for queue_limit in (0, -1, True, 1.5):
             with (
                 self.subTest(queue_limit=queue_limit),

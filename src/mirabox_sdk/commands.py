@@ -60,10 +60,10 @@ class StreamDockCommand(ABC):
     Concrete commands are immutable dataclasses. They intentionally contain
     protocol values without performing transport I/O, which makes them easy to
     construct, inspect, and test before passing them to
-    :meth:`StreamDockSender.send`. Scalar-only commands may be shared freely
-    between threads. Payload-bearing commands own mutable copy-on-write JSON;
-    neither the command nor that payload may be mutated after a thread begins
-    sending it.
+    :meth:`StreamDockSender.send` or :meth:`StreamDockSender.send_async`.
+    Scalar-only commands may be shared freely between threads. Payload-bearing
+    commands own mutable copy-on-write JSON; neither the command nor that
+    payload may be mutated after a thread begins sending it.
     """
 
     @abstractmethod

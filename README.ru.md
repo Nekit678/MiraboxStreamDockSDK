@@ -239,7 +239,9 @@ Stream Dock создаёт и удаляет контексты событиям
 Вспомогательные методы `Action` покрывают основные исходящие команды:
 `set_title()`, `set_image()`, `set_state()`, `set_settings()`, `get_settings()`,
 `show_ok()`, `show_alert()`, `open_url()`, `log_message()` и
-`send_to_property_inspector()`.
+`send_to_property_inspector()`. Для обновлений отображения также доступны
+неблокирующие варианты `set_title_async()`, `set_image_async()` и
+`set_state_async()`.
 
 ### Типизированные настройки
 
@@ -487,10 +489,18 @@ Coalescing rotation-событий включается явно: совмест
 Свойство `connection.inbound_queue_metrics` возвращает атомарный snapshot
 `InboundQueueMetrics`: текущую и пиковую глубину, числа полученных, поставленных
 в очередь, объединённых, приостановленных backpressure, доставленных и
-отброшенных событий, а также ошибок callback-ов. По умолчанию
-`inbound_shutdown_timeout=None` ждёт полного дренирования. Числовой timeout
-ограничивает ожидание; оставшиеся в очереди события после его истечения
-отбрасываются.
+отброшенных событий, а также ошибок и timeout-ов callback-ов. По умолчанию
+`inbound_shutdown_timeout=5.0` ограничивает дренирование; `None` нужно передать
+явно, если действительно требуется неограниченное ожидание. При timeout
+оставшиеся в очереди события отбрасываются, а каждый продолжающий выполняться
+callback логируется вместе с именем события и context. Метрика
+`callback_timeouts` считает такие callback-и отдельно от их ошибок.
+
+Python не позволяет безопасно принудительно остановить выполняющийся поток.
+Callback, превысивший timeout, продолжит работу в daemon worker-е до
+самостоятельного возврата, хотя `close()` уже продолжит shutdown. Поэтому I/O
+в callback-е должен иметь собственные timeout-ы и, где уместно, кооперативную
+отмену.
 
 ## Исходящая шина команд
 
@@ -502,9 +512,18 @@ Coalescing rotation-событий включается явно: совмест
 сериализации и транспорта по-прежнему возвращаются вызывающему коду, а helpers
 обновления настроек сохраняют rollback-семантику.
 
+`send_async()` выполняет ту же постановку в очередь, но возвращает
+`CommandFuture` до сериализации и WebSocket I/O. Переполнение очереди и начало
+shutdown выбрасываются сразу; `future.result()` нужен только коду, которому
+важен итог отправки или отложенная ошибка writer-а. Для частого обновления
+отображения `Action.set_image_async()`, `set_title_async()` и
+`set_state_async()` не удерживают inbound callback при медленном writer-е.
+Helpers настроек с rollback-семантикой остаются синхронными.
+
 По умолчанию исходящая очередь вмещает 1024 ожидающие команды. При переполнении
-команды не теряются молча: `send()` выбрасывает `OutboundQueueFullError`.
-Размер очереди и timeout штатного дренирования задаются в соединении:
+команды не теряются молча: `send()` и `send_async()` выбрасывают
+`OutboundQueueFullError`. Размер очереди и timeout штатного дренирования
+задаются в соединении:
 
 ```python
 from mirabox_sdk import WebSocketStreamDockConnection
@@ -521,7 +540,8 @@ Coalescing включается явно. Совместимые соседни�
 `setTitle`, `setImage`, `setSettings` или `setGlobalSettings` для одной
 семантической цели заменяются самым новым значением. Команда другого типа или
 для другой цели служит ordering barrier. Все вызывающие потоки, чьи команды
-были объединены, получают результат итоговой записи.
+были объединены, получают результат итоговой записи; каждый связанный
+`CommandFuture` завершается с тем же результатом.
 
 Свойство `connection.outbound_queue_metrics` возвращает атомарный snapshot
 `OutboundQueueMetrics`: текущую и пиковую глубину, постановку и объединение
@@ -541,7 +561,7 @@ Runtime явно распределяет владение между поток
 | `configure_logging()` и `StreamDockPlugin.run()` / `stop()` | Lifecycle-поток приложения; logging настраивается до `run()`, а `stop()` вызывается после его возврата |
 | Разбор WebSocket и `on_stream_dock_connected()` | Поток WebSocket loop/reader |
 | `on_stream_dock_event()` и все callback-и `Action` | Inbound workers соединения; callback-и последовательны внутри context и могут пересекаться между contexts, а lifecycle-, broadcast- и unknown-barriers выполняются эксклюзивно |
-| `StreamDockSender.send()` и helpers исходящих команд `Action` | Любой поток приложения, service или action callback; перекрывающиеся вызовы поддерживаются |
+| `StreamDockSender.send()` / `send_async()` и helpers исходящих команд `Action` | Любой поток приложения, service или action callback; перекрывающиеся вызовы поддерживаются |
 | `WebSocketStreamDockConnection.close()` | Любой поток приложения или action callback; вызовы идемпотентны и могут перекрываться |
 | `set_listener()` | Lifecycle-поток до запуска `run_forever()` |
 
@@ -550,15 +570,17 @@ Runtime явно распределяет владение между поток
 одновременных вызовов намеренно не определён. Каждый `send()` ждёт только
 результат своей принятой команды (либо итоговой объединённой записи) и получает
 свою ошибку сериализации, транспорта, переполнения или shutdown.
+`send_async()` возвращается после принятия, а его `CommandFuture` предоставляет
+последующий результат.
 
 Frozen-команды только со скалярными полями можно передавать между потоками.
-Команды с payload владеют изменяемым `OwnedJsonPayload`: после начала `send()` в
-любом потоке нельзя изменять ни команду, ни её payload. Неизменяемые backing
-snapshots `ValidatedJsonObject` можно последовательно передавать между потоками,
-но каждый изменяемый COW view — settings события, `Action.settings`,
-`runtime.global_settings` и `OwnedJsonPayload` — допускает только один
-обращающийся или изменяющий поток одновременно. Для сериализованных,
-rollback-safe обновлений из background services используйте
+Команды с payload владеют изменяемым `OwnedJsonPayload`: после начала `send()`
+или `send_async()` в любом потоке нельзя изменять ни команду, ни её payload.
+Неизменяемые backing snapshots `ValidatedJsonObject` можно последовательно
+передавать между потоками, но каждый изменяемый COW view — settings события,
+`Action.settings`, `runtime.global_settings` и `OwnedJsonPayload` — допускает
+только один обращающийся или изменяющий поток одновременно. Для
+сериализованных, rollback-safe обновлений из background services используйте
 `update_global_settings()` и не делите живой mutable view между потоками.
 
 Shutdown запрещает новые входящие события, дренирует inbound dispatcher, пока

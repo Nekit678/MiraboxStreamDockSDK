@@ -13,6 +13,7 @@ from mirabox_sdk import (
     Action,
     ActionRegistry,
     ActionStore,
+    CommandFuture,
     Controller,
     Coordinates,
     DidReceiveGlobalSettingsEvent,
@@ -29,6 +30,9 @@ from mirabox_sdk import (
     RegistrationInfo,
     RegistrationPluginInfo,
     SetGlobalSettingsCommand,
+    SetImageCommand,
+    SetStateCommand,
+    SetTitleCommand,
     StreamDockPlugin,
     StreamDockSender,
     SystemDidWakeUpEvent,
@@ -222,6 +226,41 @@ class CopyOnWriteJsonTests(unittest.TestCase):
 
 
 class ActionTests(unittest.TestCase):
+    def test_async_display_helpers_return_command_futures(self) -> None:
+        stream_dock = Mock()
+        futures = (CommandFuture(), CommandFuture(), CommandFuture())
+        stream_dock.send_async.side_effect = futures
+        action = RecordingAction(
+            ACTION_UUID,
+            "button",
+            {"count": 1},
+            ExampleDependencies(stream_dock),
+        )
+
+        returned = (
+            action.set_state_async(2),
+            action.set_title_async("Count", target=1, state=2),
+            action.set_image_async("data:image/png;base64,abc", target=1, state=2),
+        )
+
+        self.assertEqual(returned, futures)
+        self.assertEqual(
+            stream_dock.send_async.call_args_list,
+            [
+                call(SetStateCommand("button", 2)),
+                call(SetTitleCommand("button", "Count", target=1, state=2)),
+                call(
+                    SetImageCommand(
+                        "button",
+                        "data:image/png;base64,abc",
+                        target=1,
+                        state=2,
+                    )
+                ),
+            ],
+        )
+        stream_dock.send.assert_not_called()
+
     def test_set_settings_preserves_state_when_encoding_fails(self) -> None:
         stream_dock = Mock()
         action = RecordingAction(

@@ -41,6 +41,7 @@ from .events import (
     WillDisappearEvent,
 )
 from .json_types import JsonObject
+from .outbound import CommandFuture
 from .protocols import StreamDockActionDependencies
 
 SettingsT = TypeVar("SettingsT")
@@ -114,6 +115,9 @@ class Action(Generic[SettingsT, DependenciesT]):
     def _send(self, command: StreamDockCommand) -> None:
         self._stream_dock.send(command)
 
+    def _send_async(self, command: StreamDockCommand) -> CommandFuture:
+        return self._stream_dock.send_async(command)
+
     def send_to_property_inspector(self, payload: JsonObject) -> None:
         """Send a JSON object to this action's Property Inspector.
 
@@ -165,6 +169,19 @@ class Action(Generic[SettingsT, DependenciesT]):
 
         self._send(SetStateCommand(self.context, state))
 
+    def set_state_async(self, state: int) -> CommandFuture:
+        """Queue a displayed-state update without waiting for transport I/O.
+
+        Args:
+            state: Zero-based state index defined by the action manifest.
+
+        Returns:
+            Completion handle for the accepted command. Call ``result()`` when
+            the eventual writer-side outcome is required.
+        """
+
+        return self._send_async(SetStateCommand(self.context, state))
+
     def set_title(
         self,
         title: str,
@@ -183,6 +200,27 @@ class Action(Generic[SettingsT, DependenciesT]):
         """
 
         self._send(SetTitleCommand(self.context, title, target, state))
+
+    def set_title_async(
+        self,
+        title: str,
+        *,
+        target: int = 0,
+        state: int | None = None,
+    ) -> CommandFuture:
+        """Queue a title update without waiting for transport I/O.
+
+        Args:
+            title: New title text. Pass an empty string to clear it.
+            target: Stream Dock protocol target selector.
+            state: Optional zero-based state to update.
+
+        Returns:
+            Completion handle for the accepted command. Call ``result()`` when
+            the eventual writer-side outcome is required.
+        """
+
+        return self._send_async(SetTitleCommand(self.context, title, target, state))
 
     @classmethod
     def decode_settings(cls, settings: JsonObject) -> SettingsT:
@@ -272,6 +310,27 @@ class Action(Generic[SettingsT, DependenciesT]):
         """
 
         self._send(SetImageCommand(self.context, image, target, state))
+
+    def set_image_async(
+        self,
+        image: str,
+        *,
+        target: int = 0,
+        state: int | None = None,
+    ) -> CommandFuture:
+        """Queue an image update without waiting for transport I/O.
+
+        Args:
+            image: Image representation accepted by the Stream Dock protocol.
+            target: Stream Dock protocol target selector.
+            state: Optional zero-based state to update.
+
+        Returns:
+            Completion handle for the accepted command. Call ``result()`` when
+            the eventual writer-side outcome is required.
+        """
+
+        return self._send_async(SetImageCommand(self.context, image, target, state))
 
     def show_ok(self) -> None:
         """Show Stream Dock's temporary success indicator on this action."""

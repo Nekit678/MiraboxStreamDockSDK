@@ -52,6 +52,7 @@ class InboundQueueMetrics:
     dropped_without_listener: int
     callback_failures: int
     backpressured: int = 0
+    callback_timeouts: int = 0
 
     @property
     def dropped(self) -> int:
@@ -68,6 +69,13 @@ class InboundQueueMetrics:
 @dataclass(slots=True)
 class _QueuedEvent:
     event: StreamDockEvent
+
+
+@dataclass(frozen=True, slots=True)
+class _ActiveCallback:
+    token: int
+    event_name: str
+    context: str | None
 
 
 class _InboundEventDispatcher:
@@ -93,6 +101,10 @@ class _InboundEventDispatcher:
         self._threads: tuple[Thread, ...] = ()
         self._active_contexts: set[str] = set()
         self._active_callbacks = 0
+        self._active_callbacks_by_thread: dict[Thread, _ActiveCallback] = {}
+        self._next_callback_token = 0
+        self._timed_out_callback_tokens: set[int] = set()
+        self._last_timed_out_callbacks: tuple[_ActiveCallback, ...] = ()
         self._barrier_active = False
         self._started = False
         self._accepting = True
@@ -109,6 +121,7 @@ class _InboundEventDispatcher:
         self._dropped_after_shutdown = 0
         self._dropped_without_listener = 0
         self._callback_failures = 0
+        self._callback_timeouts = 0
 
     def start(self) -> None:
         """Start the event-dispatch worker pool exactly once."""
@@ -205,6 +218,7 @@ class _InboundEventDispatcher:
         with self._condition:
             self._accepting = False
             self._shutdown_requested = True
+            self._last_timed_out_callbacks = ()
             threads = self._threads
             if not threads:
                 self._discard_queued_events()
@@ -218,6 +232,7 @@ class _InboundEventDispatcher:
                 while self._active_callbacks > 1:
                     remaining = None if deadline is None else deadline - monotonic()
                     if remaining is not None and remaining <= 0:
+                        self._record_callback_timeouts(exclude_thread=current_thread())
                         return False
                     self._condition.wait(remaining)
                 return True
@@ -230,9 +245,19 @@ class _InboundEventDispatcher:
             return True
 
         with self._condition:
+            self._record_callback_timeouts()
             self._discard_queued_events()
             self._condition.notify_all()
         return False
+
+    def shutdown_timeout_callbacks(self) -> tuple[tuple[str, str | None], ...]:
+        """Return event names and contexts captured by the latest timeout."""
+
+        with self._condition:
+            return tuple(
+                (callback.event_name, callback.context)
+                for callback in self._last_timed_out_callbacks
+            )
 
     def metrics(self) -> InboundQueueMetrics:
         """Return an atomic snapshot of queue counters and depth."""
@@ -252,6 +277,7 @@ class _InboundEventDispatcher:
                 dropped_after_shutdown=self._dropped_after_shutdown,
                 dropped_without_listener=self._dropped_without_listener,
                 callback_failures=self._callback_failures,
+                callback_timeouts=self._callback_timeouts,
             )
 
     def _run(self) -> None:
@@ -301,6 +327,12 @@ class _InboundEventDispatcher:
             del self._queue[index]
             self._forget_queued_event(queued)
             self._active_callbacks += 1
+            self._next_callback_token += 1
+            self._active_callbacks_by_thread[current_thread()] = _ActiveCallback(
+                token=self._next_callback_token,
+                event_name=queued.event.event_name,
+                context=self._event_context(queued.event),
+            )
             self._condition.notify_all()
             return queued
         return None
@@ -312,7 +344,21 @@ class _InboundEventDispatcher:
         else:
             self._active_contexts.remove(context)
         self._active_callbacks -= 1
+        self._active_callbacks_by_thread.pop(current_thread(), None)
         self._condition.notify_all()
+
+    def _record_callback_timeouts(self, *, exclude_thread: Thread | None = None) -> None:
+        callbacks = tuple(
+            callback
+            for thread, callback in self._active_callbacks_by_thread.items()
+            if thread is not exclude_thread
+        )
+        self._last_timed_out_callbacks = callbacks
+        for callback in callbacks:
+            if callback.token in self._timed_out_callback_tokens:
+                continue
+            self._timed_out_callback_tokens.add(callback.token)
+            self._callback_timeouts += 1
 
     def _coalesce(self, event: StreamDockEvent) -> bool:
         if not self._coalesce_dial_rotations or not isinstance(event, DialRotateEvent):
@@ -375,6 +421,10 @@ class _InboundEventDispatcher:
     def _dispatch_context(event: StreamDockEvent) -> str | None:
         if isinstance(event, (WillAppearEvent, WillDisappearEvent)):
             return None
+        return event.context if isinstance(event, ActionEvent) else None
+
+    @staticmethod
+    def _event_context(event: StreamDockEvent) -> str | None:
         return event.context if isinstance(event, ActionEvent) else None
 
     @staticmethod

@@ -20,6 +20,8 @@ change public APIs between minor versions.
 - Add a bounded outbound command bus with one serialization and WebSocket
   writer thread, FIFO ordering, explicit overflow and shutdown errors, metrics,
   graceful draining, and optional state-command coalescing.
+- Add `send_async()`, `CommandFuture`, and non-blocking action helpers for
+  image, title, and state display updates.
 - Add `ActionStore` and `GlobalSettingsStore` as the dedicated owners of
   runtime action routing and global-settings state.
 
@@ -41,6 +43,8 @@ change public APIs between minor versions.
   rotating-file I/O does not run on protocol or application worker threads.
 - Formalize the supported lifecycle, callback, command, COW-view, concurrent
   send, and shutdown thread contract.
+- Bound inbound shutdown to five seconds by default while retaining `None` as
+  an explicit opt-in to an unbounded callback drain.
 
 ### Fixed
 
@@ -52,6 +56,8 @@ change public APIs between minor versions.
   payloads after a successful settings update.
 - Validate and isolate mutations of runtime global settings before committing
   them, so failed updates leave the public view and replay state unchanged.
+- Record callback shutdown timeouts separately and log the active event name
+  and context when a callback prevents the inbound dispatcher from draining.
 
 ### Performance
 

@@ -98,6 +98,7 @@ from .inbound import InboundOverflowPolicy, InboundQueueMetrics
 from .json_types import JsonObject, JsonValue, OwnedJsonPayload, ValidatedJsonObject
 from .logging_config import configure_logging
 from .outbound import (
+    CommandFuture,
     OutboundCommandBusClosedError,
     OutboundCommandBusError,
     OutboundQueueFullError,
@@ -139,6 +140,7 @@ __all__ = [
     "ActionPayloadEvent",
     "ApplicationDidLaunchEvent",
     "ApplicationDidTerminateEvent",
+    "CommandFuture",
     "Controller",
     "Coordinates",
     "DeviceActionEvent",
