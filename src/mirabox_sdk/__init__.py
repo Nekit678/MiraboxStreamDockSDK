@@ -96,7 +96,7 @@ from .events import (
 )
 from .inbound import InboundOverflowPolicy, InboundQueueMetrics
 from .json_types import JsonObject, JsonValue, OwnedJsonPayload, ValidatedJsonObject
-from .logging_config import configure_logging
+from .logging_config import LoggingOverflowPolicy, configure_logging, dropped_log_records
 from .outbound import (
     CommandFuture,
     OutboundCommandBusClosedError,
@@ -179,6 +179,7 @@ __all__ = [
     "KeyUpEvent",
     "LifecycleService",
     "LogMessageCommand",
+    "LoggingOverflowPolicy",
     "MalformedEventError",
     "OpenUrlCommand",
     "OutboundCommandBusClosedError",
@@ -232,6 +233,7 @@ __all__ = [
     "configure_logging",
     "copy_property_inspector_client",
     "decode_with_codec",
+    "dropped_log_records",
     "encode_with_codec",
     "parse_plugin_cli_arguments",
     "parse_plugin_launch_arguments",

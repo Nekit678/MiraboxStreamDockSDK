@@ -10,10 +10,31 @@ import unittest
 from io import StringIO
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from threading import Thread, get_ident
+from threading import Event, Thread, get_ident
 from unittest.mock import patch
 
-from mirabox_sdk import configure_logging
+from mirabox_sdk import (
+    LoggingOverflowPolicy,
+    configure_logging,
+    dropped_log_records,
+)
+
+
+class _BlockingStream(StringIO):
+    """Block the listener's first write so tests can fill its queue."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.write_started = Event()
+        self.release_write = Event()
+        self._block_next_write = True
+
+    def write(self, value: str) -> int:
+        if self._block_next_write:
+            self._block_next_write = False
+            self.write_started.set()
+            self.release_write.wait(5)
+        return super().write(value)
 
 
 class LoggingConfigurationTests(unittest.TestCase):
@@ -219,6 +240,119 @@ logging.getLogger("mirabox_sdk.connection").error("final record")
         self.assertTrue(file_thread_ids)
         self.assertTrue(set(producer_thread_ids).isdisjoint(file_thread_ids))
 
+    def test_drops_newest_record_when_logging_queue_is_full(self) -> None:
+        stream = _BlockingStream()
+        initial_dropped = dropped_log_records()
+        configure_logging(
+            level="DEBUG",
+            stream=stream,
+            logging_queue_limit=2,
+            logging_overflow_policy=LoggingOverflowPolicy.DROP_NEWEST,
+        )
+        logger = logging.getLogger("mirabox_sdk.connection")
+
+        try:
+            logger.debug("in flight")
+            self.assertTrue(stream.write_started.wait(1))
+            logger.debug("kept first")
+            logger.debug("kept second")
+            logger.debug("discarded newest")
+
+            self.assertEqual(dropped_log_records(), initial_dropped + 1)
+        finally:
+            stream.release_write.set()
+            configure_logging(enabled=False)
+
+        output = stream.getvalue()
+        self.assertIn("kept first", output)
+        self.assertIn("kept second", output)
+        self.assertNotIn("discarded newest", output)
+
+    def test_drops_oldest_record_when_logging_queue_is_full(self) -> None:
+        stream = _BlockingStream()
+        initial_dropped = dropped_log_records()
+        configure_logging(
+            level="DEBUG",
+            stream=stream,
+            logging_queue_limit=2,
+            logging_overflow_policy=LoggingOverflowPolicy.DROP_OLDEST,
+        )
+        logger = logging.getLogger("mirabox_sdk.connection")
+
+        try:
+            logger.debug("in flight")
+            self.assertTrue(stream.write_started.wait(1))
+            logger.debug("discarded oldest")
+            logger.debug("kept middle")
+            logger.debug("kept newest")
+
+            self.assertEqual(dropped_log_records(), initial_dropped + 1)
+        finally:
+            stream.release_write.set()
+            configure_logging(enabled=False)
+
+        output = stream.getvalue()
+        self.assertNotIn("discarded oldest", output)
+        self.assertIn("kept middle", output)
+        self.assertIn("kept newest", output)
+
+    def test_error_record_displaces_and_precedes_queued_debug_records(self) -> None:
+        stream = _BlockingStream()
+        initial_dropped = dropped_log_records()
+        configure_logging(
+            level="DEBUG",
+            stream=stream,
+            logging_queue_limit=2,
+            logging_overflow_policy=LoggingOverflowPolicy.DROP_NEWEST,
+        )
+        logger = logging.getLogger("mirabox_sdk.connection")
+
+        try:
+            logger.debug("in flight")
+            self.assertTrue(stream.write_started.wait(1))
+            logger.debug("discarded debug")
+            logger.debug("remaining debug")
+            logger.error("priority error")
+
+            self.assertEqual(dropped_log_records(), initial_dropped + 1)
+        finally:
+            stream.release_write.set()
+            configure_logging(enabled=False)
+
+        output = stream.getvalue()
+        self.assertNotIn("discarded debug", output)
+        self.assertLess(output.index("priority error"), output.index("remaining debug"))
+
+    def test_disable_drains_a_full_logging_queue(self) -> None:
+        stream = _BlockingStream()
+        configure_logging(
+            level="DEBUG",
+            stream=stream,
+            logging_queue_limit=2,
+        )
+        logger = logging.getLogger("mirabox_sdk.connection")
+        logger.debug("in flight")
+        self.assertTrue(stream.write_started.wait(1))
+        logger.debug("queued first")
+        logger.debug("queued second")
+
+        disable_thread = Thread(
+            target=configure_logging,
+            kwargs={"enabled": False},
+        )
+        disable_thread.start()
+        disable_thread.join(0.1)
+
+        try:
+            self.assertTrue(disable_thread.is_alive())
+        finally:
+            stream.release_write.set()
+            disable_thread.join(2)
+
+        self.assertFalse(disable_thread.is_alive())
+        self.assertIn("queued first", stream.getvalue())
+        self.assertIn("queued second", stream.getvalue())
+
     def test_rejects_invalid_configuration(self) -> None:
         self.sdk_logger.disabled = True
         self.sdk_logger.propagate = True
@@ -240,6 +374,18 @@ logging.getLogger("mirabox_sdk.connection").error("final record")
             configure_logging(max_bytes=-1)
         with self.assertRaisesRegex(ValueError, "backup_count must be positive"):
             configure_logging(max_bytes=1, backup_count=0)
+        for queue_limit in (0, -1, True, 1.5):
+            with (
+                self.subTest(logging_queue_limit=queue_limit),
+                self.assertRaisesRegex(ValueError, "logging_queue_limit"),
+            ):
+                configure_logging(
+                    logging_queue_limit=queue_limit,  # type: ignore[arg-type]
+                )
+        with self.assertRaisesRegex(ValueError, "logging_overflow_policy"):
+            configure_logging(
+                logging_overflow_policy="sample",  # type: ignore[arg-type]
+            )
 
 
 if __name__ == "__main__":

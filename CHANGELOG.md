@@ -20,6 +20,8 @@ change public APIs between minor versions.
 - Add a bounded outbound command bus with one serialization and WebSocket
   writer thread, FIFO ordering, explicit overflow and shutdown errors, metrics,
   graceful draining, and optional state-command coalescing.
+- Add a bounded managed logging queue with configurable overflow, a process-wide
+  dropped-record counter, and priority admission and delivery for ERROR records.
 - Add `send_async()`, `CommandFuture`, and non-blocking action helpers for
   image, title, and state display updates.
 - Add `ActionStore` and `GlobalSettingsStore` as the dedicated owners of

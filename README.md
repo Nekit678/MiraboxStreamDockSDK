@@ -600,18 +600,23 @@ logging rotates at 5 MiB with three backups by default:
 ```python
 from pathlib import Path
 
-from mirabox_sdk import configure_logging
+from mirabox_sdk import LoggingOverflowPolicy, configure_logging
 
 configure_logging(
     level="DEBUG",
     log_file=Path.home() / ".mirabox-counter" / "plugin.log",
     max_bytes=5 * 1024 * 1024,
     backup_count=3,
+    logging_queue_limit=1024,
+    logging_overflow_policy=LoggingOverflowPolicy.DROP_NEWEST,
 )
 ```
 
 Adjust `max_bytes` and `backup_count` for the plugin's needs. Set
 `max_bytes=0` only when intentionally requesting an unbounded file.
+`logging_queue_limit` bounds the number of records waiting for the managed
+listener; it must be positive. `DROP_NEWEST` preserves already queued records,
+while `DROP_OLDEST` keeps the most recent records of the same priority.
 
 `include_payload=True` adds the complete inbound and outbound protocol message
 to `DEBUG` records. Payloads may contain tokens, settings, and other secrets, so
@@ -643,8 +648,21 @@ SDK records are handed to one managed logging thread, so stream and rotating
 file I/O never runs in the WebSocket reader, inbound dispatcher, outbound
 writer, or calling service thread. Handlers installed manually by the
 application remain its responsibility and are outside that guarantee. The
-managed queue is unbounded to keep protocol threads non-blocking; choose a
-destination that can keep up with the configured log volume.
+managed queue is bounded and producers never wait for destination I/O. On
+overflow, an `ERROR` or `CRITICAL` record displaces a lower-level record when
+possible and is processed ahead of queued `DEBUG` through `WARNING` records.
+Lower-level records never displace queued errors; within the same priority
+class, the configured overflow policy is applied. `dropped_log_records()`
+returns the process-wide, thread-safe count of records discarded by all managed
+logging queues:
+
+```python
+from mirabox_sdk import dropped_log_records
+
+if dropped_log_records():
+    # The destination has not kept up with the configured log volume.
+    ...
+```
 
 ## Project structure
 

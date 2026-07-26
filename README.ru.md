@@ -610,18 +610,24 @@ configure_logging(level="INFO")
 ```python
 from pathlib import Path
 
-from mirabox_sdk import configure_logging
+from mirabox_sdk import LoggingOverflowPolicy, configure_logging
 
 configure_logging(
     level="DEBUG",
     log_file=Path.home() / ".mirabox-counter" / "plugin.log",
     max_bytes=5 * 1024 * 1024,
     backup_count=3,
+    logging_queue_limit=1024,
+    logging_overflow_policy=LoggingOverflowPolicy.DROP_NEWEST,
 )
 ```
 
 Значения `max_bytes` и `backup_count` можно подобрать под плагин. Используйте
 `max_bytes=0` только когда неограниченный размер файла выбран намеренно.
+`logging_queue_limit` ограничивает число записей, ожидающих обработки
+управляемым listener; значение должно быть положительным. `DROP_NEWEST`
+сохраняет уже поставленные в очередь записи, а `DROP_OLDEST` оставляет самые
+свежие записи того же приоритета.
 
 `include_payload=True` добавляет полное входящее и исходящее сообщение протокола
 в записи уровня `DEBUG`. Payload может содержать токены, настройки и другие
@@ -653,9 +659,21 @@ configure_logging(enabled=False)
 поэтому stream и rotating-file I/O не выполняется в WebSocket reader, inbound
 dispatcher, outbound writer или вызывающем service-потоке. Handlers,
 установленные приложением вручную, остаются его ответственностью и не входят в
-эту гарантию. Управляемая очередь не ограничена, чтобы не блокировать
-protocol-потоки, поэтому выбранное назначение должно справляться с настроенным
-объёмом логов.
+эту гарантию. Управляемая очередь ограничена, а producers никогда не ожидают
+destination I/O. При переполнении запись `ERROR` или `CRITICAL` по возможности
+вытесняет менее важную запись и обрабатывается раньше накопившихся записей от
+`DEBUG` до `WARNING`. Записи низших уровней никогда не вытесняют ожидающие
+ошибки; внутри одного класса приоритета применяется настроенная overflow policy.
+`dropped_log_records()` возвращает потокобезопасное число записей, отброшенных
+всеми управляемыми logging-очередями процесса:
+
+```python
+from mirabox_sdk import dropped_log_records
+
+if dropped_log_records():
+    # Destination не справляется с настроенным объёмом логов.
+    ...
+```
 
 ## Структура проекта
 

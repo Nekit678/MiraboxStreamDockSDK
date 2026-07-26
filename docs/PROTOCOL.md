@@ -144,7 +144,11 @@ complete messages temporarily in a trusted development environment.
 SDK logging is disabled and isolated from the root logger by default. Use
 `configure_logging()` to select a level and write to stderr or a rotating UTF-8
 file. Records reach that destination through a managed queue, so file I/O does
-not run in the WebSocket reader or protocol dispatcher. Call
+not run in the WebSocket reader or protocol dispatcher. The queue is bounded by
+`logging_queue_limit`; `logging_overflow_policy` selects which same-priority
+record is discarded, while ERROR and CRITICAL records take priority over lower
+levels and cannot be displaced by them. Monitor the process-wide
+`dropped_log_records()` counter for overflow. Call
 `configure_logging(enabled=False)` to drain the queue and restore the silent
 default.
 
