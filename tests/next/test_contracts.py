@@ -11,33 +11,57 @@ from pathlib import Path
 
 import mirabox_sdk
 from mirabox_sdk import RegisterPluginCommand, StreamDockCommand, StreamDockEvent
-from mirabox_sdk._next.boundary import BoundaryQueueConfig, StreamDockBoundary
-from mirabox_sdk._next.messaging.inbound import InboundEventSink, InboundEventSource
-from mirabox_sdk._next.messaging.outbound import (
-    CommandFuture,
-    CommandSubmission,
+from mirabox_sdk._next.boundary.config import BoundaryQueueConfig
+from mirabox_sdk._next.boundary.ports import StreamDockBoundary
+from mirabox_sdk._next.messaging.models import CommandFuture, CommandSubmission
+from mirabox_sdk._next.messaging.ports import (
+    InboundEventSink,
+    InboundEventSource,
     OutboundCommandSink,
     OutboundCommandSource,
 )
-from mirabox_sdk._next.transport.frames import OutboundFrame, TransportReceipt
-from mirabox_sdk._next.transport.lifecycle import (
-    Connected,
-    Disconnected,
-    SessionEvent,
-    SessionEventSink,
-    SessionEventSource,
-    TransportError,
+from mirabox_sdk._next.protocol.ports import (
+    DecodedEventParser,
+    StreamDockCommandEncoder,
+    StreamDockEventDecoder,
 )
-from mirabox_sdk._next.transport.protocols import (
+from mirabox_sdk._next.transport.frames import OutboundFrame, TransportReceipt
+from mirabox_sdk._next.transport.ports import (
     RawInboundSink,
     RawInboundSource,
     RawOutboundSink,
     RawOutboundSource,
+    SessionEventSink,
+    SessionEventSource,
     WebSocketConnector,
+)
+from mirabox_sdk._next.transport.session import (
+    Connected,
+    Disconnected,
+    SessionEvent,
+    TransportError,
 )
 
 PROJECT_ROOT = Path(__file__).parents[2]
 NEXT_PACKAGE = PROJECT_ROOT / "src" / "mirabox_sdk" / "_next"
+TRANSPORT_PACKAGE = NEXT_PACKAGE / "transport"
+
+
+def _imported_names(source_file: Path) -> set[str]:
+    tree = ast.parse(source_file.read_text(encoding="utf-8"), filename=str(source_file))
+    module_parts = source_file.relative_to(PROJECT_ROOT / "src").with_suffix("").parts
+    package = ".".join(module_parts[:-1])
+    imported_names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported_names.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            relative_module = f"{'.' * node.level}{node.module or ''}"
+            imported_from = (
+                resolve_name(relative_module, package) if node.level else relative_module
+            )
+            imported_names.update(f"{imported_from}.{alias.name}" for alias in node.names)
+    return imported_names
 
 
 class CompletionContractTests(unittest.TestCase):
@@ -184,14 +208,21 @@ class PackageIsolationTests(unittest.TestCase):
         module_names = (
             "mirabox_sdk._next",
             "mirabox_sdk._next.boundary",
+            "mirabox_sdk._next.boundary.config",
+            "mirabox_sdk._next.boundary.ports",
             "mirabox_sdk._next.messaging",
-            "mirabox_sdk._next.messaging.inbound",
-            "mirabox_sdk._next.messaging.outbound",
+            "mirabox_sdk._next.messaging.models",
+            "mirabox_sdk._next.messaging.ports",
             "mirabox_sdk._next.protocol",
+            "mirabox_sdk._next.protocol.adapters",
+            "mirabox_sdk._next.protocol.adapters.legacy",
+            "mirabox_sdk._next.protocol.decoder",
+            "mirabox_sdk._next.protocol.encoder",
+            "mirabox_sdk._next.protocol.ports",
             "mirabox_sdk._next.transport",
             "mirabox_sdk._next.transport.frames",
-            "mirabox_sdk._next.transport.lifecycle",
-            "mirabox_sdk._next.transport.protocols",
+            "mirabox_sdk._next.transport.ports",
+            "mirabox_sdk._next.transport.session",
         )
         script = (
             "import importlib\n"
@@ -228,28 +259,62 @@ class PackageIsolationTests(unittest.TestCase):
         )
 
         for source_file in NEXT_PACKAGE.rglob("*.py"):
-            tree = ast.parse(source_file.read_text(encoding="utf-8"), filename=str(source_file))
-            module_parts = source_file.relative_to(PROJECT_ROOT / "src").with_suffix("").parts
-            package = ".".join(module_parts[:-1])
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Import):
-                    imported = {alias.name for alias in node.names}
-                elif isinstance(node, ast.ImportFrom):
-                    relative_module = f"{'.' * node.level}{node.module or ''}"
-                    imported_from = (
-                        resolve_name(relative_module, package) if node.level else relative_module
-                    )
-                    imported = {f"{imported_from}.{alias.name}" for alias in node.names}
-                else:
+            for imported_name in _imported_names(source_file):
+                self.assertFalse(
+                    any(
+                        imported_name == prefix or imported_name.startswith(f"{prefix}.")
+                        for prefix in forbidden_prefixes
+                    ),
+                    f"{source_file.relative_to(PROJECT_ROOT)} imports {imported_name}",
+                )
+
+    def test_transport_layer_has_no_sdk_or_protocol_dependencies(self) -> None:
+        for source_file in TRANSPORT_PACKAGE.rglob("*.py"):
+            for imported_name in _imported_names(source_file):
+                if not imported_name.startswith("mirabox_sdk"):
                     continue
-                for imported_name in imported:
-                    self.assertFalse(
-                        any(
-                            imported_name == prefix or imported_name.startswith(f"{prefix}.")
-                            for prefix in forbidden_prefixes
-                        ),
-                        f"{source_file.relative_to(PROJECT_ROOT)} imports {imported_name}",
-                    )
+                self.assertTrue(
+                    imported_name.startswith("mirabox_sdk._next.transport"),
+                    f"{source_file.relative_to(PROJECT_ROOT)} imports {imported_name}",
+                )
+
+    def test_existing_parser_dependency_is_confined_to_explicit_adapter(self) -> None:
+        parser_importers = {
+            source_file.relative_to(NEXT_PACKAGE)
+            for source_file in NEXT_PACKAGE.rglob("*.py")
+            if any(
+                imported_name.startswith("mirabox_sdk.parser")
+                for imported_name in _imported_names(source_file)
+            )
+        }
+
+        self.assertEqual(
+            parser_importers,
+            {Path("protocol/adapters/legacy.py")},
+        )
+
+    def test_ports_are_declared_in_dedicated_port_modules(self) -> None:
+        ports = (
+            StreamDockBoundary,
+            InboundEventSource,
+            InboundEventSink,
+            OutboundCommandSource,
+            OutboundCommandSink,
+            DecodedEventParser,
+            StreamDockEventDecoder,
+            StreamDockCommandEncoder,
+            RawInboundSource,
+            RawInboundSink,
+            RawOutboundSource,
+            RawOutboundSink,
+            SessionEventSource,
+            SessionEventSink,
+            WebSocketConnector,
+        )
+
+        for port in ports:
+            with self.subTest(port=port.__name__):
+                self.assertTrue(port.__module__.endswith(".ports"))
 
     def test_next_contracts_are_not_part_of_the_stable_public_api(self) -> None:
         private_contracts = {
@@ -257,10 +322,14 @@ class PackageIsolationTests(unittest.TestCase):
             "CommandSubmission",
             "Connected",
             "InboundEventSource",
+            "JsonStreamDockCommandEncoder",
+            "JsonStreamDockEventDecoder",
             "OutboundCommandSink",
             "OutboundFrame",
             "SessionEventSource",
             "StreamDockBoundary",
+            "StreamDockCommandEncoder",
+            "StreamDockEventDecoder",
             "TransportReceipt",
         }
 
@@ -280,7 +349,7 @@ class _Sink:
         return True
 
 
-class _CommandSink:
+class _CommandSink(OutboundCommandSink):
     def send(self, command: StreamDockCommand) -> None:
         self.send_async(command).result()
 
@@ -290,7 +359,7 @@ class _CommandSink:
         return completion
 
 
-class _Connector:
+class _Connector(WebSocketConnector):
     def run_forever(self) -> None:
         pass
 
@@ -298,16 +367,28 @@ class _Connector:
         pass
 
 
-class _Boundary:
+class _Boundary(StreamDockBoundary):
     def __init__(
         self,
         events: InboundEventSource,
         commands: OutboundCommandSink,
         session_events: SessionEventSource,
     ) -> None:
-        self.events = events
-        self.commands = commands
-        self.session_events = session_events
+        self._events = events
+        self._commands = commands
+        self._session_events = session_events
+
+    @property
+    def events(self) -> InboundEventSource:
+        return self._events
+
+    @property
+    def commands(self) -> OutboundCommandSink:
+        return self._commands
+
+    @property
+    def session_events(self) -> SessionEventSource:
+        return self._session_events
 
     def run_forever(self) -> None:
         pass

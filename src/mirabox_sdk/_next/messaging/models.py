@@ -1,11 +1,9 @@
-"""Typed outbound command ports and completion handles."""
+"""Typed messaging models and completion handles."""
 
 from __future__ import annotations
 
-from abc import abstractmethod
 from concurrent.futures import Future
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
 
 from ...commands import StreamDockCommand
 
@@ -48,31 +46,3 @@ class CommandSubmission:
 
     command: StreamDockCommand
     completion: CommandFuture
-
-
-@runtime_checkable
-class OutboundCommandSource(Protocol):
-    """Source of accepted command submissions for the command writer."""
-
-    @abstractmethod
-    def receive(self) -> CommandSubmission:
-        """Return the next accepted command submission in FIFO order."""
-
-        ...
-
-
-@runtime_checkable
-class OutboundCommandSink(Protocol):
-    """Typed command port exposed to the next SDK layer."""
-
-    @abstractmethod
-    def send(self, command: StreamDockCommand) -> None:
-        """Submit a command and wait for its terminal result."""
-
-        ...
-
-    @abstractmethod
-    def send_async(self, command: StreamDockCommand) -> CommandFuture:
-        """Submit a command and return its completion handle."""
-
-        ...

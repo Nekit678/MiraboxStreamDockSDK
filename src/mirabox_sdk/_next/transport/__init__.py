@@ -1,1 +1,1 @@
-"""Transport-only models and ports for the experimental boundary."""
+"""API-independent transport models, ports, and connector implementations."""

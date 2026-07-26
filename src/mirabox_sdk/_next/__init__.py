@@ -1,5 +1,7 @@
-"""Private, experimental Stream Dock boundary contracts.
+"""Private, experimental Stream Dock SDK implementation.
 
-The package is intentionally not re-exported from :mod:`mirabox_sdk` while the
-new boundary is developed alongside the legacy runtime.
+Boundary composition, typed messaging, protocol conversion, and the
+API-independent transport are kept in separate subpackages. The implementation
+is intentionally not re-exported from :mod:`mirabox_sdk` while it is developed
+alongside the legacy runtime.
 """

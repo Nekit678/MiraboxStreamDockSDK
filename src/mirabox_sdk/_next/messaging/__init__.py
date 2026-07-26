@@ -1,1 +1,1 @@
-"""Typed messaging ports for the experimental boundary."""
+"""Typed messaging models, ports, and queue implementations."""

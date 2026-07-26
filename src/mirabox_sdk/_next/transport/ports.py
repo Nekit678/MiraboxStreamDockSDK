@@ -1,4 +1,4 @@
-"""Ports owned by the transport side of the experimental boundary."""
+"""Ports owned by the transport layer."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ from abc import abstractmethod
 from typing import Protocol, runtime_checkable
 
 from .frames import OutboundFrame, TextFrame
+from .session import SessionEvent
 
 
 @runtime_checkable
@@ -48,6 +49,28 @@ class RawOutboundSink(Protocol):
     @abstractmethod
     def submit(self, frame: OutboundFrame) -> bool:
         """Submit one frame, returning whether it was accepted."""
+
+        ...
+
+
+@runtime_checkable
+class SessionEventSource(Protocol):
+    """Source of typed transport lifecycle events."""
+
+    @abstractmethod
+    def receive(self) -> SessionEvent:
+        """Return the next lifecycle event."""
+
+        ...
+
+
+@runtime_checkable
+class SessionEventSink(Protocol):
+    """Sink used by the connector to publish lifecycle events."""
+
+    @abstractmethod
+    def submit(self, event: SessionEvent) -> bool:
+        """Submit one lifecycle event, returning whether it was accepted."""
 
         ...
 
