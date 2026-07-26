@@ -4,12 +4,19 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from typing import Any
 
 import websocket
 
 from .commands import StreamDockCommand, ValidatedWireMessage
 from .errors import StreamDockProtocolError
+from .events import StreamDockEvent
+from .inbound import (
+    InboundOverflowPolicy,
+    InboundQueueMetrics,
+    _InboundEventDispatcher,
+)
 from .logging_config import _protocol_payload_logging_enabled
 from .parser import parse_stream_dock_event
 from .protocols import StreamDockConnection, StreamDockListener
@@ -75,16 +82,58 @@ class WebSocketStreamDockConnection(StreamDockConnection):
 
     Args:
         port: Loopback WebSocket port supplied in the plugin launch arguments.
+        inbound_queue_limit: Maximum number of parsed events waiting for
+            callback dispatch.
+        overflow_policy: Non-blocking policy applied when the queue is full.
+        coalesce_dial_rotations: Combine compatible queued rotations for the
+            same action context by summing their ticks.
+        inbound_shutdown_timeout: Maximum seconds to wait for queued callbacks
+            during shutdown. ``None`` waits until the queue drains.
 
     Note:
         Payload fields are redacted from DEBUG protocol logs unless the
         application explicitly opts in with ``configure_logging``.
     """
 
-    def __init__(self, port: int) -> None:
+    def __init__(
+        self,
+        port: int,
+        *,
+        inbound_queue_limit: int = 1024,
+        overflow_policy: InboundOverflowPolicy = InboundOverflowPolicy.DROP_NEWEST,
+        coalesce_dial_rotations: bool = False,
+        inbound_shutdown_timeout: float | None = None,
+    ) -> None:
         """Create a loopback WebSocket client for the supplied host port."""
 
+        if type(inbound_queue_limit) is not int or inbound_queue_limit <= 0:
+            raise ValueError("inbound_queue_limit must be a positive integer")
+        try:
+            overflow_policy = InboundOverflowPolicy(overflow_policy)
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"overflow_policy must be one of: "
+                f"{', '.join(policy.value for policy in InboundOverflowPolicy)}"
+            ) from None
+        if type(coalesce_dial_rotations) is not bool:
+            raise ValueError("coalesce_dial_rotations must be a boolean")
+        if inbound_shutdown_timeout is not None and (
+            type(inbound_shutdown_timeout) not in (int, float)
+            or not math.isfinite(inbound_shutdown_timeout)
+            or inbound_shutdown_timeout < 0
+        ):
+            raise ValueError(
+                "inbound_shutdown_timeout must be a finite non-negative number or None"
+            )
+
         self._listener: StreamDockListener | None = None
+        self._inbound_shutdown_timeout = inbound_shutdown_timeout
+        self._inbound = _InboundEventDispatcher(
+            queue_limit=inbound_queue_limit,
+            overflow_policy=overflow_policy,
+            coalesce_dial_rotations=coalesce_dial_rotations,
+            dispatch=self._dispatch_inbound_event,
+        )
         self._ws = websocket.WebSocketApp(
             f"ws://127.0.0.1:{port}",
             on_open=self._on_open,
@@ -103,18 +152,34 @@ class WebSocketStreamDockConnection(StreamDockConnection):
         self._listener = listener
 
     def run_forever(self) -> None:
-        """Run the WebSocket event loop until the connection closes."""
+        """Run the WebSocket loop and drain callbacks after it closes."""
 
-        self._ws.run_forever()
+        self._inbound.start()
+        try:
+            self._ws.run_forever()
+        finally:
+            self._inbound.stop_accepting()
+            self._shutdown_inbound_dispatcher()
 
     def close(self) -> None:
-        """Request WebSocket shutdown.
+        """Close the WebSocket and gracefully drain queued callbacks.
 
-        Calling this method delegates to ``websocket-client`` and is safe for
-        the runtime to attempt during final cleanup.
+        New inbound events are rejected before delegating to
+        ``websocket-client``. By default this method waits until every queued
+        callback finishes; ``inbound_shutdown_timeout`` can bound that wait.
         """
 
-        self._ws.close()
+        self._inbound.stop_accepting()
+        try:
+            self._ws.close()
+        finally:
+            self._shutdown_inbound_dispatcher()
+
+    @property
+    def inbound_queue_metrics(self) -> InboundQueueMetrics:
+        """Return a thread-safe snapshot of inbound queue metrics."""
+
+        return self._inbound.metrics()
 
     def send(self, command: StreamDockCommand) -> None:
         """Serialize, validate, log, and transmit one typed command.
@@ -168,9 +233,11 @@ class WebSocketStreamDockConnection(StreamDockConnection):
             logger.warning("Ignoring malformed Stream Dock event: %s", exc)
             return
 
-        listener = self._listener
-        if listener is not None:
-            listener.on_stream_dock_event(event)
+        if not self._inbound.submit(event):
+            logger.warning(
+                "Dropping inbound Stream Dock event %s: queue policy rejected it",
+                event.event_name,
+            )
 
     def _on_error(self, _ws: websocket.WebSocket, error: Any) -> None:
         logger.error("Stream Dock WebSocket error: %s", error)
@@ -182,3 +249,25 @@ class WebSocketStreamDockConnection(StreamDockConnection):
         message: Any,
     ) -> None:
         logger.info("Stream Dock connection closed: %s %s", status_code, message or "")
+
+    def _dispatch_inbound_event(self, event: StreamDockEvent) -> bool:
+        listener = self._listener
+        if listener is None:
+            logger.warning(
+                "Dropping inbound Stream Dock event %s: no listener is attached",
+                event.event_name,
+            )
+            return False
+        listener.on_stream_dock_event(event)
+        return True
+
+    def _shutdown_inbound_dispatcher(self) -> None:
+        if not self._inbound.shutdown(timeout=self._inbound_shutdown_timeout):
+            timeout = self._inbound_shutdown_timeout
+            if timeout is None:  # pragma: no cover - an unbounded join cannot time out
+                raise AssertionError("unbounded inbound queue shutdown timed out")
+            logger.warning(
+                "Inbound Stream Dock event queue did not drain within %.3f seconds; "
+                "pending events were discarded",
+                timeout,
+            )

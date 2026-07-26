@@ -158,7 +158,8 @@ class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
     def stop(self) -> None:
         """Release actions, started services, and the connection exactly once.
 
-        Active actions receive ``on_will_disappear(None)``. Services stop in
+        The connection first stops accepting and drains inbound events. Active
+        actions then receive ``on_will_disappear(None)`` and services stop in
         reverse startup order. Cleanup failures are logged and do not prevent
         the remaining resources from being released; repeated calls are no-ops.
         """
@@ -166,6 +167,11 @@ class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
         if self._stopped:
             return
         self._stopped = True
+
+        try:
+            self.stream_dock.close()
+        except Exception:
+            logger.exception("Failed to close Stream Dock connection")
 
         for action in tuple(self.actions.values()):
             try:
@@ -181,10 +187,6 @@ class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
                 logger.exception("Failed to stop plugin service %r", service)
         self._started_services.clear()
 
-        try:
-            self.stream_dock.close()
-        except Exception:
-            logger.exception("Failed to close Stream Dock connection")
         logger.info("Stream Dock plugin %s stopped", self.plugin_uuid)
 
     def on_stream_dock_connected(self) -> None:

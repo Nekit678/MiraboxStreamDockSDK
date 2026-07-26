@@ -94,6 +94,7 @@ from .events import (
     WillAppearEvent,
     WillDisappearEvent,
 )
+from .inbound import InboundOverflowPolicy, InboundQueueMetrics
 from .json_types import JsonObject, JsonValue, OwnedJsonPayload, ValidatedJsonObject
 from .logging_config import configure_logging
 from .parser import EVENT_REGISTRY, parse_stream_dock_event
@@ -152,6 +153,8 @@ __all__ = [
     "InvalidFieldError",
     "InvalidPluginLaunchArgumentsError",
     "InvalidRegistrationInfoError",
+    "InboundOverflowPolicy",
+    "InboundQueueMetrics",
     "JSON_OBJECT_CODEC",
     "JsonObject",
     "JsonObjectCodec",

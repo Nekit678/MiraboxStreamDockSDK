@@ -8,6 +8,7 @@ import unittest
 from dataclasses import asdict, dataclass
 from io import StringIO
 from pathlib import Path
+from threading import Event, get_ident
 from unittest.mock import Mock, patch
 
 import mirabox_sdk
@@ -25,6 +26,7 @@ from mirabox_sdk import (
     EventScope,
     FunctionalJsonCodec,
     GetSettingsCommand,
+    InboundOverflowPolicy,
     InvalidFieldError,
     InvalidRegistrationInfoError,
     JsonCodecDecodeError,
@@ -1047,6 +1049,9 @@ class WebSocketStreamDockConnectionTests(unittest.TestCase):
             connection._on_message(web_socket, incoming)
             connection.send(SetTitleCommand("button", "Микрофон"))
 
+        listener.on_stream_dock_event.assert_not_called()
+        connection.run_forever()
+
         listener.on_stream_dock_connected.assert_called_once_with()
         listener.on_stream_dock_event.assert_called_once_with(
             KeyDownEvent(
@@ -1184,12 +1189,412 @@ class WebSocketStreamDockConnectionTests(unittest.TestCase):
             '{"event":"futureEvent","payload":{"version":2}}',
         )
 
+        listener.on_stream_dock_event.assert_not_called()
+        connection.run_forever()
+
         listener.on_stream_dock_event.assert_called_once_with(
             UnknownStreamDockEvent(
                 event="futureEvent",
                 data={"event": "futureEvent", "payload": {"version": 2}},
             )
         )
+
+    @patch("mirabox_sdk.connection.websocket.WebSocketApp")
+    def test_dispatches_callbacks_outside_websocket_reader(self, app_factory: Mock) -> None:
+        web_socket = app_factory.return_value
+        listener = Mock()
+        connection = WebSocketStreamDockConnection(12345)
+        connection.set_listener(listener)
+        reader_returned = Event()
+        callback_finished = Event()
+        callback_thread_ids: list[int] = []
+        callback_observed_reader_return: list[bool] = []
+        reader_thread_ids: list[int] = []
+
+        def on_event(_event: object) -> None:
+            callback_thread_ids.append(get_ident())
+            callback_observed_reader_return.append(reader_returned.wait(1))
+            callback_finished.set()
+
+        def read_frame() -> None:
+            reader_thread_ids.append(get_ident())
+            connection._on_message(
+                web_socket,
+                '{"event":"systemDidWakeUp"}',
+            )
+            reader_returned.set()
+
+        listener.on_stream_dock_event.side_effect = on_event
+        web_socket.run_forever.side_effect = read_frame
+
+        connection.run_forever()
+
+        self.assertTrue(callback_finished.is_set())
+        self.assertEqual(callback_observed_reader_return, [True])
+        self.assertNotEqual(callback_thread_ids, reader_thread_ids)
+        self.assertEqual(
+            asdict(connection.inbound_queue_metrics),
+            {
+                "queue_limit": 1024,
+                "current_depth": 0,
+                "peak_depth": 1,
+                "received": 1,
+                "enqueued": 1,
+                "coalesced": 0,
+                "dispatched": 1,
+                "dropped_newest": 0,
+                "dropped_oldest": 0,
+                "dropped_after_shutdown": 0,
+                "dropped_without_listener": 0,
+                "callback_failures": 0,
+            },
+        )
+
+    @patch("mirabox_sdk.connection.websocket.WebSocketApp")
+    def test_drops_newest_event_when_inbound_queue_is_full(self, app_factory: Mock) -> None:
+        listener = Mock()
+        received: list[str] = []
+        listener.on_stream_dock_event.side_effect = lambda event: received.append(event.event_name)
+        connection = WebSocketStreamDockConnection(
+            12345,
+            inbound_queue_limit=2,
+            overflow_policy=InboundOverflowPolicy.DROP_NEWEST,
+        )
+        connection.set_listener(listener)
+
+        with self.assertLogs("mirabox_sdk.connection", level="WARNING"):
+            for name in ("firstEvent", "secondEvent", "thirdEvent"):
+                connection._on_message(
+                    app_factory.return_value,
+                    json.dumps({"event": name}),
+                )
+
+        pending_metrics = connection.inbound_queue_metrics
+        self.assertEqual(pending_metrics.current_depth, 2)
+        self.assertEqual(pending_metrics.peak_depth, 2)
+        self.assertEqual(pending_metrics.dropped_newest, 1)
+        self.assertEqual(pending_metrics.dropped, 1)
+
+        connection.run_forever()
+
+        self.assertEqual(received, ["firstEvent", "secondEvent"])
+        self.assertEqual(connection.inbound_queue_metrics.dispatched, 2)
+
+    @patch("mirabox_sdk.connection.websocket.WebSocketApp")
+    def test_drops_oldest_event_when_inbound_queue_is_full(self, app_factory: Mock) -> None:
+        listener = Mock()
+        received: list[str] = []
+        listener.on_stream_dock_event.side_effect = lambda event: received.append(event.event_name)
+        connection = WebSocketStreamDockConnection(
+            12345,
+            inbound_queue_limit=2,
+            overflow_policy=InboundOverflowPolicy.DROP_OLDEST,
+        )
+        connection.set_listener(listener)
+
+        for name in ("firstEvent", "secondEvent", "thirdEvent"):
+            connection._on_message(
+                app_factory.return_value,
+                json.dumps({"event": name}),
+            )
+
+        connection.run_forever()
+
+        self.assertEqual(received, ["secondEvent", "thirdEvent"])
+        metrics = connection.inbound_queue_metrics
+        self.assertEqual(metrics.dropped_oldest, 1)
+        self.assertEqual(metrics.dropped, 1)
+        self.assertEqual(metrics.dispatched, 2)
+
+    @patch("mirabox_sdk.connection.websocket.WebSocketApp")
+    def test_preserves_per_context_order(self, app_factory: Mock) -> None:
+        listener = Mock()
+        received: list[tuple[str, int]] = []
+        listener.on_stream_dock_event.side_effect = lambda event: received.append(
+            (event.context, event.settings["sequence"])
+        )
+        connection = WebSocketStreamDockConnection(12345)
+        connection.set_listener(listener)
+
+        for context, sequence in (
+            ("dial-a", 1),
+            ("dial-b", 1),
+            ("dial-a", 2),
+            ("dial-b", 2),
+            ("dial-a", 3),
+        ):
+            connection._on_message(
+                app_factory.return_value,
+                json.dumps(
+                    {
+                        "event": "keyDown",
+                        "action": "action-uuid",
+                        "context": context,
+                        "device": "device-uuid",
+                        "payload": {
+                            "settings": {"sequence": sequence},
+                            "coordinates": {"column": 0, "row": 0},
+                            "isInMultiAction": False,
+                        },
+                    }
+                ),
+            )
+
+        connection.run_forever()
+
+        self.assertEqual(
+            received,
+            [
+                ("dial-a", 1),
+                ("dial-b", 1),
+                ("dial-a", 2),
+                ("dial-b", 2),
+                ("dial-a", 3),
+            ],
+        )
+
+    @patch("mirabox_sdk.connection.websocket.WebSocketApp")
+    def test_coalesces_compatible_dial_rotations_per_context(
+        self,
+        app_factory: Mock,
+    ) -> None:
+        listener = Mock()
+        received: list[tuple[str, int]] = []
+        listener.on_stream_dock_event.side_effect = lambda event: received.append(
+            (event.context, event.ticks)
+        )
+        connection = WebSocketStreamDockConnection(
+            12345,
+            coalesce_dial_rotations=True,
+        )
+        connection.set_listener(listener)
+
+        for context, ticks in (("dial-a", 1), ("dial-b", 5), ("dial-a", 2)):
+            connection._on_message(
+                app_factory.return_value,
+                json.dumps(
+                    {
+                        "event": "dialRotate",
+                        "action": "action-uuid",
+                        "context": context,
+                        "device": "device-uuid",
+                        "payload": {
+                            "settings": {},
+                            "coordinates": {"column": 0, "row": 0},
+                            "ticks": ticks,
+                            "pressed": False,
+                        },
+                    }
+                ),
+            )
+
+        pending_metrics = connection.inbound_queue_metrics
+        self.assertEqual(pending_metrics.current_depth, 2)
+        self.assertEqual(pending_metrics.coalesced, 1)
+
+        connection.run_forever()
+
+        self.assertEqual(received, [("dial-a", 3), ("dial-b", 5)])
+        self.assertEqual(connection.inbound_queue_metrics.dispatched, 2)
+
+    @patch("mirabox_sdk.connection.websocket.WebSocketApp")
+    def test_does_not_coalesce_rotations_across_same_context_event(
+        self,
+        app_factory: Mock,
+    ) -> None:
+        listener = Mock()
+        received: list[str] = []
+        listener.on_stream_dock_event.side_effect = lambda event: received.append(event.event_name)
+        connection = WebSocketStreamDockConnection(
+            12345,
+            coalesce_dial_rotations=True,
+        )
+        connection.set_listener(listener)
+        rotation = {
+            "event": "dialRotate",
+            "action": "action-uuid",
+            "context": "dial-a",
+            "device": "device-uuid",
+            "payload": {
+                "settings": {},
+                "coordinates": {"column": 0, "row": 0},
+                "ticks": 1,
+                "pressed": False,
+            },
+        }
+        key_down = {
+            "event": "keyDown",
+            "action": "action-uuid",
+            "context": "dial-a",
+            "device": "device-uuid",
+            "payload": {
+                "settings": {},
+                "coordinates": {"column": 0, "row": 0},
+                "isInMultiAction": False,
+            },
+        }
+
+        for message in (rotation, key_down, rotation):
+            connection._on_message(app_factory.return_value, json.dumps(message))
+
+        connection.run_forever()
+
+        self.assertEqual(received, ["dialRotate", "keyDown", "dialRotate"])
+        self.assertEqual(connection.inbound_queue_metrics.coalesced, 0)
+
+    @patch("mirabox_sdk.connection.websocket.WebSocketApp")
+    def test_does_not_coalesce_rotations_across_broadcast_event(
+        self,
+        app_factory: Mock,
+    ) -> None:
+        listener = Mock()
+        received: list[str] = []
+        listener.on_stream_dock_event.side_effect = lambda event: received.append(event.event_name)
+        connection = WebSocketStreamDockConnection(
+            12345,
+            coalesce_dial_rotations=True,
+        )
+        connection.set_listener(listener)
+        rotation = json.dumps(
+            {
+                "event": "dialRotate",
+                "action": "action-uuid",
+                "context": "dial-a",
+                "device": "device-uuid",
+                "payload": {
+                    "settings": {},
+                    "coordinates": {"column": 0, "row": 0},
+                    "ticks": 1,
+                    "pressed": False,
+                },
+            }
+        )
+
+        for message in (rotation, '{"event":"systemDidWakeUp"}', rotation):
+            connection._on_message(app_factory.return_value, message)
+
+        connection.run_forever()
+
+        self.assertEqual(received, ["dialRotate", "systemDidWakeUp", "dialRotate"])
+        self.assertEqual(connection.inbound_queue_metrics.coalesced, 0)
+
+    @patch("mirabox_sdk.connection.websocket.WebSocketApp")
+    def test_records_callback_failures_without_stopping_dispatch(
+        self,
+        app_factory: Mock,
+    ) -> None:
+        listener = Mock()
+        listener.on_stream_dock_event.side_effect = [
+            RuntimeError("callback failed"),
+            None,
+        ]
+        connection = WebSocketStreamDockConnection(12345)
+        connection.set_listener(listener)
+        connection._on_message(app_factory.return_value, '{"event":"firstEvent"}')
+        connection._on_message(app_factory.return_value, '{"event":"secondEvent"}')
+
+        with self.assertLogs("mirabox_sdk.inbound", level="ERROR"):
+            connection.run_forever()
+
+        metrics = connection.inbound_queue_metrics
+        self.assertEqual(listener.on_stream_dock_event.call_count, 2)
+        self.assertEqual(metrics.callback_failures, 1)
+        self.assertEqual(metrics.dispatched, 1)
+
+    @patch("mirabox_sdk.connection.websocket.WebSocketApp")
+    def test_shutdown_timeout_discards_events_still_queued(
+        self,
+        app_factory: Mock,
+    ) -> None:
+        listener = Mock()
+        callback_started = Event()
+        callback_finished = Event()
+        release_callback = Event()
+
+        def on_event(_event: object) -> None:
+            callback_started.set()
+            release_callback.wait(1)
+            callback_finished.set()
+
+        def read_frames() -> None:
+            connection._on_message(app_factory.return_value, '{"event":"firstEvent"}')
+            self.assertTrue(callback_started.wait(1))
+            connection._on_message(app_factory.return_value, '{"event":"secondEvent"}')
+
+        listener.on_stream_dock_event.side_effect = on_event
+        connection = WebSocketStreamDockConnection(
+            12345,
+            inbound_shutdown_timeout=0.01,
+        )
+        connection.set_listener(listener)
+        app_factory.return_value.run_forever.side_effect = read_frames
+
+        with self.assertLogs("mirabox_sdk.connection", level="WARNING"):
+            connection.run_forever()
+
+        metrics = connection.inbound_queue_metrics
+        self.assertEqual(metrics.current_depth, 0)
+        self.assertEqual(metrics.dropped_after_shutdown, 1)
+        self.assertEqual(metrics.dispatched, 0)
+
+        release_callback.set()
+        self.assertTrue(callback_finished.wait(1))
+        connection.close()
+        self.assertEqual(connection.inbound_queue_metrics.dispatched, 1)
+
+    @patch("mirabox_sdk.connection.websocket.WebSocketApp")
+    def test_close_from_callback_discards_later_events_without_deadlock(
+        self,
+        app_factory: Mock,
+    ) -> None:
+        listener = Mock()
+        received: list[str] = []
+        connection = WebSocketStreamDockConnection(12345)
+        connection.set_listener(listener)
+
+        def on_event(event: object) -> None:
+            received.append(event.event_name)
+            connection.close()
+
+        listener.on_stream_dock_event.side_effect = on_event
+        connection._on_message(app_factory.return_value, '{"event":"firstEvent"}')
+        connection._on_message(app_factory.return_value, '{"event":"secondEvent"}')
+
+        connection.run_forever()
+
+        self.assertEqual(received, ["firstEvent"])
+        self.assertEqual(connection.inbound_queue_metrics.dropped_after_shutdown, 1)
+
+    def test_rejects_invalid_inbound_queue_configuration(self) -> None:
+        for queue_limit in (0, -1, True, 1.5):
+            with (
+                self.subTest(queue_limit=queue_limit),
+                self.assertRaisesRegex(ValueError, "positive integer"),
+            ):
+                WebSocketStreamDockConnection(
+                    12345,
+                    inbound_queue_limit=queue_limit,  # type: ignore[arg-type]
+                )
+
+        with self.assertRaisesRegex(ValueError, "overflow_policy"):
+            WebSocketStreamDockConnection(
+                12345,
+                overflow_policy="block",  # type: ignore[arg-type]
+            )
+        with self.assertRaisesRegex(ValueError, "boolean"):
+            WebSocketStreamDockConnection(
+                12345,
+                coalesce_dial_rotations=1,  # type: ignore[arg-type]
+            )
+        for timeout in (-1, True, float("nan"), float("inf")):
+            with (
+                self.subTest(timeout=timeout),
+                self.assertRaisesRegex(ValueError, "finite non-negative"),
+            ):
+                WebSocketStreamDockConnection(
+                    12345,
+                    inbound_shutdown_timeout=timeout,
+                )
 
     @patch("mirabox_sdk.connection.websocket.WebSocketApp")
     def test_delegates_connection_lifecycle(self, app_factory: Mock) -> None:

@@ -63,6 +63,7 @@ behavior is verified.
 - [Protocol basis](#protocol-basis)
 - [API overview](#api-overview)
 - [Errors and unknown events](#errors-and-unknown-events)
+- [Inbound event queue](#inbound-event-queue)
 - [Logging](#logging)
 - [Project structure](#project-structure)
 - [Development](#development)
@@ -395,7 +396,7 @@ behavior implemented by this SDK.
 | Area | Public API |
 |---|---|
 | Runtime | `Action`, `ActionRegistry`, `StreamDockPlugin`, `LifecycleService` |
-| Connection | `WebSocketStreamDockConnection`, `StreamDockConnection`, `StreamDockSender`, `StreamDockListener` |
+| Connection | `WebSocketStreamDockConnection`, `InboundOverflowPolicy`, `InboundQueueMetrics`, `StreamDockConnection`, `StreamDockSender`, `StreamDockListener` |
 | Launch and registration | `PluginLaunchArguments`, registration dataclasses, `parse_plugin_cli_arguments`, `run_plugin_cli` |
 | Input events | Typed models plus the read-only `EVENT_REGISTRY` describing parser, scope, callback, and stateful runtime handler |
 | Output commands | Registration, settings, title, image, state, feedback, URL, log, and Property Inspector command models; `ValidatedWireMessage` |
@@ -433,6 +434,43 @@ parser, `EventScope`, action callback, and any stateful runtime handler. Registr
 validation fails during import if a `StreamDockEventType` member is missing, and
 the test suite verifies that every callback and package-level event export
 exists.
+
+## Inbound event queue
+
+`WebSocketStreamDockConnection` parses frames in the WebSocket reader and puts
+valid events into a bounded queue. A dedicated dispatcher invokes plugin
+callbacks, so a slow callback does not block the reader. One dispatcher
+preserves event order for every action context. On normal connection shutdown,
+the queue drains before `run_forever()` returns and before the runtime releases
+actions and services.
+
+The queue defaults to 1,024 events and drops the incoming event when full.
+Configure the limit and overflow behavior when constructing the connection:
+
+```python
+from mirabox_sdk import InboundOverflowPolicy, WebSocketStreamDockConnection
+
+connection = WebSocketStreamDockConnection(
+    arguments.port,
+    inbound_queue_limit=512,
+    overflow_policy=InboundOverflowPolicy.DROP_OLDEST,
+    coalesce_dial_rotations=True,
+    inbound_shutdown_timeout=5.0,
+)
+```
+
+`DROP_NEWEST` (the default) preserves events already waiting in the queue.
+`DROP_OLDEST` keeps the most recently received event instead. Both policies are
+non-blocking. Rotation coalescing is opt-in: compatible pending `dialRotate`
+events for the same context and pressed state are combined by summing `ticks`;
+an intervening event for that context, or any broadcast/unknown event, prevents
+coalescing.
+
+Read `connection.inbound_queue_metrics` for an atomic
+`InboundQueueMetrics` snapshot. It reports current and peak depth, received,
+enqueued, coalesced, dispatched, dropped, and callback-failure counts. The
+default `inbound_shutdown_timeout=None` waits for a complete drain. A numeric
+timeout bounds the wait and discards events still queued when it expires.
 
 ## Logging
 
@@ -503,6 +541,7 @@ MiraboxStreamDockSDK/
 │   ├── action_registry.py             # Action UUID registry
 │   ├── commands.py                    # Typed outbound commands
 │   ├── events.py                      # Typed inbound event models
+│   ├── inbound.py                     # Bounded inbound event dispatcher
 │   ├── parser.py                      # Strict wire-message parser
 │   ├── plugin.py                      # Runtime and lifecycle dispatcher
 │   ├── connection.py                  # WebSocket transport

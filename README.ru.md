@@ -63,6 +63,7 @@
 - [Основа протокола](#основа-протокола)
 - [Карта API](#карта-api)
 - [Ошибки и неизвестные события](#ошибки-и-неизвестные-события)
+- [Очередь входящих событий](#очередь-входящих-событий)
 - [Логирование](#логирование)
 - [Структура проекта](#структура-проекта)
 - [Разработка](#разработка)
@@ -396,7 +397,7 @@ wire-событие и команду с Python-моделью или вспом
 | Область | Публичный API |
 |---|---|
 | Среда выполнения | `Action`, `ActionRegistry`, `StreamDockPlugin`, `LifecycleService` |
-| Соединение | `WebSocketStreamDockConnection`, `StreamDockConnection`, `StreamDockSender`, `StreamDockListener` |
+| Соединение | `WebSocketStreamDockConnection`, `InboundOverflowPolicy`, `InboundQueueMetrics`, `StreamDockConnection`, `StreamDockSender`, `StreamDockListener` |
 | Запуск и регистрация | `PluginLaunchArguments`, модели регистрации, `parse_plugin_cli_arguments`, `run_plugin_cli` |
 | Входящие события | Типизированные модели и read-only `EVENT_REGISTRY` с parser, scope, callback и stateful runtime handler |
 | Исходящие команды | Модели регистрации, настроек, заголовка, изображения, состояния, обратной связи, URL, логов и Property Inspector; `ValidatedWireMessage` |
@@ -435,6 +436,44 @@ parser, `EventScope`, callback action-объекта и специальный r
 необходимости. Проверка registry при импорте обнаруживает отсутствующий элемент
 `StreamDockEventType`, а тесты проверяют наличие каждого callback и публичного
 экспорта модели события.
+
+## Очередь входящих событий
+
+`WebSocketStreamDockConnection` разбирает frame в потоке WebSocket reader и
+помещает валидное событие в bounded queue. Callback-и плагина вызывает
+отдельный dispatcher, поэтому медленный callback не блокирует reader. Один
+dispatcher сохраняет порядок событий для каждого action context. При штатном
+завершении соединения очередь дренируется до возврата из `run_forever()` и до
+освобождения actions и services средой выполнения.
+
+По умолчанию очередь вмещает 1024 события и при переполнении отбрасывает новое.
+Лимит и overflow policy задаются при создании соединения:
+
+```python
+from mirabox_sdk import InboundOverflowPolicy, WebSocketStreamDockConnection
+
+connection = WebSocketStreamDockConnection(
+    arguments.port,
+    inbound_queue_limit=512,
+    overflow_policy=InboundOverflowPolicy.DROP_OLDEST,
+    coalesce_dial_rotations=True,
+    inbound_shutdown_timeout=5.0,
+)
+```
+
+`DROP_NEWEST` (значение по умолчанию) сохраняет уже ожидающие в очереди события.
+`DROP_OLDEST` сохраняет самое свежее полученное событие. Обе политики не
+блокируют reader. Coalescing rotation-событий включается явно: совместимые
+ожидающие `dialRotate` одного context и состояния `pressed` объединяются
+суммированием `ticks`; другое событие того же context, а также broadcast или
+unknown event разрывает объединение.
+
+Свойство `connection.inbound_queue_metrics` возвращает атомарный snapshot
+`InboundQueueMetrics`: текущую и пиковую глубину, числа полученных, поставленных
+в очередь, объединённых, доставленных и отброшенных событий, а также ошибок
+callback-ов. По умолчанию `inbound_shutdown_timeout=None` ждёт полного
+дренирования. Числовой timeout ограничивает ожидание; оставшиеся в очереди
+события после его истечения отбрасываются.
 
 ## Логирование
 
@@ -507,6 +546,7 @@ MiraboxStreamDockSDK/
 │   ├── action_registry.py             # Реестр UUID действий
 │   ├── commands.py                    # Типизированные исходящие команды
 │   ├── events.py                      # Модели входящих событий
+│   ├── inbound.py                     # Ограниченная очередь входящих событий
 │   ├── parser.py                      # Строгий разбор сообщений
 │   ├── plugin.py                      # Среда выполнения и диспетчер жизненного цикла
 │   ├── connection.py                  # WebSocket-транспорт

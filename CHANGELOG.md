@@ -14,6 +14,9 @@ change public APIs between minor versions.
   `ValidatedWireMessage` ownership and command-boundary types.
 - Add `StreamDockPlugin.on_unhandled_event()` so forward-compatible
   `UnknownStreamDockEvent` envelopes reach application code.
+- Add a bounded asynchronous inbound event queue with configurable overflow,
+  metrics, graceful draining, per-context ordering, and optional dial-rotation
+  coalescing.
 
 ### Changed
 
@@ -23,6 +26,7 @@ change public APIs between minor versions.
   the WebSocket transport no longer depends on a private command marker.
 - Drive known-event parsing, routing scope, callbacks, and special runtime
   handling from one validated, read-only `EVENT_REGISTRY`.
+- Move plugin callbacks out of the `websocket-client` reader thread.
 
 ### Fixed
 

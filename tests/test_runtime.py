@@ -399,6 +399,7 @@ class StreamDockPluginRuntimeTests(unittest.TestCase):
         second.start.side_effect = lambda: events.append("start-second")
         second.stop.side_effect = lambda: events.append("stop-second")
         runtime, stream_dock = self.build_runtime(first, second)
+        stream_dock.close.side_effect = lambda: events.append("close")
         runtime.on_stream_dock_event(will_appear_event())
         action = runtime.actions["button"]
 
@@ -408,7 +409,7 @@ class StreamDockPluginRuntimeTests(unittest.TestCase):
 
         self.assertEqual(
             events,
-            ["start-first", "start-second", "stop-second", "stop-first"],
+            ["start-first", "start-second", "close", "stop-second", "stop-first"],
         )
         self.assertEqual(action.received_events[-1], None)
         stream_dock.run_forever.assert_called_once_with()
