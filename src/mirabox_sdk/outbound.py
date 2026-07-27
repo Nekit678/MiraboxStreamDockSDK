@@ -32,6 +32,16 @@ class OutboundCommandBusClosedError(OutboundCommandBusError):
     """Raised when a command is submitted after outbound shutdown begins."""
 
 
+class _CommandCompletionState:
+    """Completion state shared by handles for one coalesced wire command."""
+
+    __slots__ = ("completed", "error")
+
+    def __init__(self) -> None:
+        self.completed = Event()
+        self.error: Exception | None = None
+
+
 class CommandFuture:
     """Read-only completion handle returned for an accepted outbound command.
 
@@ -40,21 +50,27 @@ class CommandFuture:
     on the writer thread and are re-raised by :meth:`result`.
     """
 
-    __slots__ = ("_completed", "_error")
+    __slots__ = ("_state",)
 
     def __init__(self) -> None:
-        self._completed = Event()
-        self._error: Exception | None = None
+        self._state = _CommandCompletionState()
+
+    def _share(self) -> CommandFuture:
+        """Return a distinct handle backed by this completion state."""
+
+        shared = type(self).__new__(type(self))
+        shared._state = self._state
+        return shared
 
     def done(self) -> bool:
         """Return whether serialization and transport processing has finished."""
 
-        return self._completed.is_set()
+        return self._state.completed.is_set()
 
     def wait(self, timeout: float | None = None) -> bool:
         """Wait up to ``timeout`` seconds and return whether the command finished."""
 
-        return self._completed.wait(timeout)
+        return self._state.completed.wait(timeout)
 
     def result(self, timeout: float | None = None) -> None:
         """Wait for completion and re-raise any writer-side failure.
@@ -67,21 +83,21 @@ class CommandFuture:
 
         if not self.wait(timeout):
             raise TimeoutError("Outbound command did not complete before the timeout")
-        if self._error is not None:
-            raise self._error
+        if self._state.error is not None:
+            raise self._state.error
 
     def exception(self, timeout: float | None = None) -> Exception | None:
         """Wait for completion and return the recorded failure, if any."""
 
         if not self.wait(timeout):
             raise TimeoutError("Outbound command did not complete before the timeout")
-        return self._error
+        return self._state.error
 
     def _finish(self, *, error: Exception | None = None) -> None:
-        if self._completed.is_set():
+        if self._state.completed.is_set():
             return
-        self._error = error
-        self._completed.set()
+        self._state.error = error
+        self._state.completed.set()
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,7 +134,7 @@ class OutboundQueueMetrics:
 @dataclass(slots=True)
 class _QueuedCommand:
     command: StreamDockCommand
-    submissions: list[CommandFuture]
+    completion: CommandFuture
 
 
 class _OutboundCommandBus:
@@ -180,7 +196,6 @@ class _OutboundCommandBus:
         shutdown errors are recorded on the returned future.
         """
 
-        submission = CommandFuture()
         with self._condition:
             self._submitted += 1
             if not self._accepting:
@@ -194,7 +209,8 @@ class _OutboundCommandBus:
                 )
 
             self._start_locked()
-            if self._coalesce(command, submission):
+            submission = self._coalesce(command)
+            if submission is not None:
                 self._coalesced += 1
                 self._condition.notify()
             else:
@@ -203,7 +219,8 @@ class _OutboundCommandBus:
                     raise OutboundQueueFullError(
                         f"Outbound command queue is full (limit={self._queue_limit})"
                     )
-                self._queue.append(_QueuedCommand(command, [submission]))
+                submission = CommandFuture()
+                self._queue.append(_QueuedCommand(command, submission))
                 self._enqueued += 1
                 self._peak_depth = max(self._peak_depth, len(self._queue))
                 self._condition.notify()
@@ -243,7 +260,7 @@ class _OutboundCommandBus:
             )
             self._discard_queued_commands(error=error)
             if self._in_flight is not None:
-                self._finish_submissions(self._in_flight, error=error)
+                self._finish_submission(self._in_flight, error=error)
             self._condition.notify_all()
         return False
 
@@ -301,7 +318,7 @@ class _OutboundCommandBus:
             except Exception as exc:
                 with self._condition:
                     self._serialization_failures += 1
-                    self._finish_submissions(queued, error=exc)
+                    self._finish_submission(queued, error=exc)
                     self._in_flight = None
                 logger.exception(
                     "Failed to serialize outbound Stream Dock command %s",
@@ -317,7 +334,7 @@ class _OutboundCommandBus:
             except Exception as exc:
                 with self._condition:
                     self._transport_failures += 1
-                    self._finish_submissions(queued, error=exc)
+                    self._finish_submission(queued, error=exc)
                 logger.exception(
                     "Failed to send outbound Stream Dock command %s",
                     type(queued.command).__name__,
@@ -325,23 +342,22 @@ class _OutboundCommandBus:
             else:
                 with self._condition:
                     self._sent += 1
-                    self._finish_submissions(queued)
+                    self._finish_submission(queued)
             finally:
                 with self._condition:
                     self._in_flight = None
 
-    def _coalesce(self, command: StreamDockCommand, submission: CommandFuture) -> bool:
+    def _coalesce(self, command: StreamDockCommand) -> CommandFuture | None:
         if not self._coalesce_commands or not self._queue:
-            return False
+            return None
 
         queued = self._queue[-1]
         key = self._coalescing_key(command)
         if key is None or key != self._coalescing_key(queued.command):
-            return False
+            return None
 
         queued.command = command
-        queued.submissions.append(submission)
-        return True
+        return queued.completion._share()
 
     @staticmethod
     def _coalescing_key(command: StreamDockCommand) -> tuple[object, ...] | None:
@@ -358,13 +374,12 @@ class _OutboundCommandBus:
         return None
 
     @staticmethod
-    def _finish_submissions(
+    def _finish_submission(
         queued: _QueuedCommand,
         *,
         error: Exception | None = None,
     ) -> None:
-        for submission in queued.submissions:
-            submission._finish(error=error)
+        queued.completion._finish(error=error)
 
     def _discard_queued_commands(
         self,
@@ -375,4 +390,4 @@ class _OutboundCommandBus:
             error = OutboundCommandBusClosedError("Outbound command was discarded during shutdown")
         self._discarded_after_shutdown += len(self._queue)
         while self._queue:
-            self._finish_submissions(self._queue.popleft(), error=error)
+            self._finish_submission(self._queue.popleft(), error=error)

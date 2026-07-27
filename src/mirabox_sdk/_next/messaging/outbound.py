@@ -36,22 +36,7 @@ class OutboundCommandQueueClosedError(OutboundCommandQueueError):
 @dataclass(slots=True)
 class _QueuedCommand:
     command: StreamDockCommand
-    completions: list[CommandFuture]
-
-
-class _CoalescedCommandFuture(CommandFuture):
-    """Complete every future represented by one coalesced wire command."""
-
-    __slots__ = ("_completions",)
-
-    def __init__(self, completions: tuple[CommandFuture, ...]) -> None:
-        super().__init__()
-        self._completions = completions
-
-    def _finish(self, *, error: Exception | None = None) -> None:
-        super()._finish(error=error)
-        for completion in self._completions:
-            completion._finish(error=error)
+    completion: CommandFuture
 
 
 class OutboundCommandQueue(
@@ -92,7 +77,6 @@ class OutboundCommandQueue(
         if not isinstance(command, StreamDockCommand):
             raise TypeError("command must be StreamDockCommand")
 
-        completion = CommandFuture()
         with self._condition:
             self._submitted += 1
             if not self._accepting:
@@ -100,7 +84,8 @@ class OutboundCommandQueue(
                 raise OutboundCommandQueueClosedError(
                     "Outbound command queue is no longer accepting commands"
                 )
-            if self._coalesce(command, completion):
+            completion = self._coalesce(command)
+            if completion is not None:
                 self._coalesced += 1
                 self._condition.notify_all()
                 return completion
@@ -110,7 +95,8 @@ class OutboundCommandQueue(
                     f"Outbound command queue is full (limit={self._queue_limit})"
                 )
 
-            self._queue.append(_QueuedCommand(command, [completion]))
+            completion = CommandFuture()
+            self._queue.append(_QueuedCommand(command, completion))
             self._enqueued += 1
             self._peak_depth = max(self._peak_depth, len(self._queue))
             self._condition.notify_all()
@@ -135,11 +121,7 @@ class OutboundCommandQueue(
             self._dequeued += 1
             self._condition.notify_all()
 
-        if len(queued.completions) == 1:
-            completion = queued.completions[0]
-        else:
-            completion = _CoalescedCommandFuture(tuple(queued.completions))
-        return CommandSubmission(queued.command, completion)
+        return CommandSubmission(queued.command, queued.completion)
 
     def stop_accepting(self) -> None:
         """Reject new commands while allowing accepted commands to drain."""
@@ -178,7 +160,7 @@ class OutboundCommandQueue(
             completions = []
             while self._queue:
                 queued = self._queue.popleft()
-                completions.extend(queued.completions)
+                completions.append(queued.completion)
             discarded = tuple(completions)
             self._condition.notify_all()
 
@@ -203,17 +185,16 @@ class OutboundCommandQueue(
                 discarded_during_shutdown=self._discarded_during_shutdown,
             )
 
-    def _coalesce(self, command: StreamDockCommand, completion: CommandFuture) -> bool:
+    def _coalesce(self, command: StreamDockCommand) -> CommandFuture | None:
         if not self._coalesce_commands or not self._queue:
-            return False
+            return None
 
         queued = self._queue[-1]
         key = self._coalescing_key(command)
         if key is None or key != self._coalescing_key(queued.command):
-            return False
+            return None
         queued.command = command
-        queued.completions.append(completion)
-        return True
+        return queued.completion._share()
 
     @staticmethod
     def _coalescing_key(command: StreamDockCommand) -> tuple[object, ...] | None:

@@ -16,6 +16,13 @@ class CommandFuture:
     def __init__(self) -> None:
         self._future: Future[None] = Future()
 
+    def _share(self) -> CommandFuture:
+        """Return a distinct handle backed by this completion state."""
+
+        shared = type(self).__new__(type(self))
+        shared._future = self._future
+        return shared
+
     def done(self) -> bool:
         """Return whether command processing reached a terminal state."""
 

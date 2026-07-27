@@ -515,6 +515,12 @@ class StreamDockBoundaryContractParityTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     harness.send_async(LogMessageCommand("queue full"))
 
+                self.assertIsNot(old_title, new_title)
+                if implementation == "legacy":
+                    self.assertIs(old_title._state, new_title._state)
+                else:
+                    self.assertIs(old_title._future, new_title._future)
+
                 if implementation == "legacy":
                     queued_metrics = harness.connection.outbound_queue_metrics
                 else:

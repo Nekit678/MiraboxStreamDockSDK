@@ -532,8 +532,9 @@ Coalescing is opt-in. Compatible adjacent pending `setState`, `setTitle`,
 `setImage`, `setSettings`, or `setGlobalSettings` commands for the same
 semantic target are replaced by their newest value. Commands of another type or
 target are ordering barriers. All callers whose commands were combined receive
-the final write result; every associated `CommandFuture` completes with that
-same result.
+distinct `CommandFuture` handles backed by the queued command's single
+completion state, and therefore observe the same final write result. The queue
+retains at most one completion state per physical entry.
 
 Read `connection.outbound_queue_metrics` for an atomic `OutboundQueueMetrics`
 snapshot. It reports current and peak depth, submissions, enqueues, coalescing,

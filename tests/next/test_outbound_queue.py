@@ -51,6 +51,9 @@ class OutboundCommandQueueTests(unittest.TestCase):
         old = queue.send_async(SetTitleCommand("button", "old", target=1, state=2))
         new = queue.send_async(SetTitleCommand("button", "new", target=1, state=2))
 
+        self.assertIsNot(old, new)
+        self.assertIs(old._future, new._future)
+
         submission = queue.receive()
         self.assertEqual(
             submission.command,
@@ -65,6 +68,25 @@ class OutboundCommandQueueTests(unittest.TestCase):
         self.assertEqual(metrics.enqueued, 1)
         self.assertEqual(metrics.coalesced, 1)
         self.assertEqual(metrics.dequeued, 1)
+
+    def test_coalescing_retains_one_completion_state_per_queued_command(self) -> None:
+        queue = OutboundCommandQueue(1, coalesce_commands=True)
+        submission_count = 10_000
+        completions = [
+            queue.send_async(SetStateCommand("button", state)) for state in range(submission_count)
+        ]
+
+        self.assertEqual(len({id(completion) for completion in completions}), submission_count)
+        self.assertEqual(len({id(completion._future) for completion in completions}), 1)
+        metrics = queue.metrics()
+        self.assertEqual(metrics.current_depth, 1)
+        self.assertEqual(metrics.submitted, submission_count)
+        self.assertEqual(metrics.coalesced, submission_count - 1)
+
+        submission = queue.receive()
+        self.assertEqual(submission.command, SetStateCommand("button", submission_count - 1))
+        submission.completion._finish()
+        self.assertTrue(all(completion.done() for completion in completions))
 
     def test_different_command_is_an_outbound_coalescing_barrier(self) -> None:
         queue = OutboundCommandQueue(3, coalesce_commands=True)
