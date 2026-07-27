@@ -175,9 +175,7 @@ def _normalize_logging_overflow_policy(
         return LoggingOverflowPolicy(overflow_policy)
     except (TypeError, ValueError):
         choices = ", ".join(policy.value for policy in LoggingOverflowPolicy)
-        raise ValueError(
-            f"logging_overflow_policy must be one of: {choices}"
-        ) from None
+        raise ValueError(f"logging_overflow_policy must be one of: {choices}") from None
 
 
 def _replace_managed_handler(
@@ -297,9 +295,7 @@ def configure_logging(
     _validate_rotation(max_bytes, backup_count)
     if type(logging_queue_limit) is not int or logging_queue_limit <= 0:
         raise ValueError("logging_queue_limit must be a positive integer")
-    normalized_overflow_policy = _normalize_logging_overflow_policy(
-        logging_overflow_policy
-    )
+    normalized_overflow_policy = _normalize_logging_overflow_policy(logging_overflow_policy)
     if log_file is None:
         handler: logging.Handler = logging.StreamHandler(stream)
     else:
