@@ -14,7 +14,7 @@ SDK logging is silent by default. Call :func:`configure_logging` explicitly when
 transport or event-dispatch diagnostics are required.
 """
 
-__version__ = "0.3.1"
+__version__ = "0.4.0"
 
 from .action import Action
 from .action_registry import ActionRegistry

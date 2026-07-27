@@ -6,8 +6,16 @@ change public APIs between minor versions.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-28
+
 ### Added
 
+- Add a private experimental Stream Dock boundary with API-independent
+  WebSocket transport, strict protocol codecs, bounded raw and typed queues,
+  per-command completion, session events, graceful shutdown, and aggregate
+  metrics.
+- Add the opt-in `mirabox_sdk.experimental` runtime adapter and Counter example
+  switch while retaining `WebSocketStreamDockConnection` as the default.
 - Add `StreamDockPlugin.update_global_settings()` for atomic, rollback-safe
   updates and persistence of global settings.
 - Add reusable `ValidatedJsonObject`, `OwnedJsonPayload`, and
@@ -149,7 +157,8 @@ change public APIs between minor versions.
 - Added the WebSocket transport and common CLI lifecycle runner.
 - Added the shared Property Inspector JavaScript client.
 
-[Unreleased]: https://github.com/Nekit678/MiraboxStreamDockSDK/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/Nekit678/MiraboxStreamDockSDK/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/Nekit678/MiraboxStreamDockSDK/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/Nekit678/MiraboxStreamDockSDK/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/Nekit678/MiraboxStreamDockSDK/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Nekit678/MiraboxStreamDockSDK/compare/v0.1.2...v0.2.0
