@@ -18,11 +18,21 @@ from .models import CommandFuture, CommandSubmission
 
 @runtime_checkable
 class InboundEventSource(Protocol):
-    """Source of decoded Stream Dock events for the next SDK layer."""
+    """Source of decoded Stream Dock events for the next SDK layer.
+
+    Every successful ``receive`` must be paired with exactly one ``task_done``
+    after all handler work for that event has finished.
+    """
 
     @abstractmethod
     def receive(self, *, timeout: float | None = None) -> StreamDockEvent:
-        """Return the next accepted typed event."""
+        """Return the next accepted typed event for processing."""
+
+        ...
+
+    @abstractmethod
+    def task_done(self) -> None:
+        """Acknowledge completed handling of one event returned by ``receive``."""
 
         ...
 
@@ -83,7 +93,7 @@ class InboundEventQueueControl(QueueAcceptanceControl, Protocol):
 
     @abstractmethod
     def drain(self, *, timeout: float | None = None) -> bool:
-        """Wait until all accepted events have been received."""
+        """Wait until all accepted events have been acknowledged."""
 
         ...
 

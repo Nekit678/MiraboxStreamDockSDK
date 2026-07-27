@@ -235,6 +235,7 @@ class StreamDockBoundaryPipelineTests(unittest.TestCase):
         event = harness.boundary.events.receive(timeout=1)
         self.assertIsInstance(event, KeyDownEvent)
         self.assertEqual(event.context, "button")
+        harness.boundary.events.task_done()
 
         completion = harness.boundary.commands.send_async(LogMessageCommand("hello"))
         self.assertIsNone(completion.result(timeout=1))
@@ -284,6 +285,60 @@ class StreamDockBoundaryPipelineTests(unittest.TestCase):
 
 
 class StreamDockBoundaryLifecycleTests(unittest.TestCase):
+    def test_close_waits_for_in_flight_handler_before_closing_outbound(self) -> None:
+        harness = _BoundaryHarness(shutdown_config=_shutdown_config(1))
+        harness.start()
+        self.assertIsInstance(harness.boundary.session_events.receive(timeout=1), Connected)
+
+        handler_started = Event()
+        release_handler = Event()
+        handler_finished = Event()
+        completions = []
+
+        def handle_one_event() -> None:
+            harness.boundary.events.receive(timeout=1)
+            handler_started.set()
+            try:
+                if not release_handler.wait(1):
+                    raise AssertionError("timed out waiting to release handler")
+                completions.append(
+                    harness.boundary.commands.send_async(LogMessageCommand("from handler"))
+                )
+            finally:
+                harness.boundary.events.task_done()
+                handler_finished.set()
+
+        handler = Thread(target=handle_one_event, name="test-inbound-handler")
+        handler.start()
+        frame = json.dumps(known_event_envelopes()["keyDown"])
+        self.assertTrue(harness.connector.emit(frame))
+        self.assertTrue(handler_started.wait(1))
+
+        closer = Thread(target=harness.boundary.close, name="test-boundary-close")
+        closer.start()
+        _wait_until(lambda: harness.boundary.metrics().inbound_events.in_flight == 1)
+        self.assertTrue(closer.is_alive())
+
+        release_handler.set()
+        self.assertTrue(handler_finished.wait(1))
+        handler.join(1)
+        self.assertIsInstance(
+            harness.boundary.session_events.receive(timeout=1),
+            Disconnected,
+        )
+        closer.join(1)
+        harness.join()
+
+        self.assertFalse(handler.is_alive())
+        self.assertFalse(closer.is_alive())
+        self.assertEqual(len(completions), 1)
+        self.assertIsNone(completions[0].result(timeout=0))
+        self.assertEqual(
+            json.loads(harness.connector.sent[0][0]),
+            {"event": "logMessage", "payload": {"message": "from handler"}},
+        )
+        self.assertEqual(harness.boundary.metrics().inbound_events.acknowledged, 1)
+
     def test_startup_failure_cleans_up_started_workers_and_closes_ports(self) -> None:
         startup_error = RuntimeError("fake connector startup failed")
         harness = _BoundaryHarness(

@@ -16,6 +16,8 @@ class InboundEventQueueMetrics:
     enqueued: int
     coalesced: int
     dequeued: int
+    in_flight: int
+    acknowledged: int
     backpressured: int
     dropped_newest: int
     dropped_oldest: int

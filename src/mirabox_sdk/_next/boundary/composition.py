@@ -303,7 +303,7 @@ class ComposedStreamDockBoundary(StreamDockBoundary):
             logger.error("%s shutdown failed with %s", name, type(exc).__name__)
             return
         if not drained:
-            logger.warning("%s discarded items after shutdown timeout", name)
+            logger.warning("%s did not drain before shutdown timeout", name)
 
     @staticmethod
     def _safe_call(action: Callable[[], object], name: str) -> None:

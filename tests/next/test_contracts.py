@@ -246,6 +246,7 @@ class BoundaryContractTests(unittest.TestCase):
                 self.assertIsInstance(value, contract)
 
         self.assertIs(inbound_source.receive(), event)
+        inbound_source.task_done()
         self.assertTrue(inbound_sink.submit(event, timeout=0))
         self.assertIs(command_sink.send_async(command).result(timeout=0), None)
         command_sink.send(command)
@@ -257,7 +258,7 @@ class BoundaryContractTests(unittest.TestCase):
 
     def test_explicit_implementations_match_port_signatures(self) -> None:
         implementations = (
-            (InboundEventSource, InboundEventQueue, ("receive",)),
+            (InboundEventSource, InboundEventQueue, ("receive", "task_done")),
             (InboundEventSink, InboundEventQueue, ("submit",)),
             (OutboundCommandSource, OutboundCommandQueue, ("receive",)),
             (OutboundCommandSink, OutboundCommandQueue, ("send", "send_async")),
@@ -539,6 +540,9 @@ class _Source:
 
     def receive(self, *, timeout: float | None = None) -> object:
         return self._value
+
+    def task_done(self) -> None:
+        pass
 
 
 class _Sink:

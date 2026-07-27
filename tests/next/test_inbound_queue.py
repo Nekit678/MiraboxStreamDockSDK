@@ -80,10 +80,43 @@ class InboundEventQueueTests(unittest.TestCase):
             self.assertTrue(queue.submit(event))
 
         self.assertEqual([queue.receive() for _ in events], events)
+        for _ in events:
+            queue.task_done()
         metrics = queue.metrics()
         self.assertEqual(metrics.enqueued, 3)
         self.assertEqual(metrics.dequeued, 3)
+        self.assertEqual(metrics.in_flight, 0)
+        self.assertEqual(metrics.acknowledged, 3)
         self.assertEqual(metrics.dropped, 0)
+
+    def test_drain_waits_until_received_event_processing_is_acknowledged(self) -> None:
+        queue = InboundEventQueue(1)
+        self.assertTrue(queue.submit(key_down("button")))
+        self.assertEqual(queue.receive().context, "button")  # type: ignore[attr-defined]
+
+        drained: list[bool] = []
+        waiter = Thread(target=lambda: drained.append(queue.drain(timeout=1)))
+        waiter.start()
+        self.assertTrue(waiter.is_alive())
+        self.assertEqual(queue.metrics().in_flight, 1)
+
+        queue.task_done()
+        waiter.join(1)
+
+        self.assertFalse(waiter.is_alive())
+        self.assertEqual(drained, [True])
+        self.assertEqual(queue.metrics().acknowledged, 1)
+
+    def test_task_done_rejects_missing_or_repeated_acknowledgement(self) -> None:
+        queue = InboundEventQueue(1)
+        with self.assertRaisesRegex(ValueError, "task_done.*too many"):
+            queue.task_done()
+
+        self.assertTrue(queue.submit(key_down("button")))
+        queue.receive()
+        queue.task_done()
+        with self.assertRaisesRegex(ValueError, "task_done.*too many"):
+            queue.task_done()
 
     def test_coalesces_compatible_rotations_per_context_in_place(self) -> None:
         queue = InboundEventQueue(3, coalesce_dial_rotations=True)

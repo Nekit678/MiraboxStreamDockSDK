@@ -55,12 +55,14 @@ class InboundEventQueue(InboundEventSource, InboundEventSink, InboundEventQueueC
         self._queue: deque[_QueuedEvent] = deque()
         self._last_queued_by_context: dict[str, _QueuedEvent] = {}
         self._accepting = True
+        self._in_flight = 0
 
         self._peak_depth = 0
         self._submitted = 0
         self._enqueued = 0
         self._coalesced = 0
         self._dequeued = 0
+        self._acknowledged = 0
         self._backpressured = 0
         self._dropped_newest = 0
         self._dropped_oldest = 0
@@ -135,7 +137,7 @@ class InboundEventQueue(InboundEventSource, InboundEventSink, InboundEventQueueC
             return True
 
     def receive(self, *, timeout: float | None = None) -> StreamDockEvent:
-        """Return the next accepted event in FIFO order."""
+        """Return the next event; the consumer must later call ``task_done``."""
 
         timeout = _validate_timeout(timeout)
         deadline = None if timeout is None else monotonic() + timeout
@@ -152,8 +154,19 @@ class InboundEventQueue(InboundEventSource, InboundEventSink, InboundEventQueueC
             queued = self._queue.popleft()
             self._forget_queued_event(queued)
             self._dequeued += 1
+            self._in_flight += 1
             self._condition.notify_all()
             return queued.event
+
+    def task_done(self) -> None:
+        """Acknowledge completed handling of one event returned by ``receive``."""
+
+        with self._condition:
+            if self._in_flight == 0:
+                raise ValueError("task_done() called too many times")
+            self._in_flight -= 1
+            self._acknowledged += 1
+            self._condition.notify_all()
 
     def stop_accepting(self) -> None:
         """Reject new events while allowing accepted events to drain."""
@@ -163,12 +176,12 @@ class InboundEventQueue(InboundEventSource, InboundEventSink, InboundEventQueueC
             self._condition.notify_all()
 
     def drain(self, *, timeout: float | None = None) -> bool:
-        """Wait until all queued events have been received."""
+        """Wait until all queued and in-flight events have been acknowledged."""
 
         timeout = _validate_timeout(timeout)
         deadline = None if timeout is None else monotonic() + timeout
         with self._condition:
-            while self._queue:
+            while self._queue or self._in_flight:
                 remaining = None if deadline is None else deadline - monotonic()
                 if remaining is not None and remaining <= 0:
                     return False
@@ -202,6 +215,8 @@ class InboundEventQueue(InboundEventSource, InboundEventSink, InboundEventQueueC
                 enqueued=self._enqueued,
                 coalesced=self._coalesced,
                 dequeued=self._dequeued,
+                in_flight=self._in_flight,
+                acknowledged=self._acknowledged,
                 backpressured=self._backpressured,
                 dropped_newest=self._dropped_newest,
                 dropped_oldest=self._dropped_oldest,

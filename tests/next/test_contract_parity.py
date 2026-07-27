@@ -328,7 +328,9 @@ class _NextHarness:
         return self.connector.emit(frame)
 
     def receive_event(self, timeout: float = 1) -> StreamDockEvent:
-        return self.boundary.events.receive(timeout=timeout)
+        event = self.boundary.events.receive(timeout=timeout)
+        self.boundary.events.task_done()
+        return event
 
     def send_async(self, command: StreamDockCommand):
         return self.boundary.commands.send_async(command)
