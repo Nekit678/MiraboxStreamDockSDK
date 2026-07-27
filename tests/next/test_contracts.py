@@ -9,6 +9,7 @@ from dataclasses import FrozenInstanceError
 from importlib.util import resolve_name
 from inspect import signature
 from pathlib import Path
+from threading import Thread
 
 import mirabox_sdk
 from mirabox_sdk import RegisterPluginCommand, StreamDockCommand, StreamDockEvent
@@ -129,6 +130,52 @@ class CompletionContractTests(unittest.TestCase):
                         completion._finish(error=first_error)
                         with self.assertRaises(InvalidStateError):
                             completion._finish(error=second_error)
+
+    def test_transport_receipt_wakes_concurrent_waiters(self) -> None:
+        receipt = TransportReceipt()
+        results: list[None] = []
+        waiters = [
+            Thread(target=lambda: results.append(receipt.result(timeout=1))) for _ in range(4)
+        ]
+
+        for waiter in waiters:
+            waiter.start()
+        receipt._finish()
+        for waiter in waiters:
+            waiter.join(1)
+
+        self.assertTrue(all(not waiter.is_alive() for waiter in waiters))
+        self.assertEqual(results, [None] * len(waiters))
+
+    def test_transport_receipt_callbacks_preserve_order_and_isolate_failures(self) -> None:
+        receipt = TransportReceipt()
+        callbacks: list[str] = []
+        error = RuntimeError("send failed")
+
+        receipt._add_done_callback(lambda observed: callbacks.append(f"first:{observed}"))
+
+        def fail_callback(_observed: Exception | None) -> None:
+            callbacks.append("failed")
+            raise RuntimeError("callback failed")
+
+        receipt._add_done_callback(fail_callback)
+        receipt._add_done_callback(lambda observed: callbacks.append(f"last:{observed}"))
+        with self.assertLogs(
+            "mirabox_sdk._next.transport.frames",
+            level="ERROR",
+        ):
+            receipt._finish(error=error)
+        receipt._add_done_callback(lambda observed: callbacks.append(f"late:{observed}"))
+
+        self.assertEqual(
+            callbacks,
+            [
+                "first:send failed",
+                "failed",
+                "last:send failed",
+                "late:send failed",
+            ],
+        )
 
 
 class BoundaryContractTests(unittest.TestCase):

@@ -169,16 +169,21 @@ class OutboundCommandQueue(
         if self.drain(timeout=timeout):
             return True
 
+        discarded: tuple[CommandFuture, ...]
         with self._condition:
             error = OutboundCommandQueueClosedError(
                 "Outbound command was discarded during shutdown"
             )
             self._discarded_during_shutdown += len(self._queue)
+            completions = []
             while self._queue:
                 queued = self._queue.popleft()
-                for completion in queued.completions:
-                    completion._finish(error=error)
+                completions.extend(queued.completions)
+            discarded = tuple(completions)
             self._condition.notify_all()
+
+        for completion in discarded:
+            completion._finish(error=error)
         return False
 
     def metrics(self) -> OutboundCommandQueueMetrics:

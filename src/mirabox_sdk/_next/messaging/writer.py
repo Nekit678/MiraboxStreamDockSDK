@@ -222,7 +222,7 @@ class CommandWriter(CommandWriterWorker):
         completion = submission.completion
         with self._condition:
             self._pending[receipt] = completion
-        receipt._add_done_callback(lambda error: self._complete_receipt(receipt, completion, error))
+        receipt._add_done_callback(lambda error: self._complete_receipt(receipt, error))
         frame = OutboundFrame(payload, receipt)
 
         try:
@@ -253,14 +253,13 @@ class CommandWriter(CommandWriterWorker):
     def _complete_receipt(
         self,
         receipt: TransportReceipt,
-        completion: CommandFuture,
         error: Exception | None,
     ) -> None:
         with self._condition:
-            self._pending.pop(receipt, None)
+            completion = self._pending.pop(receipt, None)
+        if completion is None:
+            return
         self._finish_completion(completion, error=error)
-        with self._condition:
-            self._condition.notify_all()
 
     def _finish_completion(
         self,

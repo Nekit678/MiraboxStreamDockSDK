@@ -164,14 +164,18 @@ class _BoundedTransportQueue(Generic[ItemT]):
         if self.drain(timeout=timeout):
             return True
 
+        discarded: tuple[ItemT, ...]
         with self._condition:
             error = TransportQueueClosedError(
                 f"{self._queue_name} item was discarded during shutdown"
             )
             self._discarded_during_shutdown += len(self._queue)
-            while self._queue:
-                self._reject_item(self._queue.popleft(), error)
+            discarded = tuple(self._queue)
+            self._queue.clear()
             self._condition.notify_all()
+
+        for item in discarded:
+            self._reject_item(item, error)
         return False
 
     def metrics(self) -> TransportQueueMetrics:
