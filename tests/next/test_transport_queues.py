@@ -167,6 +167,27 @@ class TransportQueueTests(unittest.TestCase):
                 frame.receipt.result(timeout=0)
         self.assertEqual(queue.metrics().discarded_during_shutdown, 2)
 
+    def test_raw_outbound_rejects_repeated_receipt_without_poisoning_shutdown(self) -> None:
+        queue = RawOutboundQueue(2)
+        frame = OutboundFrame("payload", TransportReceipt())
+
+        self.assertTrue(queue.submit(frame))
+        with self.assertRaisesRegex(ValueError, "already owned"):
+            queue.submit(frame)
+
+        self.assertFalse(queue.shutdown(timeout=0))
+        with self.assertRaises(TransportQueueClosedError):
+            frame.receipt.result(timeout=0)
+
+    def test_invalid_raw_outbound_timeout_does_not_claim_receipt(self) -> None:
+        queue = RawOutboundQueue(1)
+        frame = OutboundFrame("payload", TransportReceipt())
+
+        with self.assertRaisesRegex(ValueError, "non-negative number or None"):
+            queue.submit(frame, timeout=-1)
+
+        self.assertTrue(queue.submit(frame))
+
     def test_shutdown_drains_successfully_when_a_consumer_is_active(self) -> None:
         queue = RawInboundQueue(2)
         self.assertTrue(queue.submit("first"))

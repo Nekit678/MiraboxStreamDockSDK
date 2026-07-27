@@ -21,10 +21,11 @@ class TransportReceipt:
     completion through :meth:`result`, :meth:`exception`, and :meth:`done`.
     """
 
-    __slots__ = ("_callbacks", "_done", "_error", "_lock", "_waiter")
+    __slots__ = ("_callbacks", "_claimed", "_done", "_error", "_lock", "_waiter")
 
     def __init__(self) -> None:
         self._lock = Lock()
+        self._claimed = False
         self._done = False
         self._error: Exception | None = None
         self._waiter: Event | None = None
@@ -72,6 +73,16 @@ class TransportReceipt:
             return
         for callback in callbacks:
             self._invoke_callback(callback, error)
+
+    def _claim(self) -> None:
+        """Claim the receipt for exactly one internal transport attempt."""
+
+        with self._lock:
+            if self._done:
+                raise ValueError("TransportReceipt must be pending")
+            if self._claimed:
+                raise ValueError("TransportReceipt is already owned")
+            self._claimed = True
 
     def _add_done_callback(
         self,

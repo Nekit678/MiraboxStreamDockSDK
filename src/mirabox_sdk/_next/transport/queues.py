@@ -261,8 +261,8 @@ class RawOutboundQueue(RawOutboundSource, RawOutboundSink, TransportQueueControl
 
         if not isinstance(frame, OutboundFrame):
             raise TypeError("frame must be OutboundFrame")
-        if frame.receipt.done():
-            raise ValueError("frame receipt must be pending")
+        timeout = _validate_timeout(timeout)
+        frame.receipt._claim()
         return self._queue.submit(frame, timeout=timeout)
 
     def receive(self, *, timeout: float | None = None) -> OutboundFrame:
