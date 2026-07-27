@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import os
 import unittest
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
+from counter_plugin import bootstrap
 from counter_plugin.actions.counter import ACTION_UUID, CounterAction
 from counter_plugin.contracts import ActionDependencies
 
@@ -65,6 +67,51 @@ class CounterBundleTests(unittest.TestCase):
         )
 
         self.assertEqual(client.read_bytes(), property_inspector_client_bytes())
+
+
+class CounterBootstrapTests(unittest.TestCase):
+    def test_uses_legacy_connection_by_default(self) -> None:
+        arguments = Mock(port=12345)
+        connection = Mock()
+        application = Mock()
+
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch.object(
+                bootstrap,
+                "WebSocketStreamDockConnection",
+                return_value=connection,
+            ) as connection_factory,
+            patch.object(bootstrap, "Plugin", return_value=application) as plugin_factory,
+        ):
+            result = bootstrap.build_application(arguments)
+
+        self.assertIs(result, application)
+        connection_factory.assert_called_once_with(12345)
+        plugin_factory.assert_called_once_with(arguments, stream_dock=connection)
+
+    def test_uses_boundary_only_after_explicit_opt_in(self) -> None:
+        arguments = Mock(port=12345)
+        connection = Mock()
+        application = Mock()
+
+        with (
+            patch.dict(
+                os.environ,
+                {bootstrap.EXPERIMENTAL_BOUNDARY_ENV: "1"},
+                clear=True,
+            ),
+            patch(
+                "mirabox_sdk.experimental.create_experimental_stream_dock_connection",
+                return_value=connection,
+            ) as connection_factory,
+            patch.object(bootstrap, "Plugin", return_value=application) as plugin_factory,
+        ):
+            result = bootstrap.build_application(arguments)
+
+        self.assertIs(result, application)
+        connection_factory.assert_called_once_with(12345)
+        plugin_factory.assert_called_once_with(arguments, stream_dock=connection)
 
 
 if __name__ == "__main__":

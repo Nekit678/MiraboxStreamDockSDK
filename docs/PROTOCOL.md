@@ -24,8 +24,11 @@ documentation, repository source, and observed wire behavior take precedence.
 The declared minimum compatible version is Stream Dock `2.10.179.426`, matching
 the upstream manifest reference and this repository's example plugin. The
 latest recorded manual runtime verification was performed with Stream Dock
-`3.10.203.0701`. Automated tests simulate the protocol and do not require a
-physical Stream Dock device.
+`3.10.203.0701`. During the 2026-07-28 experimental-boundary verification, that
+installed build supplied `2.10.179.426` in `-info.application.version`; callers
+must treat the launch field as host-provided compatibility metadata rather than
+derive the installed application version from it. Automated tests simulate the
+protocol and do not require a physical Stream Dock device.
 
 ## Executable registration
 

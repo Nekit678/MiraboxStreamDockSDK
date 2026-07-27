@@ -50,6 +50,41 @@ PYTHONPATH=examples/counter_plugin/src python -m counter_plugin \
 
 The command waits for Stream Dock protocol messages; it is not a standalone UI.
 
+## Experimental boundary opt-in
+
+The example continues to use `WebSocketStreamDockConnection` by default. To run
+this one plugin through the experimental typed boundary, set
+`MIRABOX_SDK_EXPERIMENTAL_BOUNDARY` to the exact value `1` before starting it:
+
+```powershell
+$env:MIRABOX_SDK_EXPERIMENTAL_BOUNDARY = "1"
+python -m counter_plugin `
+  -port 12345 `
+  -pluginUUID com.example.counter `
+  -registerEvent registerPlugin `
+  -info '{"application":{"language":"en","platform":"windows","platformVersion":"11","version":"2.10.179.426"},"colors":{},"devicePixelRatio":1,"devices":[],"plugin":{"uuid":"com.example.counter","version":"0.1.0"}}'
+```
+
+For the packaged executable, set the variable before launching Stream Dock so
+the plugin process inherits it. Unset the variable and restart Stream Dock to
+return to the legacy connection.
+
+The experimental adapter was manually verified on 2026-07-28 with installed
+Stream Dock `3.10.203.0701`. The host's `-info.application.version` launch
+metadata reported the compatibility value `2.10.179.426`; the installed
+application version and the launch metadata are therefore recorded separately.
+The acceptance run confirmed all of the following:
+
+1. the Counter plugin registers and remains connected;
+2. adding the Counter action delivers `willAppear` and renders its title;
+3. pressing the key delivers `keyDown`, persists the count, and updates the
+   title;
+4. resetting in the Property Inspector delivers `sendToPlugin` and sends the
+   expected settings and title commands.
+
+The observed title sequence was `0 → 1 → 0`, and the Stream Dock log recorded
+`com.example.counter.sdPlugin` as connected.
+
 ## Test
 
 The example tests use a fake connection and do not require Stream Dock:
