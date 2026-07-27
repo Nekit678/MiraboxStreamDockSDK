@@ -6,7 +6,30 @@ from abc import abstractmethod
 from typing import Protocol, runtime_checkable
 
 from ..messaging.ports import InboundEventSource, OutboundCommandSink
-from ..transport.ports import SessionEventSource
+from ..transport.ports import (
+    RawInboundSink,
+    RawOutboundSource,
+    SessionEventSink,
+    SessionEventSource,
+    WebSocketConnector,
+)
+from .metrics import StreamDockBoundaryMetrics
+
+
+@runtime_checkable
+class WebSocketConnectorFactory(Protocol):
+    """Create a connector over boundary-owned raw and session ports."""
+
+    @abstractmethod
+    def __call__(
+        self,
+        raw_inbound_sink: RawInboundSink,
+        raw_outbound_source: RawOutboundSource,
+        session_event_sink: SessionEventSink,
+    ) -> WebSocketConnector:
+        """Return a connector without starting transport work."""
+
+        ...
 
 
 @runtime_checkable
@@ -43,5 +66,11 @@ class StreamDockBoundary(Protocol):
     @abstractmethod
     def close(self) -> None:
         """Idempotently request graceful boundary shutdown."""
+
+        ...
+
+    @abstractmethod
+    def metrics(self) -> StreamDockBoundaryMetrics:
+        """Return an aggregate immutable metrics snapshot."""
 
         ...

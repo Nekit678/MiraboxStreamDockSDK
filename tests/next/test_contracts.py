@@ -12,8 +12,13 @@ from pathlib import Path
 
 import mirabox_sdk
 from mirabox_sdk import RegisterPluginCommand, StreamDockCommand, StreamDockEvent
+from mirabox_sdk._next.boundary.composition import ComposedStreamDockBoundary
 from mirabox_sdk._next.boundary.config import BoundaryQueueConfig
-from mirabox_sdk._next.boundary.ports import StreamDockBoundary
+from mirabox_sdk._next.boundary.metrics import StreamDockBoundaryMetrics
+from mirabox_sdk._next.boundary.ports import (
+    StreamDockBoundary,
+    WebSocketConnectorFactory,
+)
 from mirabox_sdk._next.messaging.inbound import InboundEventQueue
 from mirabox_sdk._next.messaging.models import CommandFuture, CommandSubmission
 from mirabox_sdk._next.messaging.outbound import OutboundCommandQueue
@@ -245,6 +250,11 @@ class BoundaryContractTests(unittest.TestCase):
                 SessionEventQueue,
                 ("stop_accepting", "drain", "shutdown", "metrics"),
             ),
+            (
+                StreamDockBoundary,
+                ComposedStreamDockBoundary,
+                ("run_forever", "close", "metrics"),
+            ),
         )
 
         for port, implementation, methods in implementations:
@@ -261,6 +271,7 @@ class BoundaryContractTests(unittest.TestCase):
 
     def test_concrete_components_explicitly_inherit_their_control_ports(self) -> None:
         implementations = (
+            (ComposedStreamDockBoundary, StreamDockBoundary),
             (InboundEventQueue, InboundEventQueueControl),
             (OutboundCommandQueue, OutboundCommandQueueControl),
             (RawInboundQueue, TransportQueueControl),
@@ -305,7 +316,9 @@ class PackageIsolationTests(unittest.TestCase):
         module_names = (
             "mirabox_sdk._next",
             "mirabox_sdk._next.boundary",
+            "mirabox_sdk._next.boundary.composition",
             "mirabox_sdk._next.boundary.config",
+            "mirabox_sdk._next.boundary.metrics",
             "mirabox_sdk._next.boundary.ports",
             "mirabox_sdk._next.messaging",
             "mirabox_sdk._next.messaging.inbound",
@@ -401,6 +414,7 @@ class PackageIsolationTests(unittest.TestCase):
     def test_ports_are_declared_in_dedicated_port_modules(self) -> None:
         ports = (
             StreamDockBoundary,
+            WebSocketConnectorFactory,
             InboundEventSource,
             InboundEventSink,
             OutboundCommandSource,
@@ -431,6 +445,8 @@ class PackageIsolationTests(unittest.TestCase):
     def test_next_contracts_are_not_part_of_the_stable_public_api(self) -> None:
         private_contracts = {
             "BoundaryQueueConfig",
+            "BoundaryShutdownConfig",
+            "ComposedStreamDockBoundary",
             "CommandSubmission",
             "CommandWriter",
             "CommandWriterMetrics",
@@ -456,12 +472,14 @@ class PackageIsolationTests(unittest.TestCase):
             "SessionEventQueue",
             "SessionEventSource",
             "StreamDockBoundary",
+            "StreamDockBoundaryMetrics",
             "StreamDockCommandEncoder",
             "StreamDockEventDecoder",
             "TransportReceipt",
             "TransportQueueControl",
             "TransportQueueMetrics",
             "WebSocketConnector",
+            "WebSocketConnectorFactory",
             "WebSocketConnectorMetrics",
         }
 
@@ -545,3 +563,6 @@ class _Boundary(StreamDockBoundary):
 
     def close(self) -> None:
         pass
+
+    def metrics(self) -> StreamDockBoundaryMetrics:
+        raise NotImplementedError

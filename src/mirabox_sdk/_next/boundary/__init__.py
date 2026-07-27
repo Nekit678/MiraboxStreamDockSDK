@@ -1,1 +1,1 @@
-"""Composition contracts and configuration for the experimental boundary."""
+"""Composition root, typed facade, configuration, and aggregate metrics."""
