@@ -367,7 +367,11 @@ class _NextBoundaryHarness:
         return self.connector.emit(frame)
 
     def receive_event(self, timeout: float = 2) -> StreamDockEvent:
-        return self.boundary.events.receive(timeout=timeout)
+        event = self.boundary.events.receive(timeout=timeout)
+        try:
+            return event
+        finally:
+            self.boundary.events.task_done()
 
     def send_async(self, command: StreamDockCommand):
         return self.boundary.commands.send_async(command)

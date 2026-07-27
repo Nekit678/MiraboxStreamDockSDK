@@ -9,6 +9,23 @@ from scripts import benchmark_boundary
 
 
 class BoundaryBenchmarkTests(unittest.TestCase):
+    def test_next_harness_acknowledges_received_event(self) -> None:
+        harness = benchmark_boundary._NextBoundaryHarness(
+            queue_limit=2,
+            shutdown_timeout=0.01,
+        )
+        try:
+            self.assertTrue(harness.emit(benchmark_boundary._key_frame("keyDown", 1)))
+
+            event = harness.receive_event(timeout=1)
+
+            self.assertEqual(event.settings["sequence"], 1)
+            metrics = harness.boundary.metrics().inbound_events
+            self.assertEqual(metrics.in_flight, 0)
+            self.assertEqual(metrics.acknowledged, 1)
+        finally:
+            harness.close()
+
     def test_concurrent_scenario_propagates_producer_failures(self) -> None:
         harness = _FailingHarness()
         with (

@@ -329,8 +329,10 @@ class _NextHarness:
 
     def receive_event(self, timeout: float = 1) -> StreamDockEvent:
         event = self.boundary.events.receive(timeout=timeout)
-        self.boundary.events.task_done()
-        return event
+        try:
+            return event
+        finally:
+            self.boundary.events.task_done()
 
     def send_async(self, command: StreamDockCommand):
         return self.boundary.commands.send_async(command)
