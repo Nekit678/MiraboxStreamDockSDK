@@ -8,7 +8,13 @@ from threading import Event, Lock, Thread, current_thread
 from threading import enumerate as enumerate_threads
 from time import monotonic, sleep
 
-from mirabox_sdk import KeyDownEvent, LogMessageCommand
+from mirabox_sdk import (
+    KeyDownEvent,
+    LogMessageCommand,
+    StreamDockCommand,
+    StreamDockEvent,
+    UnknownStreamDockEvent,
+)
 from mirabox_sdk._next.boundary.composition import (
     StreamDockBoundaryLifecycleError,
     create_stream_dock_boundary,
@@ -18,6 +24,10 @@ from mirabox_sdk._next.boundary.config import (
     BoundaryShutdownConfig,
 )
 from mirabox_sdk._next.boundary.ports import StreamDockBoundary
+from mirabox_sdk._next.protocol.ports import (
+    StreamDockCommandEncoder,
+    StreamDockEventDecoder,
+)
 from mirabox_sdk._next.transport.frames import OutboundFrame
 from mirabox_sdk._next.transport.metrics import WebSocketConnectorMetrics
 from mirabox_sdk._next.transport.ports import (
@@ -182,12 +192,38 @@ class _FakeConnectorFactory:
         return self.connector
 
 
+class _FalseyDecoder:
+    def __init__(self) -> None:
+        self.frames: list[str] = []
+
+    def __bool__(self) -> bool:
+        return False
+
+    def decode(self, frame: str) -> StreamDockEvent:
+        self.frames.append(frame)
+        return UnknownStreamDockEvent(event="injectedDecoder", data={"frame": frame})
+
+
+class _FalseyEncoder:
+    def __init__(self) -> None:
+        self.commands: list[StreamDockCommand] = []
+
+    def __bool__(self) -> bool:
+        return False
+
+    def encode(self, command: StreamDockCommand) -> str:
+        self.commands.append(command)
+        return "encoded by injected encoder"
+
+
 class _BoundaryHarness:
     def __init__(
         self,
         *,
         queue_config: BoundaryQueueConfig | None = None,
         shutdown_config: BoundaryShutdownConfig | None = None,
+        decoder: StreamDockEventDecoder | None = None,
+        encoder: StreamDockCommandEncoder | None = None,
         consume_outbound: bool = True,
         startup_error: Exception | None = None,
     ) -> None:
@@ -199,6 +235,8 @@ class _BoundaryHarness:
             12345,
             queue_config or _queue_config(),
             shutdown_config=shutdown_config or _shutdown_config(),
+            decoder=decoder,
+            encoder=encoder,
             connector_factory=self.factory,
         )
         assert self.factory.connector is not None
@@ -224,6 +262,29 @@ class _BoundaryHarness:
 
 
 class StreamDockBoundaryPipelineTests(unittest.TestCase):
+    def test_uses_injected_decoder_and_encoder_even_when_they_are_falsey(self) -> None:
+        decoder = _FalseyDecoder()
+        encoder = _FalseyEncoder()
+        harness = _BoundaryHarness(decoder=decoder, encoder=encoder)
+        harness.start()
+
+        try:
+            self.assertTrue(harness.connector.emit("opaque frame"))
+            event = harness.boundary.events.receive(timeout=1)
+            self.assertEqual(event.event_name, "injectedDecoder")
+            harness.boundary.events.task_done()
+
+            command = LogMessageCommand("hello")
+            completion = harness.boundary.commands.send_async(command)
+            self.assertIsNone(completion.result(timeout=1))
+            self.assertEqual(decoder.frames, ["opaque frame"])
+            self.assertEqual(encoder.commands, [command])
+            self.assertEqual(harness.connector.sent[0][0], "encoded by injected encoder")
+        finally:
+            harness.connector.disconnect()
+            harness.join()
+        self.assertEqual(harness.errors, [])
+
     def test_composes_full_inbound_outbound_and_session_pipelines(self) -> None:
         harness = _BoundaryHarness()
         harness.start()

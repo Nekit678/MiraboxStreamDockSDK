@@ -348,8 +348,10 @@ def create_stream_dock_boundary(
     raw_outbound = RawOutboundQueue(queue_config.raw_outbound_limit)
     session_events = SessionEventQueue(queue_config.session_event_limit)
 
-    resolved_decoder = decoder or JsonStreamDockEventDecoder(LegacyEventParserAdapter())
-    resolved_encoder = encoder or JsonStreamDockCommandEncoder()
+    resolved_decoder = (
+        decoder if decoder is not None else JsonStreamDockEventDecoder(LegacyEventParserAdapter())
+    )
+    resolved_encoder = encoder if encoder is not None else JsonStreamDockCommandEncoder()
     event_reader = event_reader_factory(raw_inbound, resolved_decoder, inbound_events)
     command_writer = command_writer_factory(
         outbound_commands,
