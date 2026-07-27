@@ -151,14 +151,24 @@ class JsonStreamDockEventDecoderTests(unittest.TestCase):
 
     def test_decodes_json_once(self) -> None:
         frame = '{"event":"systemDidWakeUp"}'
+        json_decoder = self.decoder._json_decoder
 
-        with patch(
-            "mirabox_sdk._next.protocol.decoder.json.loads",
-            wraps=json.loads,
-        ) as loads:
+        with patch.object(
+            json_decoder,
+            "decode",
+            wraps=json_decoder.decode,
+        ) as decode:
             self.decoder.decode(frame)
 
-        loads.assert_called_once()
+        decode.assert_called_once_with(frame)
+
+    def test_reuses_strict_json_decoder(self) -> None:
+        json_decoder = self.decoder._json_decoder
+
+        self.decoder.decode('{"event":"systemDidWakeUp"}')
+        self.decoder.decode('{"event":"systemDidWakeUp"}')
+
+        self.assertIs(self.decoder._json_decoder, json_decoder)
 
     def test_requires_a_text_frame(self) -> None:
         with self.assertRaisesRegex(TypeError, "^frame must be a string$"):

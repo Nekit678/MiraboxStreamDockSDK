@@ -11,7 +11,14 @@ from .ports import StreamDockCommandEncoder
 class JsonStreamDockCommandEncoder(StreamDockCommandEncoder):
     """Serialize validated command envelopes exactly once as strict JSON."""
 
-    __slots__ = ()
+    __slots__ = ("_json_encoder",)
+
+    def __init__(self) -> None:
+        self._json_encoder = json.JSONEncoder(
+            ensure_ascii=False,
+            allow_nan=False,
+            check_circular=False,
+        )
 
     def encode(self, command: StreamDockCommand) -> str:
         """Return the strict JSON text frame for ``command``.
@@ -31,10 +38,6 @@ class JsonStreamDockCommandEncoder(StreamDockCommandEncoder):
             raise TypeError("command.to_validated_wire() must return ValidatedWireMessage")
 
         try:
-            return json.dumps(
-                wire_message._json_object(),
-                ensure_ascii=False,
-                allow_nan=False,
-            )
+            return self._json_encoder.encode(wire_message._json_object())
         except (TypeError, ValueError):
             raise ValueError("Stream Dock command contains a non-JSON value") from None

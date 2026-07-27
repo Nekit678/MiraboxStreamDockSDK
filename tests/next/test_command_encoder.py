@@ -104,16 +104,29 @@ class JsonStreamDockCommandEncoderTests(unittest.TestCase):
 
     def test_validates_and_serializes_exactly_once(self) -> None:
         command = _CountingCommand()
+        json_encoder = self.encoder._json_encoder
 
-        with patch(
-            "mirabox_sdk._next.protocol.encoder.json.dumps",
-            wraps=json.dumps,
-        ) as dumps:
+        with patch.object(
+            json_encoder,
+            "encode",
+            wraps=json_encoder.encode,
+        ) as encode:
             encoded = self.encoder.encode(command)
 
         self.assertEqual(command.to_wire_calls, 1)
-        dumps.assert_called_once()
+        encode.assert_called_once()
         self.assertEqual(json.loads(encoded), {"event": "counted"})
+
+    def test_reuses_strict_json_encoder_without_circular_recheck(self) -> None:
+        json_encoder = self.encoder._json_encoder
+
+        self.encoder.encode(LogMessageCommand("first"))
+        self.encoder.encode(LogMessageCommand("second"))
+
+        self.assertIs(self.encoder._json_encoder, json_encoder)
+        self.assertFalse(json_encoder.ensure_ascii)
+        self.assertFalse(json_encoder.allow_nan)
+        self.assertFalse(json_encoder.check_circular)
 
 
 class _CustomCommand(StreamDockCommand):

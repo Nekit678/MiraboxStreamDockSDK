@@ -22,10 +22,13 @@ class JsonStreamDockEventDecoder(StreamDockEventDecoder):
     protocol frame through the existing structured error hierarchy.
     """
 
-    __slots__ = ("_event_parser",)
+    __slots__ = ("_event_parser", "_json_decoder")
 
     def __init__(self, event_parser: DecodedEventParser) -> None:
         self._event_parser = event_parser
+        self._json_decoder = json.JSONDecoder(
+            parse_constant=_reject_non_finite_json_constant,
+        )
 
     def decode(self, frame: str) -> StreamDockEvent:
         """Return the typed event represented by ``frame``.
@@ -41,10 +44,7 @@ class JsonStreamDockEventDecoder(StreamDockEventDecoder):
             raise TypeError("frame must be a string")
 
         try:
-            value = json.loads(
-                frame,
-                parse_constant=_reject_non_finite_json_constant,
-            )
+            value = self._json_decoder.decode(frame)
         except json.JSONDecodeError as exc:
             raise MalformedEventError(
                 f"invalid JSON: {exc.msg} at line {exc.lineno} column {exc.colno}"
