@@ -100,6 +100,7 @@ class WebSocketClientConnector(WebSocketConnector):
         self._drain_requested = False
         self._stop_requested = False
         self._sender_stopped = False
+        self._outbound_drained = False
         self._in_flight: OutboundFrame | None = None
         self._disconnected_published = False
         self._websocket_close_requested = False
@@ -242,8 +243,15 @@ class WebSocketClientConnector(WebSocketConnector):
         except TimeoutError:
             with self._condition:
                 keep_running = not (self._stop_requested or self._drain_requested)
+                if self._drain_requested and not self._stop_requested:
+                    self._outbound_drained = True
+                self._condition.notify_all()
             return keep_running, None
         except TransportQueueClosedError:
+            with self._condition:
+                if self._drain_requested and not self._stop_requested:
+                    self._outbound_drained = True
+                self._condition.notify_all()
             return False, None
         except Exception as exc:
             self._publish_transport_error(exc)
@@ -372,30 +380,45 @@ class WebSocketClientConnector(WebSocketConnector):
             self._drain_requested = True
             sender = self._sender_thread
             called_from_sender = sender is current_thread()
+            connected = self._connected
             self._condition.notify_all()
 
-        drained = sender is None
-        if sender is not None and not called_from_sender:
-            drained = self._wait_for_sender(self._outbound_shutdown_timeout)
+        drained = False
+        drain_timed_out = False
+        if sender is not None and not called_from_sender and connected:
+            drained, drain_timed_out = self._wait_for_outbound_drain(
+                self._outbound_shutdown_timeout
+            )
 
         if not drained:
             with self._condition:
-                self._outbound_drain_timeouts += 1
+                if drain_timed_out:
+                    self._outbound_drain_timeouts += 1
                 self._stop_requested = True
                 self._connected = False
                 self._condition.notify_all()
-            error = WebSocketConnectorClosedError(
-                "WebSocket connector shutdown timed out before outbound drain"
-            )
+            if sender is None:
+                error = WebSocketConnectorClosedError(
+                    "WebSocket connector closed before outbound sender started"
+                )
+            elif called_from_sender:
+                error = WebSocketConnectorClosedError(
+                    "WebSocket connector closed from its sender thread"
+                )
+            elif not connected:
+                error = WebSocketConnectorClosedError(
+                    "WebSocket connector closed before connection; "
+                    "outbound frames could not be sent"
+                )
+            elif drain_timed_out:
+                error = WebSocketConnectorClosedError(
+                    "WebSocket connector shutdown timed out before outbound drain"
+                )
+            else:
+                error = WebSocketConnectorClosedError(
+                    "WebSocket outbound sender stopped before the queue drained"
+                )
             self._discard_outbound(error)
-        elif called_from_sender:
-            with self._condition:
-                self._stop_requested = True
-                self._connected = False
-                self._condition.notify_all()
-            self._discard_outbound(
-                WebSocketConnectorClosedError("WebSocket connector closed from its sender thread")
-            )
 
         self._safe_close_websocket()
 
@@ -403,11 +426,6 @@ class WebSocketClientConnector(WebSocketConnector):
             sender.join(_SENDER_JOIN_GRACE)
 
         if sender is None:
-            self._discard_outbound(
-                WebSocketConnectorClosedError(
-                    "WebSocket connector closed before outbound sender started"
-                )
-            )
             with self._condition:
                 self._terminal = True
                 self._stop_requested = True
@@ -463,15 +481,17 @@ class WebSocketClientConnector(WebSocketConnector):
         if not close_in_progress:
             self._close_completed.set()
 
-    def _wait_for_sender(self, timeout: float | None) -> bool:
+    def _wait_for_outbound_drain(self, timeout: float | None) -> tuple[bool, bool]:
         deadline = None if timeout is None else monotonic() + timeout
         with self._condition:
-            while not self._sender_stopped:
+            while not self._outbound_drained:
+                if self._sender_stopped:
+                    return False, False
                 remaining = None if deadline is None else deadline - monotonic()
                 if remaining is not None and remaining <= 0:
-                    return False
+                    return False, True
                 self._condition.wait(remaining)
-            return True
+            return True, False
 
     def _discard_outbound(self, error: Exception) -> None:
         with self._condition:

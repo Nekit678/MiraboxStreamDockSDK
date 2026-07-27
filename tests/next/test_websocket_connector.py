@@ -476,6 +476,30 @@ class WebSocketClientConnectorTests(unittest.TestCase):
         with self.assertRaises(TimeoutError):
             harness.session_events.receive(timeout=0)
 
+    def test_close_before_open_fails_accepted_frames_without_lifecycle_exit(self) -> None:
+        harness = _ConnectorHarness(block_open=True)
+        frame = OutboundFrame("never connected", TransportReceipt())
+        self.assertTrue(harness.raw_outbound.submit(frame))
+        harness.thread.start()
+        self.assertTrue(harness.app.run_started.wait(1))
+
+        harness.connector.close()
+
+        with self.assertRaises(WebSocketConnectorClosedError):
+            frame.receipt.result(timeout=0)
+        self.assertEqual(harness.raw_outbound.metrics().current_depth, 0)
+        sender = harness.connector._sender_thread
+        self.assertIsNotNone(sender)
+        assert sender is not None
+        self.assertFalse(sender.is_alive())
+        self.assertTrue(harness.thread.is_alive())
+        metrics = harness.connector.metrics()
+        self.assertEqual(metrics.outbound_drain_timeouts, 0)
+        self.assertEqual(metrics.outbound_discarded_during_shutdown, 1)
+
+        harness.app.release_open.set()
+        harness.finish()
+
     def test_rejects_invalid_configuration(self) -> None:
         inbound = RawInboundQueue(1)
         outbound = RawOutboundQueue(1)
