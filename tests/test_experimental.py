@@ -13,24 +13,39 @@ import mirabox_sdk
 from mirabox_sdk import (
     Action,
     ActionRegistry,
+    CommandFuture,
     JsonObject,
     KeyDownEvent,
+    LogMessageCommand,
+    OutboundCommandBusClosedError,
+    OutboundQueueFullError,
     PluginLaunchArguments,
     RegistrationApplicationInfo,
     RegistrationColors,
     RegistrationInfo,
     RegistrationPluginInfo,
+    StreamDockCommand,
     StreamDockEvent,
     StreamDockPlugin,
     StreamDockSender,
     WillAppearEvent,
 )
+from mirabox_sdk._next.boundary.metrics import StreamDockBoundaryMetrics
+from mirabox_sdk._next.messaging.models import CommandFuture as BoundaryCommandFuture
+from mirabox_sdk._next.messaging.outbound import (
+    OutboundCommandQueueClosedError,
+)
+from mirabox_sdk._next.messaging.outbound import (
+    OutboundQueueFullError as BoundaryQueueFullError,
+)
+from mirabox_sdk._next.messaging.ports import InboundEventSourceClosedError
 from mirabox_sdk._next.transport.frames import OutboundFrame
 from mirabox_sdk._next.transport.metrics import WebSocketConnectorMetrics
 from mirabox_sdk._next.transport.ports import (
     RawInboundSink,
     RawOutboundSource,
     SessionEventSink,
+    SessionEventSourceClosedError,
     WebSocketConnector,
 )
 from mirabox_sdk._next.transport.queues import TransportQueueClosedError
@@ -211,6 +226,63 @@ class _ClosingListener:
         self._connection.close()
 
 
+class _ClosedInboundEventSource:
+    def receive(self, *, timeout: float | None = None) -> StreamDockEvent:
+        raise InboundEventSourceClosedError("events closed")
+
+    def task_done(self) -> None:
+        raise AssertionError("a closed source has no event to acknowledge")
+
+
+class _ClosedSessionEventSource:
+    def receive(self, *, timeout: float | None = None) -> Connected:
+        raise SessionEventSourceClosedError("session events closed")
+
+
+class _RecordingBoundaryCommandSink:
+    def __init__(self) -> None:
+        self.completion = BoundaryCommandFuture()
+        self.error: Exception | None = None
+        self.commands: list[StreamDockCommand] = []
+
+    def send(self, command: StreamDockCommand) -> None:
+        self.send_async(command).result()
+
+    def send_async(self, command: StreamDockCommand) -> BoundaryCommandFuture:
+        if self.error is not None:
+            raise self.error
+        self.commands.append(command)
+        return self.completion
+
+
+class _ClosedPortBoundary:
+    def __init__(self, commands: _RecordingBoundaryCommandSink | None = None) -> None:
+        self._events = _ClosedInboundEventSource()
+        self._session_events = _ClosedSessionEventSource()
+        self._commands = commands if commands is not None else _RecordingBoundaryCommandSink()
+
+    @property
+    def events(self) -> _ClosedInboundEventSource:
+        return self._events
+
+    @property
+    def commands(self) -> _RecordingBoundaryCommandSink:
+        return self._commands
+
+    @property
+    def session_events(self) -> _ClosedSessionEventSource:
+        return self._session_events
+
+    def run_forever(self) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+    def metrics(self) -> StreamDockBoundaryMetrics:
+        raise AssertionError("metrics are not used by this fake")
+
+
 class ExperimentalRuntimeIntegrationTests(unittest.TestCase):
     def test_legacy_connection_remains_the_package_default(self) -> None:
         self.assertIs(
@@ -218,6 +290,36 @@ class ExperimentalRuntimeIntegrationTests(unittest.TestCase):
             mirabox_sdk.connection.WebSocketStreamDockConnection,
         )
         self.assertFalse(hasattr(mirabox_sdk, "create_experimental_stream_dock_connection"))
+
+    def test_dispatcher_stops_on_port_level_source_close_errors(self) -> None:
+        connection = BoundaryStreamDockConnection(
+            _ClosedPortBoundary(),
+            dispatcher_poll_interval=0,
+            dispatcher_shutdown_timeout=1,
+        )
+
+        connection.run_forever()
+
+    def test_temporary_sender_adapter_preserves_legacy_completion_and_errors(self) -> None:
+        commands = _RecordingBoundaryCommandSink()
+        connection = BoundaryStreamDockConnection(_ClosedPortBoundary(commands))
+        command = LogMessageCommand("hello")
+
+        completion = connection.send_async(command)
+        self.assertIsInstance(completion, CommandFuture)
+        self.assertFalse(completion.done())
+        commands.completion._finish()
+        self.assertTrue(completion.wait(timeout=0))
+        self.assertIsNone(completion.result(timeout=0))
+        self.assertEqual(commands.commands, [command])
+
+        commands.error = BoundaryQueueFullError("full")
+        with self.assertRaisesRegex(OutboundQueueFullError, "full"):
+            connection.send_async(command)
+
+        commands.error = OutboundCommandQueueClosedError("closed")
+        with self.assertRaisesRegex(OutboundCommandBusClosedError, "closed"):
+            connection.send_async(command)
 
     def test_current_runtime_registers_dispatches_and_sends_through_boundary(self) -> None:
         factory = _RuntimeConnectorFactory((_event_frame("willAppear"), _event_frame("keyDown")))

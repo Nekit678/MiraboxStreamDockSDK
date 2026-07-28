@@ -18,6 +18,7 @@ from .ports import (
     RawOutboundSource,
     SessionEventSink,
     SessionEventSource,
+    SessionEventSourceClosedError,
     TransportQueueControl,
 )
 from .session import SessionEvent
@@ -31,6 +32,13 @@ class TransportQueueError(RuntimeError):
 
 class TransportQueueClosedError(TransportQueueError):
     """Report that a transport queue no longer accepts or produces items."""
+
+
+class SessionEventQueueClosedError(
+    TransportQueueClosedError,
+    SessionEventSourceClosedError,
+):
+    """Compatibility error for terminal session event queue shutdown."""
 
 
 class TransportQueueFullError(TransportQueueError):
@@ -47,12 +55,14 @@ class _BoundedTransportQueue(Generic[ItemT]):
         queue_name: str,
         item_type: type[ItemT],
         reject: Callable[[ItemT, Exception], None] | None = None,
+        closed_error_type: type[TransportQueueClosedError] = TransportQueueClosedError,
     ) -> None:
         _validate_queue_limit(queue_limit)
         self._queue_limit = queue_limit
         self._queue_name = queue_name
         self._item_type = item_type
         self._reject = reject
+        self._closed_error_type = closed_error_type
         self._condition = Condition()
         self._queue: deque[ItemT] = deque()
         self._accepting = True
@@ -80,7 +90,9 @@ class _BoundedTransportQueue(Generic[ItemT]):
                 self._rejected_after_shutdown += 1
                 self._reject_item(
                     item,
-                    TransportQueueClosedError(f"{self._queue_name} is no longer accepting items"),
+                    self._closed_error_type(
+                        f"{self._queue_name} is no longer accepting items"
+                    ),
                 )
                 return False
 
@@ -104,7 +116,7 @@ class _BoundedTransportQueue(Generic[ItemT]):
                     self._rejected_after_shutdown += 1
                     self._reject_item(
                         item,
-                        TransportQueueClosedError(
+                        self._closed_error_type(
                             f"{self._queue_name} is no longer accepting items"
                         ),
                     )
@@ -125,7 +137,7 @@ class _BoundedTransportQueue(Generic[ItemT]):
         with self._condition:
             while not self._queue:
                 if not self._accepting:
-                    raise TransportQueueClosedError(f"{self._queue_name} is closed")
+                    raise self._closed_error_type(f"{self._queue_name} is closed")
                 remaining = None if deadline is None else deadline - monotonic()
                 if remaining is not None and remaining <= 0:
                     raise TimeoutError(f"Timed out waiting for {self._queue_name}")
@@ -166,7 +178,7 @@ class _BoundedTransportQueue(Generic[ItemT]):
 
         discarded: tuple[ItemT, ...]
         with self._condition:
-            error = TransportQueueClosedError(
+            error = self._closed_error_type(
                 f"{self._queue_name} item was discarded during shutdown"
             )
             self._discarded_during_shutdown += len(self._queue)
@@ -305,6 +317,7 @@ class SessionEventQueue(SessionEventSource, SessionEventSink, TransportQueueCont
             queue_limit=queue_limit,
             queue_name="Session event queue",
             item_type=SessionEvent,
+            closed_error_type=SessionEventQueueClosedError,
         )
 
     def submit(self, event: SessionEvent, *, timeout: float | None = None) -> bool:

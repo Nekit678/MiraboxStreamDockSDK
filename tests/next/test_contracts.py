@@ -20,7 +20,7 @@ from mirabox_sdk._next.boundary.ports import (
     StreamDockBoundary,
     WebSocketConnectorFactory,
 )
-from mirabox_sdk._next.messaging.inbound import InboundEventQueue
+from mirabox_sdk._next.messaging.inbound import InboundEventQueue, InboundEventQueueClosedError
 from mirabox_sdk._next.messaging.models import CommandFuture, CommandSubmission
 from mirabox_sdk._next.messaging.outbound import OutboundCommandQueue
 from mirabox_sdk._next.messaging.ports import (
@@ -29,6 +29,7 @@ from mirabox_sdk._next.messaging.ports import (
     InboundEventQueueControl,
     InboundEventSink,
     InboundEventSource,
+    InboundEventSourceClosedError,
     OutboundCommandQueueControl,
     OutboundCommandSink,
     OutboundCommandSource,
@@ -58,6 +59,7 @@ from mirabox_sdk._next.transport.ports import (
     RawOutboundSource,
     SessionEventSink,
     SessionEventSource,
+    SessionEventSourceClosedError,
     TransportQueueControl,
     WebSocketConnector,
 )
@@ -65,6 +67,8 @@ from mirabox_sdk._next.transport.queues import (
     RawInboundQueue,
     RawOutboundQueue,
     SessionEventQueue,
+    SessionEventQueueClosedError,
+    TransportQueueClosedError,
 )
 from mirabox_sdk._next.transport.session import (
     Connected,
@@ -179,6 +183,20 @@ class CompletionContractTests(unittest.TestCase):
 
 
 class BoundaryContractTests(unittest.TestCase):
+    def test_typed_sources_raise_stable_port_level_close_errors(self) -> None:
+        inbound_events = InboundEventQueue(1)
+        self.assertTrue(inbound_events.shutdown(timeout=0))
+        with self.assertRaises(InboundEventSourceClosedError) as inbound_closed:
+            inbound_events.receive(timeout=0)
+        self.assertIsInstance(inbound_closed.exception, InboundEventQueueClosedError)
+
+        session_events = SessionEventQueue(1)
+        self.assertTrue(session_events.shutdown(timeout=0))
+        with self.assertRaises(SessionEventSourceClosedError) as session_closed:
+            session_events.receive(timeout=0)
+        self.assertIsInstance(session_closed.exception, SessionEventQueueClosedError)
+        self.assertIsInstance(session_closed.exception, TransportQueueClosedError)
+
     def test_transport_and_command_models_retain_typed_values(self) -> None:
         receipt = TransportReceipt()
         frame = OutboundFrame('{"event":"register"}', receipt)
@@ -459,8 +477,29 @@ class PackageIsolationTests(unittest.TestCase):
             {Path("protocol/adapters/legacy.py")},
         )
 
+    def test_experimental_dispatcher_uses_port_level_source_close_errors(self) -> None:
+        imported_names = _imported_names(PROJECT_ROOT / "src" / "mirabox_sdk" / "experimental.py")
+
+        self.assertIn(
+            "mirabox_sdk._next.messaging.ports.InboundEventSourceClosedError",
+            imported_names,
+        )
+        self.assertIn(
+            "mirabox_sdk._next.transport.ports.SessionEventSourceClosedError",
+            imported_names,
+        )
+        self.assertNotIn(
+            "mirabox_sdk._next.messaging.inbound.InboundEventQueueClosedError",
+            imported_names,
+        )
+        self.assertNotIn(
+            "mirabox_sdk._next.transport.queues.TransportQueueClosedError",
+            imported_names,
+        )
+
     def test_ports_are_declared_in_dedicated_port_modules(self) -> None:
         ports = (
+            InboundEventSourceClosedError,
             StreamDockBoundary,
             WebSocketConnectorFactory,
             InboundEventSource,
@@ -480,6 +519,7 @@ class PackageIsolationTests(unittest.TestCase):
             RawOutboundSource,
             RawOutboundSink,
             SessionEventSource,
+            SessionEventSourceClosedError,
             SessionEventSink,
             TransportQueueAcceptanceControl,
             TransportQueueControl,
@@ -504,6 +544,7 @@ class PackageIsolationTests(unittest.TestCase):
             "EventReaderMetrics",
             "EventReaderWorker",
             "InboundEventQueue",
+            "InboundEventSourceClosedError",
             "InboundEventSource",
             "InboundEventQueueControl",
             "InboundEventQueueMetrics",
@@ -519,6 +560,7 @@ class PackageIsolationTests(unittest.TestCase):
             "RawOutboundQueue",
             "SessionEventQueue",
             "SessionEventSource",
+            "SessionEventSourceClosedError",
             "StreamDockBoundary",
             "StreamDockBoundaryMetrics",
             "StreamDockCommandEncoder",

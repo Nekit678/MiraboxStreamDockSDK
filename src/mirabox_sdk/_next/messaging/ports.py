@@ -16,6 +16,10 @@ from .metrics import (
 from .models import CommandFuture, CommandSubmission
 
 
+class InboundEventSourceClosedError(RuntimeError):
+    """Report terminal closure of a typed inbound event source."""
+
+
 @runtime_checkable
 class InboundEventSource(Protocol):
     """Source of decoded Stream Dock events for the next SDK layer.
@@ -26,7 +30,12 @@ class InboundEventSource(Protocol):
 
     @abstractmethod
     def receive(self, *, timeout: float | None = None) -> StreamDockEvent:
-        """Return the next accepted typed event for processing."""
+        """Return the next accepted typed event for processing.
+
+        Raises:
+            InboundEventSourceClosedError: If the source reached terminal
+                closure and has no accepted event left to return.
+        """
 
         ...
 

@@ -10,6 +10,10 @@ from .metrics import TransportQueueMetrics, WebSocketConnectorMetrics
 from .session import SessionEvent
 
 
+class SessionEventSourceClosedError(RuntimeError):
+    """Report terminal closure of a typed session event source."""
+
+
 @runtime_checkable
 class RawInboundSource(Protocol):
     """Source of WebSocket text frames for the protocol reader."""
@@ -60,7 +64,12 @@ class SessionEventSource(Protocol):
 
     @abstractmethod
     def receive(self, *, timeout: float | None = None) -> SessionEvent:
-        """Return the next lifecycle event."""
+        """Return the next lifecycle event.
+
+        Raises:
+            SessionEventSourceClosedError: If the source reached terminal
+                closure and has no accepted event left to return.
+        """
 
         ...
 

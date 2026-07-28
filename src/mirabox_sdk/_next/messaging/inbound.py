@@ -17,7 +17,12 @@ from ...events import (
     WillDisappearEvent,
 )
 from .metrics import InboundEventQueueMetrics
-from .ports import InboundEventQueueControl, InboundEventSink, InboundEventSource
+from .ports import (
+    InboundEventQueueControl,
+    InboundEventSink,
+    InboundEventSource,
+    InboundEventSourceClosedError,
+)
 
 
 class InboundOverflowPolicy(StrEnum):
@@ -283,8 +288,8 @@ class InboundEventQueue(InboundEventSource, InboundEventSink, InboundEventQueueC
         return event.context if isinstance(event, ActionEvent) else None
 
 
-class InboundEventQueueClosedError(RuntimeError):
-    """Report that the typed inbound queue reached terminal shutdown."""
+class InboundEventQueueClosedError(InboundEventSourceClosedError):
+    """Compatibility error for terminal typed inbound queue shutdown."""
 
 
 def _validate_queue_limit(queue_limit: int) -> None:

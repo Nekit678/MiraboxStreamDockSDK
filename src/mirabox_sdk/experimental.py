@@ -14,14 +14,14 @@ from threading import Lock, Thread, current_thread
 from ._next.boundary.composition import create_stream_dock_boundary
 from ._next.boundary.config import BoundaryQueueConfig, BoundaryShutdownConfig
 from ._next.boundary.ports import StreamDockBoundary, WebSocketConnectorFactory
-from ._next.messaging.inbound import InboundEventQueueClosedError
 from ._next.messaging.inbound import InboundOverflowPolicy as BoundaryInboundOverflowPolicy
 from ._next.messaging.models import CommandFuture as BoundaryCommandFuture
 from ._next.messaging.outbound import (
     OutboundCommandQueueClosedError as BoundaryCommandQueueClosedError,
 )
 from ._next.messaging.outbound import OutboundQueueFullError as BoundaryQueueFullError
-from ._next.transport.queues import TransportQueueClosedError
+from ._next.messaging.ports import InboundEventSourceClosedError, OutboundCommandSink
+from ._next.transport.ports import SessionEventSourceClosedError
 from ._next.transport.session import Connected, Disconnected, SessionEvent, TransportError
 from .commands import StreamDockCommand
 from .inbound import InboundOverflowPolicy
@@ -40,8 +40,12 @@ class ExperimentalBoundaryRuntimeError(RuntimeError):
     """Report a failure in the adapter between the current runtime and boundary."""
 
 
-class _RuntimeCommandFuture(CommandFuture):
-    """Expose the current runtime completion API over a boundary completion."""
+class _LegacyCommandFutureAdapter(CommandFuture):
+    """Temporarily expose the legacy completion API over boundary completion.
+
+    Remove this adapter when the legacy and boundary ``CommandFuture`` types
+    are unified during runtime stabilization.
+    """
 
     __slots__ = ("_completion",)
 
@@ -63,6 +67,32 @@ class _RuntimeCommandFuture(CommandFuture):
 
     def exception(self, timeout: float | None = None) -> Exception | None:
         return self._completion.exception(timeout)
+
+
+class _LegacyCommandSenderAdapter:
+    """Temporarily adapt a boundary command sink to the legacy sender API.
+
+    This adapter belongs to opt-in application composition, not to the typed
+    boundary. It must be removed after one canonical completion and submission
+    error contract replaces the two current APIs.
+    """
+
+    __slots__ = ("_commands",)
+
+    def __init__(self, commands: OutboundCommandSink) -> None:
+        self._commands = commands
+
+    def send(self, command: StreamDockCommand) -> None:
+        self.send_async(command).result()
+
+    def send_async(self, command: StreamDockCommand) -> CommandFuture:
+        try:
+            completion = self._commands.send_async(command)
+        except BoundaryQueueFullError as exc:
+            raise OutboundQueueFullError(str(exc)) from exc
+        except BoundaryCommandQueueClosedError as exc:
+            raise OutboundCommandBusClosedError(str(exc)) from exc
+        return _LegacyCommandFutureAdapter(completion)
 
 
 class BoundaryStreamDockConnection(StreamDockConnection):
@@ -94,6 +124,7 @@ class BoundaryStreamDockConnection(StreamDockConnection):
             allow_none=True,
         )
         self._boundary = boundary
+        self._command_sender = _LegacyCommandSenderAdapter(boundary.commands)
         self._listener: StreamDockListener | None = None
         self._state_lock = Lock()
         self._run_started = False
@@ -176,18 +207,12 @@ class BoundaryStreamDockConnection(StreamDockConnection):
     def send(self, command: StreamDockCommand) -> None:
         """Submit one command and wait for boundary serialization and transport."""
 
-        self.send_async(command).result()
+        self._command_sender.send(command)
 
     def send_async(self, command: StreamDockCommand) -> CommandFuture:
         """Submit one command through the typed boundary command port."""
 
-        try:
-            completion = self._boundary.commands.send_async(command)
-        except BoundaryQueueFullError as exc:
-            raise OutboundQueueFullError(str(exc)) from exc
-        except BoundaryCommandQueueClosedError as exc:
-            raise OutboundCommandBusClosedError(str(exc)) from exc
-        return _RuntimeCommandFuture(completion)
+        return self._command_sender.send_async(command)
 
     def _dispatch(self) -> None:
         connected = False
@@ -203,7 +228,7 @@ class BoundaryStreamDockConnection(StreamDockConnection):
                     session_event = self._boundary.session_events.receive(timeout=session_timeout)
                 except TimeoutError:
                     pass
-                except TransportQueueClosedError:
+                except SessionEventSourceClosedError:
                     session_events_closed = True
                 else:
                     connected = self._handle_session_event(session_event) or connected
@@ -213,7 +238,7 @@ class BoundaryStreamDockConnection(StreamDockConnection):
                     event = self._boundary.events.receive(timeout=self._dispatcher_poll_interval)
                 except TimeoutError:
                     continue
-                except InboundEventQueueClosedError:
+                except InboundEventSourceClosedError:
                     events_closed = True
                     continue
                 except Exception as exc:
@@ -247,7 +272,7 @@ class BoundaryStreamDockConnection(StreamDockConnection):
                     self._boundary.events.receive(timeout=self._dispatcher_poll_interval)
                 except TimeoutError:
                     continue
-                except InboundEventQueueClosedError:
+                except InboundEventSourceClosedError:
                     events_closed = True
                 except Exception as exc:
                     logger.error(
