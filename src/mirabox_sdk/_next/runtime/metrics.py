@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from threading import RLock
 
 from ..boundary.metrics import StreamDockBoundaryMetrics
 
@@ -97,3 +98,25 @@ class StreamDockRuntimeMetrics:
     routing: RuntimeRouterMetrics
     actions: ActionContextMetrics
     boundary: StreamDockBoundaryMetrics
+
+
+class _ActionContextMetricRecorder:
+    """Thread-safe mutable counters exposed only as immutable snapshots."""
+
+    __slots__ = ("_lock", "_values")
+
+    def __init__(self) -> None:
+        self._lock = RLock()
+        self._values = {field_name: 0 for field_name in ActionContextMetrics.__dataclass_fields__}
+
+    def increment(self, field_name: str, amount: int = 1) -> None:
+        if field_name not in self._values:
+            raise ValueError(f"unknown action metric: {field_name}")
+        if not isinstance(amount, int) or isinstance(amount, bool) or amount < 0:
+            raise ValueError("metric increment must be a non-negative integer")
+        with self._lock:
+            self._values[field_name] += amount
+
+    def snapshot(self) -> ActionContextMetrics:
+        with self._lock:
+            return ActionContextMetrics(**self._values)

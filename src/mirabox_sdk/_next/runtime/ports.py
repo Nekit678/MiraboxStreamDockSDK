@@ -24,6 +24,7 @@ from ...events import (
     SendToPluginEvent,
     StreamDockEvent,
     SystemDidWakeUpEvent,
+    TitleParameters,
     TitleParametersDidChangeEvent,
     TouchTapEvent,
     UnknownStreamDockEvent,
@@ -56,7 +57,17 @@ class RuntimeAction(Protocol):
 
 
 class RuntimeActionCallbacks(RuntimeAction, Protocol):
-    """Application callback surface addressable by runtime event routes."""
+    """Application state and callback surface used by runtime transitions."""
+
+    settings: object
+    title: str
+    title_parameters: TitleParameters | None
+
+    @abstractmethod
+    def update_settings_from_wire(self, settings: JsonObject) -> None:
+        """Atomically decode and replace action settings from a wire event."""
+
+        ...
 
     @abstractmethod
     def on_will_appear(self, event: WillAppearEvent) -> None: ...
@@ -141,7 +152,7 @@ class ActionFactory(Protocol):
         action_uuid: str,
         context: str,
         initial_settings: JsonObject,
-    ) -> RuntimeAction | None:
+    ) -> RuntimeActionCallbacks | None:
         """Return a new action, or ``None`` for an unknown action UUID."""
 
         ...
@@ -270,31 +281,36 @@ class ActionContextManager(Protocol):
     """Own application actions addressed by opaque Stream Dock contexts."""
 
     @abstractmethod
-    def create(self, event: WillAppearEvent) -> RuntimeAction | None:
+    def create(self, event: WillAppearEvent) -> RuntimeActionCallbacks | None:
         """Create and retain an action for an appearance event."""
 
         ...
 
     @abstractmethod
-    def get(self, context: str) -> RuntimeAction | None:
+    def get(self, context: str) -> RuntimeActionCallbacks | None:
         """Return the current action for ``context``, if any."""
 
         ...
 
     @abstractmethod
-    def remove(self, context: str) -> RuntimeAction | None:
-        """Remove and return the current action for ``context``, if any."""
+    def remove(
+        self,
+        context: str,
+        *,
+        expected: RuntimeActionCallbacks | None = None,
+    ) -> RuntimeActionCallbacks | None:
+        """Remove one action, optionally only when its identity matches."""
 
         ...
 
     @abstractmethod
-    def snapshot(self) -> tuple[RuntimeAction, ...]:
+    def snapshot(self) -> tuple[RuntimeActionCallbacks, ...]:
         """Return an immutable action snapshot."""
 
         ...
 
     @abstractmethod
-    def clear(self) -> tuple[RuntimeAction, ...]:
+    def clear(self) -> tuple[RuntimeActionCallbacks, ...]:
         """Atomically remove and return all retained actions."""
 
         ...

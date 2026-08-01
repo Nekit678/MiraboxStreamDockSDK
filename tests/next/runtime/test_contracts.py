@@ -141,10 +141,13 @@ class RuntimePortContractTests(unittest.TestCase):
     def test_runtime_modules_import_without_threads_or_concrete_boundary_components(self) -> None:
         module_names = (
             "mirabox_sdk._next.runtime",
+            "mirabox_sdk._next.runtime.actions",
             "mirabox_sdk._next.runtime.config",
+            "mirabox_sdk._next.runtime.global_settings",
             "mirabox_sdk._next.runtime.metrics",
             "mirabox_sdk._next.runtime.models",
             "mirabox_sdk._next.runtime.ports",
+            "mirabox_sdk._next.runtime.router",
             "mirabox_sdk._next.runtime.routes",
         )
         script = (
