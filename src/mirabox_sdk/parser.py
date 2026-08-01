@@ -4,11 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from types import MappingProxyType
-from typing import NoReturn
+from typing import TYPE_CHECKING, NoReturn
 
 from .errors import InvalidFieldError, MalformedEventError, UnsupportedEventError
 from .events import (
-    ActionEvent,
     ApplicationDidLaunchEvent,
     ApplicationDidTerminateEvent,
     Controller,
@@ -22,8 +21,7 @@ from .events import (
     DialUpEvent,
     DidReceiveGlobalSettingsEvent,
     DidReceiveSettingsEvent,
-    EventDescriptor,
-    EventScope,
+    EventCodecDescriptor,
     KeyDownEvent,
     KeyUpEvent,
     PropertyInspectorDidAppearEvent,
@@ -42,6 +40,11 @@ from .events import (
     WillDisappearEvent,
 )
 from .json_types import JsonObject, clone_json_object, is_json_value
+
+if TYPE_CHECKING:
+    from .events import EventDescriptor
+
+    EVENT_REGISTRY: Mapping[str, EventDescriptor]
 
 
 def _invalid(
@@ -511,24 +514,20 @@ def _parse_system_did_wake_up(
     return SystemDidWakeUpEvent()
 
 
-def _build_event_registry(
-    descriptors: tuple[EventDescriptor, ...],
-) -> Mapping[str, EventDescriptor]:
-    registry: dict[str, EventDescriptor] = {}
+def _build_event_codec_registry(
+    descriptors: tuple[EventCodecDescriptor, ...],
+) -> Mapping[str, EventCodecDescriptor]:
+    registry: dict[str, EventCodecDescriptor] = {}
     for descriptor in descriptors:
         if descriptor.wire_name in registry:
-            raise RuntimeError(f"Duplicate Stream Dock event descriptor: {descriptor.wire_name}")
+            raise RuntimeError(
+                f"Duplicate Stream Dock event codec descriptor: {descriptor.wire_name}"
+            )
         class_wire_name = str(getattr(descriptor.event_class, "event", ""))
         if class_wire_name != descriptor.wire_name:
             raise RuntimeError(
-                f"Event descriptor {descriptor.wire_name!r} does not match "
+                f"Event codec descriptor {descriptor.wire_name!r} does not match "
                 f"{descriptor.event_class.__name__}.event"
-            )
-        is_action_event = issubclass(descriptor.event_class, ActionEvent)
-        if (descriptor.scope is EventScope.ACTION) != is_action_event:
-            raise RuntimeError(
-                f"Event descriptor {descriptor.wire_name!r} has invalid scope "
-                f"{descriptor.scope.value!r}"
             )
         registry[descriptor.wire_name] = descriptor
 
@@ -537,154 +536,123 @@ def _build_event_registry(
         missing = sorted(expected_wire_names - registry.keys())
         extra = sorted(registry.keys() - expected_wire_names)
         raise RuntimeError(
-            f"Stream Dock event registry does not match StreamDockEventType; "
+            f"Stream Dock event codec registry does not match StreamDockEventType; "
             f"missing={missing}, extra={extra}"
         )
     return MappingProxyType(registry)
 
 
-EVENT_REGISTRY: Mapping[str, EventDescriptor] = _build_event_registry(
+EVENT_CODEC_REGISTRY: Mapping[str, EventCodecDescriptor] = _build_event_codec_registry(
     (
-        EventDescriptor(
+        EventCodecDescriptor(
             wire_name=StreamDockEventType.WILL_APPEAR.value,
             event_class=WillAppearEvent,
             parser=_parse_will_appear,
-            scope=EventScope.ACTION,
-            callback="on_will_appear",
-            runtime_handler="_handle_will_appear_event",
         ),
-        EventDescriptor(
+        EventCodecDescriptor(
             wire_name=StreamDockEventType.WILL_DISAPPEAR.value,
             event_class=WillDisappearEvent,
             parser=_parse_will_disappear,
-            scope=EventScope.ACTION,
-            callback="on_will_disappear",
-            runtime_handler="_handle_will_disappear_event",
         ),
-        EventDescriptor(
+        EventCodecDescriptor(
             wire_name=StreamDockEventType.DID_RECEIVE_SETTINGS.value,
             event_class=DidReceiveSettingsEvent,
             parser=_parse_did_receive_settings,
-            scope=EventScope.ACTION,
-            callback="on_did_receive_settings",
-            runtime_handler="_handle_did_receive_settings_event",
         ),
-        EventDescriptor(
+        EventCodecDescriptor(
             wire_name=StreamDockEventType.TITLE_PARAMETERS_DID_CHANGE.value,
             event_class=TitleParametersDidChangeEvent,
             parser=_parse_title_parameters_did_change,
-            scope=EventScope.ACTION,
-            callback="on_title_parameters_did_change",
-            runtime_handler="_handle_title_parameters_did_change_event",
         ),
-        EventDescriptor(
+        EventCodecDescriptor(
             wire_name=StreamDockEventType.KEY_DOWN.value,
             event_class=KeyDownEvent,
             parser=_parse_key_down,
-            scope=EventScope.ACTION,
-            callback="on_key_down",
         ),
-        EventDescriptor(
+        EventCodecDescriptor(
             wire_name=StreamDockEventType.KEY_UP.value,
             event_class=KeyUpEvent,
             parser=_parse_key_up,
-            scope=EventScope.ACTION,
-            callback="on_key_up",
         ),
-        EventDescriptor(
+        EventCodecDescriptor(
             wire_name=StreamDockEventType.TOUCH_TAP.value,
             event_class=TouchTapEvent,
             parser=_parse_touch_tap,
-            scope=EventScope.ACTION,
-            callback="on_touch_tap",
         ),
-        EventDescriptor(
+        EventCodecDescriptor(
             wire_name=StreamDockEventType.DIAL_DOWN.value,
             event_class=DialDownEvent,
             parser=_parse_dial_down,
-            scope=EventScope.ACTION,
-            callback="on_dial_down",
         ),
-        EventDescriptor(
+        EventCodecDescriptor(
             wire_name=StreamDockEventType.DIAL_UP.value,
             event_class=DialUpEvent,
             parser=_parse_dial_up,
-            scope=EventScope.ACTION,
-            callback="on_dial_up",
         ),
-        EventDescriptor(
+        EventCodecDescriptor(
             wire_name=StreamDockEventType.DIAL_ROTATE.value,
             event_class=DialRotateEvent,
             parser=_parse_dial_rotate,
-            scope=EventScope.ACTION,
-            callback="on_dial_rotate",
         ),
-        EventDescriptor(
+        EventCodecDescriptor(
             wire_name=StreamDockEventType.PROPERTY_INSPECTOR_DID_APPEAR.value,
             event_class=PropertyInspectorDidAppearEvent,
             parser=_parse_property_inspector_did_appear,
-            scope=EventScope.ACTION,
-            callback="on_property_inspector_did_appear",
         ),
-        EventDescriptor(
+        EventCodecDescriptor(
             wire_name=StreamDockEventType.PROPERTY_INSPECTOR_DID_DISAPPEAR.value,
             event_class=PropertyInspectorDidDisappearEvent,
             parser=_parse_property_inspector_did_disappear,
-            scope=EventScope.ACTION,
-            callback="on_property_inspector_did_disappear",
         ),
-        EventDescriptor(
+        EventCodecDescriptor(
             wire_name=StreamDockEventType.SEND_TO_PLUGIN.value,
             event_class=SendToPluginEvent,
             parser=_parse_send_to_plugin,
-            scope=EventScope.ACTION,
-            callback="on_send_to_plugin",
         ),
-        EventDescriptor(
+        EventCodecDescriptor(
             wire_name=StreamDockEventType.DID_RECEIVE_GLOBAL_SETTINGS.value,
             event_class=DidReceiveGlobalSettingsEvent,
             parser=_parse_did_receive_global_settings,
-            scope=EventScope.BROADCAST,
-            callback="on_did_receive_global_settings",
-            runtime_handler="_handle_did_receive_global_settings_event",
         ),
-        EventDescriptor(
+        EventCodecDescriptor(
             wire_name=StreamDockEventType.DEVICE_DID_CONNECT.value,
             event_class=DeviceDidConnectEvent,
             parser=_parse_device_did_connect,
-            scope=EventScope.BROADCAST,
-            callback="on_device_did_connect",
         ),
-        EventDescriptor(
+        EventCodecDescriptor(
             wire_name=StreamDockEventType.DEVICE_DID_DISCONNECT.value,
             event_class=DeviceDidDisconnectEvent,
             parser=_parse_device_did_disconnect,
-            scope=EventScope.BROADCAST,
-            callback="on_device_did_disconnect",
         ),
-        EventDescriptor(
+        EventCodecDescriptor(
             wire_name=StreamDockEventType.APPLICATION_DID_LAUNCH.value,
             event_class=ApplicationDidLaunchEvent,
             parser=_parse_application_did_launch,
-            scope=EventScope.BROADCAST,
-            callback="on_application_did_launch",
         ),
-        EventDescriptor(
+        EventCodecDescriptor(
             wire_name=StreamDockEventType.APPLICATION_DID_TERMINATE.value,
             event_class=ApplicationDidTerminateEvent,
             parser=_parse_application_did_terminate,
-            scope=EventScope.BROADCAST,
-            callback="on_application_did_terminate",
         ),
-        EventDescriptor(
+        EventCodecDescriptor(
             wire_name=StreamDockEventType.SYSTEM_DID_WAKE_UP.value,
             event_class=SystemDidWakeUpEvent,
             parser=_parse_system_did_wake_up,
-            scope=EventScope.BROADCAST,
-            callback="on_system_did_wake_up",
         ),
     )
 )
+
+
+def __getattr__(name: str) -> object:
+    """Lazily expose the combined registry required by the legacy runtime."""
+
+    if name == "EVENT_REGISTRY":
+        from ._next.runtime._legacy import build_legacy_event_registry
+
+        registry = build_legacy_event_registry(EVENT_CODEC_REGISTRY)
+        globals()[name] = registry
+        return registry
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def parse_stream_dock_event(
@@ -724,7 +692,7 @@ def parse_stream_dock_event(
         raise MalformedEventError("expected event object")
     data = value
     raw_event = _require_string(data, "event", None)
-    descriptor = EVENT_REGISTRY.get(raw_event)
+    descriptor = EVENT_CODEC_REGISTRY.get(raw_event)
     if descriptor is None:
         if not allow_unknown:
             if not is_json_value(data):

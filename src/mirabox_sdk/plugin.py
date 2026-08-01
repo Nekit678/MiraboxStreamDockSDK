@@ -21,7 +21,6 @@ from .events import (
     WillDisappearEvent,
 )
 from .json_types import JsonObject
-from .parser import EVENT_REGISTRY
 from .protocols import (
     LifecycleService,
     StreamDockActionDependencies,
@@ -244,6 +243,8 @@ class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
 
     @staticmethod
     def _descriptor_for_event(event: StreamDockEvent) -> EventDescriptor | None:
+        from .parser import EVENT_REGISTRY
+
         descriptor = EVENT_REGISTRY.get(event.event_name)
         if descriptor is None or not isinstance(event, descriptor.event_class):
             return None

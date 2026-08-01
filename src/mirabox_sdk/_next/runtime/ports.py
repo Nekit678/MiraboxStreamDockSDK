@@ -7,7 +7,29 @@ from collections.abc import Callable
 from typing import Protocol, runtime_checkable
 
 from ...commands import StreamDockCommand
-from ...events import StreamDockEvent, UnknownStreamDockEvent, WillAppearEvent
+from ...events import (
+    ApplicationDidLaunchEvent,
+    ApplicationDidTerminateEvent,
+    DeviceDidConnectEvent,
+    DeviceDidDisconnectEvent,
+    DialDownEvent,
+    DialRotateEvent,
+    DialUpEvent,
+    DidReceiveGlobalSettingsEvent,
+    DidReceiveSettingsEvent,
+    KeyDownEvent,
+    KeyUpEvent,
+    PropertyInspectorDidAppearEvent,
+    PropertyInspectorDidDisappearEvent,
+    SendToPluginEvent,
+    StreamDockEvent,
+    SystemDidWakeUpEvent,
+    TitleParametersDidChangeEvent,
+    TouchTapEvent,
+    UnknownStreamDockEvent,
+    WillAppearEvent,
+    WillDisappearEvent,
+)
 from ...json_types import JsonObject
 from ..messaging.models import CommandFuture
 from .metrics import HandlerSchedulerMetrics, StreamDockRuntimeMetrics
@@ -31,6 +53,82 @@ class RuntimeAction(Protocol):
         """Return the opaque Stream Dock context."""
 
         ...
+
+
+class RuntimeActionCallbacks(RuntimeAction, Protocol):
+    """Application callback surface addressable by runtime event routes."""
+
+    @abstractmethod
+    def on_will_appear(self, event: WillAppearEvent) -> None: ...
+
+    @abstractmethod
+    def on_will_disappear(self, event: WillDisappearEvent | None = None) -> None: ...
+
+    @abstractmethod
+    def on_did_receive_settings(self, event: DidReceiveSettingsEvent) -> None: ...
+
+    @abstractmethod
+    def on_title_parameters_did_change(
+        self,
+        event: TitleParametersDidChangeEvent,
+    ) -> None: ...
+
+    @abstractmethod
+    def on_key_down(self, event: KeyDownEvent) -> None: ...
+
+    @abstractmethod
+    def on_key_up(self, event: KeyUpEvent) -> None: ...
+
+    @abstractmethod
+    def on_touch_tap(self, event: TouchTapEvent) -> None: ...
+
+    @abstractmethod
+    def on_dial_down(self, event: DialDownEvent) -> None: ...
+
+    @abstractmethod
+    def on_dial_up(self, event: DialUpEvent) -> None: ...
+
+    @abstractmethod
+    def on_dial_rotate(self, event: DialRotateEvent) -> None: ...
+
+    @abstractmethod
+    def on_property_inspector_did_appear(
+        self,
+        event: PropertyInspectorDidAppearEvent,
+    ) -> None: ...
+
+    @abstractmethod
+    def on_property_inspector_did_disappear(
+        self,
+        event: PropertyInspectorDidDisappearEvent,
+    ) -> None: ...
+
+    @abstractmethod
+    def on_send_to_plugin(self, event: SendToPluginEvent) -> None: ...
+
+    @abstractmethod
+    def on_did_receive_global_settings(
+        self,
+        event: DidReceiveGlobalSettingsEvent,
+    ) -> None: ...
+
+    @abstractmethod
+    def on_device_did_connect(self, event: DeviceDidConnectEvent) -> None: ...
+
+    @abstractmethod
+    def on_device_did_disconnect(self, event: DeviceDidDisconnectEvent) -> None: ...
+
+    @abstractmethod
+    def on_application_did_launch(self, event: ApplicationDidLaunchEvent) -> None: ...
+
+    @abstractmethod
+    def on_application_did_terminate(
+        self,
+        event: ApplicationDidTerminateEvent,
+    ) -> None: ...
+
+    @abstractmethod
+    def on_system_did_wake_up(self, event: SystemDidWakeUpEvent) -> None: ...
 
 
 @runtime_checkable

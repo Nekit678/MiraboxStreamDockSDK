@@ -16,6 +16,8 @@ transport or event-dispatch diagnostics are required.
 
 __version__ = "0.4.0"
 
+from typing import TYPE_CHECKING
+
 from .action import Action
 from .action_registry import ActionRegistry
 from .cli import build_plugin_argument_parser, parse_plugin_cli_arguments, run_plugin_cli
@@ -104,7 +106,7 @@ from .outbound import (
     OutboundQueueFullError,
     OutboundQueueMetrics,
 )
-from .parser import EVENT_REGISTRY, parse_stream_dock_event
+from .parser import parse_stream_dock_event
 from .plugin import StreamDockPlugin
 from .protocols import (
     LifecycleService,
@@ -130,6 +132,23 @@ from .resources import (
     property_inspector_client_bytes,
 )
 from .stores import ActionStore, GlobalSettingsStore
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    EVENT_REGISTRY: Mapping[str, EventDescriptor]
+
+
+def __getattr__(name: str) -> object:
+    """Lazily expose migration-only compatibility objects."""
+
+    if name == "EVENT_REGISTRY":
+        from .parser import EVENT_REGISTRY
+
+        globals()[name] = EVENT_REGISTRY
+        return EVENT_REGISTRY
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
     "__version__",

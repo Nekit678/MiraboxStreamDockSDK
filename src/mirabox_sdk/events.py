@@ -129,22 +129,36 @@ EventParser = Callable[[JsonObject, str], StreamDockEvent]
 
 
 @dataclass(frozen=True, slots=True)
-class EventDescriptor:
-    """Single source of parser and runtime dispatch metadata for one event.
+class EventCodecDescriptor:
+    """Protocol codec metadata for one known Stream Dock event.
 
     Attributes:
         wire_name: Exact event name received from Stream Dock.
         event_class: Typed model returned by the parser.
         parser: Function that validates an envelope and constructs the model.
+    """
+
+    wire_name: str
+    event_class: type[StreamDockEvent]
+    parser: EventParser
+
+
+@dataclass(frozen=True, slots=True)
+class EventDescriptor(EventCodecDescriptor):
+    """Legacy compatibility view combining codec and runtime metadata.
+
+    New protocol parsing uses :class:`EventCodecDescriptor`, while the
+    experimental dispatcher owns its routing policy in ``_next.runtime``.
+    This combined descriptor remains available until the legacy runtime is
+    retired so the supported public API does not change during migration.
+
+    Attributes:
         scope: Whether the event targets one action or all active actions.
         callback: :class:`Action` callback selected by the runtime.
         runtime_handler: Optional runtime method for events that update state or
             create/remove action instances before invoking ``callback``.
     """
 
-    wire_name: str
-    event_class: type[StreamDockEvent]
-    parser: EventParser
     scope: EventScope
     callback: str
     runtime_handler: str | None = None

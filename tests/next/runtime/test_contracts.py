@@ -145,6 +145,7 @@ class RuntimePortContractTests(unittest.TestCase):
             "mirabox_sdk._next.runtime.metrics",
             "mirabox_sdk._next.runtime.models",
             "mirabox_sdk._next.runtime.ports",
+            "mirabox_sdk._next.runtime.routes",
         )
         script = (
             "import importlib\n"
