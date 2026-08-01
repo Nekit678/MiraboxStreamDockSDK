@@ -19,7 +19,7 @@ from .metrics import (
     _ActionContextMetricRecorder,
 )
 from .models import DispatchOutcome, DispatchResult
-from .ports import ActionFactory, PluginHooks
+from .ports import ActionFactory, PluginHooks, RuntimeEventDispatcher
 from .routes import (
     RUNTIME_EVENT_REGISTRY,
     RuntimeEventRegistry,
@@ -37,7 +37,7 @@ class NullPluginHooks(PluginHooks):
         """Intentionally ignore one forward-compatible event."""
 
 
-class RuntimeEventRouter:
+class RuntimeEventRouter(RuntimeEventDispatcher):
     """Route typed events and return one terminal synchronous outcome."""
 
     def __init__(

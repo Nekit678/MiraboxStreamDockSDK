@@ -33,7 +33,11 @@ from ...events import (
 )
 from ...json_types import JsonObject
 from ..messaging.models import CommandFuture
-from .metrics import HandlerSchedulerMetrics, StreamDockRuntimeMetrics
+from .metrics import (
+    HandlerSchedulerMetrics,
+    RuntimeEventPumpMetrics,
+    StreamDockRuntimeMetrics,
+)
 from .models import DispatchResult
 
 
@@ -236,6 +240,17 @@ class DispatchCompletion(Protocol):
 
 
 @runtime_checkable
+class RuntimeEventDispatcher(Protocol):
+    """Synchronously route one typed event to its terminal runtime outcome."""
+
+    @abstractmethod
+    def dispatch(self, event: StreamDockEvent) -> DispatchResult:
+        """Apply runtime routing, state transitions, and application callbacks."""
+
+        ...
+
+
+@runtime_checkable
 class HandlerScheduler(Protocol):
     """Bounded, replaceable scheduler for typed runtime events."""
 
@@ -272,6 +287,54 @@ class HandlerScheduler(Protocol):
     @abstractmethod
     def metrics(self) -> HandlerSchedulerMetrics:
         """Return an immutable scheduler snapshot."""
+
+        ...
+
+
+@runtime_checkable
+class RuntimeEventPumpWorker(Protocol):
+    """Lifecycle and observability port for the typed inbound event consumer."""
+
+    @property
+    @abstractmethod
+    def failure(self) -> Exception | None:
+        """Return the first fatal source, scheduler, or acknowledgement failure."""
+
+        ...
+
+    @abstractmethod
+    def start(self) -> None:
+        """Start the single source-consumer worker."""
+
+        ...
+
+    @abstractmethod
+    def request_stop(self) -> None:
+        """Request a non-blocking stop after currently owned work completes."""
+
+        ...
+
+    @abstractmethod
+    def drain(self, *, timeout: float | None = None) -> bool:
+        """Wait until the worker exits and all received events are terminal."""
+
+        ...
+
+    @abstractmethod
+    def stop(self, *, timeout: float | None = None) -> bool:
+        """Request stop and wait when the caller is outside the worker."""
+
+        ...
+
+    @abstractmethod
+    def is_worker_thread(self) -> bool:
+        """Return whether the caller is the pump-owned callback thread."""
+
+        ...
+
+    @abstractmethod
+    def metrics(self) -> RuntimeEventPumpMetrics:
+        """Return an immutable event-pump metrics snapshot."""
 
         ...
 

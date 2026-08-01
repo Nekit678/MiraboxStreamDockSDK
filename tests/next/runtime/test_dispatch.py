@@ -16,6 +16,7 @@ from mirabox_sdk import (
     WillDisappearEvent,
 )
 from mirabox_sdk._next.runtime.models import DispatchOutcome
+from mirabox_sdk._next.runtime.ports import RuntimeEventDispatcher
 from mirabox_sdk._next.runtime.router import RuntimeEventRouter
 
 from .fakes import (
@@ -90,6 +91,11 @@ class StrictSettingsAction(RecordingAction):
 
 
 class RuntimeEventDispatchTests(unittest.TestCase):
+    def test_router_implements_runtime_event_dispatcher_port(self) -> None:
+        router, _factory, _state, _sender = build_router()
+
+        self.assertIsInstance(router, RuntimeEventDispatcher)
+
     def test_action_lifecycle_and_callbacks_apply_in_route_order(self) -> None:
         router, factory, _state, _sender = build_router()
         appear = will_appear_event()

@@ -7,7 +7,7 @@ from pathlib import Path
 
 from mirabox_sdk import RegisterPluginCommand, StreamDockEvent
 from mirabox_sdk._next.messaging.models import CommandFuture
-from mirabox_sdk._next.runtime.metrics import HandlerSchedulerMetrics
+from mirabox_sdk._next.runtime.metrics import HandlerSchedulerMetrics, RuntimeEventPumpMetrics
 from mirabox_sdk._next.runtime.models import DispatchOutcome, DispatchResult
 from mirabox_sdk._next.runtime.ports import (
     ActionContextManager,
@@ -16,6 +16,8 @@ from mirabox_sdk._next.runtime.ports import (
     HandlerScheduler,
     PluginHooks,
     RuntimeAction,
+    RuntimeEventDispatcher,
+    RuntimeEventPumpWorker,
     RuntimeLifecycle,
     StreamDockSender,
 )
@@ -85,6 +87,33 @@ class _Scheduler:
         return HandlerSchedulerMetrics()
 
 
+class _EventDispatcher:
+    def dispatch(self, event: object) -> DispatchResult:
+        return DispatchResult(DispatchOutcome.HANDLED)
+
+
+class _EventPump:
+    failure: Exception | None = None
+
+    def start(self) -> None:
+        pass
+
+    def request_stop(self) -> None:
+        pass
+
+    def drain(self, *, timeout: float | None = None) -> bool:
+        return True
+
+    def stop(self, *, timeout: float | None = None) -> bool:
+        return True
+
+    def is_worker_thread(self) -> bool:
+        return False
+
+    def metrics(self) -> RuntimeEventPumpMetrics:
+        return RuntimeEventPumpMetrics()
+
+
 class _Contexts:
     def __init__(self) -> None:
         self.action = _Action()
@@ -124,7 +153,9 @@ class RuntimePortContractTests(unittest.TestCase):
             (PluginHooks, _Hooks()),
             (StreamDockSender, _Sender()),
             (DispatchCompletion, _Completion()),
+            (RuntimeEventDispatcher, _EventDispatcher()),
             (HandlerScheduler, _Scheduler()),
+            (RuntimeEventPumpWorker, _EventPump()),
             (ActionContextManager, _Contexts()),
             (RuntimeLifecycle, _Lifecycle()),
         )
@@ -147,8 +178,10 @@ class RuntimePortContractTests(unittest.TestCase):
             "mirabox_sdk._next.runtime.metrics",
             "mirabox_sdk._next.runtime.models",
             "mirabox_sdk._next.runtime.ports",
+            "mirabox_sdk._next.runtime.pumps",
             "mirabox_sdk._next.runtime.router",
             "mirabox_sdk._next.runtime.routes",
+            "mirabox_sdk._next.runtime.scheduler",
         )
         script = (
             "import importlib\n"
