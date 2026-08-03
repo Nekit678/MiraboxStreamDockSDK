@@ -26,11 +26,18 @@ from .metrics import (
     StreamDockBoundaryMetrics,
     StreamDockRuntimeMetrics,
 )
-from .ports import ActionFactory, PluginHooks, RuntimeLifecycle, StreamDockSender
+from .ports import (
+    ActionFactory,
+    ApplicationService,
+    PluginHooks,
+    RuntimeLifecycle,
+    StreamDockSender,
+)
 
 __all__ = [
     "ActionContextMetrics",
     "ActionFactory",
+    "ApplicationService",
     "HandlerSchedulerMetrics",
     "InboundOverflowPolicy",
     "PluginHooks",

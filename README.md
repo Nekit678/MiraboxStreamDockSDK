@@ -395,7 +395,7 @@ behavior implemented by this SDK.
 
 | Area | Public API |
 |---|---|
-| Runtime | `StreamDockApplication`, `StreamDockRuntime`, `create_stream_dock_application`, `RuntimeDispatcherConfig`, runtime metrics and ports |
+| Runtime | `StreamDockApplication`, `StreamDockRuntime`, `ApplicationService`, `create_stream_dock_application`, `RuntimeDispatcherConfig`, runtime metrics and ports |
 | Actions | `Action`, `ActionRegistry`, `StreamDockSender` |
 | Launch and registration | `PluginLaunchArguments`, registration dataclasses, `parse_plugin_cli_arguments`, `run_plugin_cli` |
 | Input events | Typed immutable event models and `InboundOverflowPolicy` |
@@ -408,6 +408,59 @@ behavior implemented by this SDK.
 The supported public surface is exported from `mirabox_sdk`. Objects from
 individual modules should be treated as implementation details unless they are
 also exported there.
+
+## Application services
+
+Extend the quick-start factory with `ApplicationService` implementations for
+repositories, HTTP clients, background workers, and other resources required
+by action callbacks:
+
+```python
+from dataclasses import dataclass
+
+from mirabox_sdk import (
+    PluginLaunchArguments,
+    StreamDockApplication,
+    StreamDockSender,
+    create_stream_dock_application,
+)
+
+
+class Repository:
+    def start(self) -> None:
+        ...
+
+    def stop(self) -> None:
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class Dependencies:
+    stream_dock: StreamDockSender
+    repository: Repository
+
+
+repository = Repository()
+
+
+def build_application(arguments: PluginLaunchArguments) -> StreamDockApplication:
+    return create_stream_dock_application(
+        arguments,
+        action_factory=registry,
+        action_dependencies_factory=lambda stream_dock: Dependencies(
+            stream_dock=stream_dock,
+            repository=repository,
+        ),
+        services=(repository,),
+    )
+```
+
+Services start in declaration order before the WebSocket runtime connects and
+stop in reverse order after it finishes. If startup fails, only services that
+started successfully are stopped. Cleanup always attempts every started
+service; a primary startup or runtime failure is preserved. `stop()` may still
+be called from an action callback: service cleanup runs on the application
+lifecycle thread before `run()` returns.
 
 ## Errors and unknown events
 

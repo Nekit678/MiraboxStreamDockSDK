@@ -397,7 +397,7 @@ wire-событие и команду с Python-моделью или вспом
 
 | Область | Публичный API |
 |---|---|
-| Среда выполнения | `StreamDockApplication`, `StreamDockRuntime`, `create_stream_dock_application`, `RuntimeDispatcherConfig`, runtime metrics и ports |
+| Среда выполнения | `StreamDockApplication`, `StreamDockRuntime`, `ApplicationService`, `create_stream_dock_application`, `RuntimeDispatcherConfig`, runtime metrics и ports |
 | Actions | `Action`, `ActionRegistry`, `StreamDockSender` |
 | Запуск и регистрация | `PluginLaunchArguments`, модели регистрации, `parse_plugin_cli_arguments`, `run_plugin_cli` |
 | Входящие события | Типизированные immutable-модели и `InboundOverflowPolicy` |
@@ -410,6 +410,59 @@ wire-событие и команду с Python-моделью или вспом
 Поддерживаемый публичный интерфейс экспортируется из `mirabox_sdk`. Объекты из
 отдельных модулей считаются деталями реализации, если они дополнительно не
 экспортированы на верхнем уровне.
+
+## Сервисы приложения
+
+Дополните factory из быстрого старта реализациями `ApplicationService` для
+repositories, HTTP-клиентов, фоновых workers и других ресурсов, необходимых
+action callbacks:
+
+```python
+from dataclasses import dataclass
+
+from mirabox_sdk import (
+    PluginLaunchArguments,
+    StreamDockApplication,
+    StreamDockSender,
+    create_stream_dock_application,
+)
+
+
+class Repository:
+    def start(self) -> None:
+        ...
+
+    def stop(self) -> None:
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class Dependencies:
+    stream_dock: StreamDockSender
+    repository: Repository
+
+
+repository = Repository()
+
+
+def build_application(arguments: PluginLaunchArguments) -> StreamDockApplication:
+    return create_stream_dock_application(
+        arguments,
+        action_factory=registry,
+        action_dependencies_factory=lambda stream_dock: Dependencies(
+            stream_dock=stream_dock,
+            repository=repository,
+        ),
+        services=(repository,),
+    )
+```
+
+Сервисы запускаются в порядке объявления до подключения WebSocket runtime и
+останавливаются в обратном порядке после его завершения. При ошибке startup
+останавливаются только успешно запущенные сервисы. Cleanup пытается остановить
+каждый запущенный сервис, сохраняя исходную ошибку startup или runtime.
+`stop()` по-прежнему можно вызывать из action callback: сервисы освобождаются
+на lifecycle-потоке приложения до возврата из `run()`.
 
 ## Ошибки и неизвестные события
 

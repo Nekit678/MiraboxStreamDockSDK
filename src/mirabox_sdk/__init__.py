@@ -123,6 +123,7 @@ from .resources import (
 from .runtime import (
     ActionContextMetrics,
     ActionFactory,
+    ApplicationService,
     HandlerSchedulerMetrics,
     InboundOverflowPolicy,
     PluginHooks,
@@ -147,6 +148,7 @@ __all__ = [
     "Action",
     "ActionContextMetrics",
     "ActionFactory",
+    "ApplicationService",
     "ActionRegistry",
     "ActionEvent",
     "ActionPayloadEvent",

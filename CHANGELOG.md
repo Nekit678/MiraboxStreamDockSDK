@@ -12,6 +12,8 @@ change public APIs between minor versions.
   `create_stream_dock_application()` production composition factory.
 - Add public immutable runtime/boundary metrics, queue/shutdown configuration,
   plugin hooks, and global-settings methods.
+- Add `ApplicationService` and ordered `services=` lifecycle management around
+  the Stream Dock runtime, including reverse and partial-startup cleanup.
 - Add shared legacy/experimental runtime behavioral contracts and an executable
   scheduler performance gate with throughput, callback-latency, boundedness,
   and boundary-coalescing budgets.

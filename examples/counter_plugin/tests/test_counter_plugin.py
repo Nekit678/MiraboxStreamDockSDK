@@ -197,6 +197,21 @@ class _CounterConnectorFactory:
         return self.connector
 
 
+class _CounterService:
+    def __init__(self) -> None:
+        self.started = False
+        self.start_calls = 0
+        self.stop_calls = 0
+
+    def start(self) -> None:
+        self.start_calls += 1
+        self.started = True
+
+    def stop(self) -> None:
+        self.stop_calls += 1
+        self.started = False
+
+
 class CounterActionTests(unittest.TestCase):
     def test_increments_and_resets_persisted_count(self) -> None:
         stream_dock = Mock()
@@ -232,6 +247,7 @@ class CounterActionTests(unittest.TestCase):
 class CounterRuntimeIntegrationTests(unittest.TestCase):
     def test_registration_global_settings_actions_outbound_and_shutdown(self) -> None:
         connector_factory = _CounterConnectorFactory()
+        service = _CounterService()
         application = create_stream_dock_application(
             _launch_arguments(),
             action_factory=ACTION_REGISTRY,
@@ -256,6 +272,7 @@ class CounterRuntimeIntegrationTests(unittest.TestCase):
                 event_poll_interval=0.005,
                 session_poll_interval=0.005,
             ),
+            services=(service,),
             connector_factory=connector_factory,
         )
         assert connector_factory.connector is not None
@@ -272,6 +289,7 @@ class CounterRuntimeIntegrationTests(unittest.TestCase):
         runtime_thread.start()
         try:
             self.assertTrue(connector.started.wait(1))
+            self.assertTrue(service.started)
             _wait_until(lambda: len(connector.sent) == 7)
         finally:
             application.stop()
@@ -280,6 +298,9 @@ class CounterRuntimeIntegrationTests(unittest.TestCase):
         self.assertFalse(runtime_thread.is_alive())
         self.assertEqual(errors, [])
         self.assertEqual(connector.close_calls, 1)
+        self.assertEqual(service.start_calls, 1)
+        self.assertEqual(service.stop_calls, 1)
+        self.assertFalse(service.started)
         self.assertEqual(
             [json.loads(frame) for frame in connector.sent],
             [
