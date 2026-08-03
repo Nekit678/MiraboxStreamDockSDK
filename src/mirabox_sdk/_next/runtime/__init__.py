@@ -24,6 +24,7 @@ from .global_settings import (
     GlobalSettingsCoordinator,
     GlobalSettingsState,
 )
+from .keyed_scheduler import KeyedSerialHandlerScheduler
 from .ports import (
     RuntimeEventDispatcher,
     RuntimeEventPumpWorker,
@@ -62,6 +63,7 @@ __all__ = [
     "GlobalSettingsState",
     "HandlerSchedulerLifecycleError",
     "HandlerSchedulerFactory",
+    "KeyedSerialHandlerScheduler",
     "NullPluginHooks",
     "RUNTIME_EVENT_REGISTRY",
     "RuntimeActionIdentityError",

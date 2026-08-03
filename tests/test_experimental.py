@@ -56,6 +56,7 @@ from mirabox_sdk.experimental import (
     BoundaryStreamDockConnection,
     ExperimentalStreamDockApplication,
     RuntimeDispatcherConfig,
+    RuntimeSchedulerKind,
     create_experimental_stream_dock_application,
     create_experimental_stream_dock_connection,
 )
@@ -296,6 +297,10 @@ class _ClosedPortBoundary:
 
 
 class ExperimentalRuntimeIntegrationTests(unittest.TestCase):
+    def test_keyed_scheduler_kind_is_explicitly_available_only_from_experimental(self) -> None:
+        self.assertEqual(RuntimeSchedulerKind.KEYED_SERIAL.value, "keyed_serial")
+        self.assertFalse(hasattr(mirabox_sdk, "RuntimeSchedulerKind"))
+
     def test_legacy_connection_remains_the_package_default(self) -> None:
         self.assertIs(
             mirabox_sdk.WebSocketStreamDockConnection,

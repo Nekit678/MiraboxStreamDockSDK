@@ -20,6 +20,7 @@ from mirabox_sdk._next.runtime.composition import (
     create_stream_dock_runtime,
 )
 from mirabox_sdk._next.runtime.config import RuntimeDispatcherConfig
+from mirabox_sdk._next.runtime.keyed_scheduler import KeyedSerialHandlerScheduler
 from mirabox_sdk._next.runtime.metrics import (
     ActionContextMetrics,
     HandlerSchedulerMetrics,
@@ -31,6 +32,7 @@ from mirabox_sdk._next.runtime.models import (
     DispatchOutcome,
     DispatchResult,
     RuntimeLifecycleState,
+    RuntimeSchedulerKind,
 )
 from mirabox_sdk._next.runtime.ports import RuntimeLifecycle
 from mirabox_sdk._next.transport.session import Connected, Disconnected
@@ -391,6 +393,22 @@ class ComposedRuntimeLifecycleTests(unittest.TestCase):
 
 
 class RuntimeFactoryIntegrationTests(unittest.TestCase):
+    def test_factory_selects_bounded_keyed_scheduler_from_config(self) -> None:
+        boundary = _FakeBoundary()
+        runtime = create_stream_dock_runtime(
+            _launch_arguments(),
+            boundary=boundary,
+            action_factory=RecordingActionFactory(boundary.commands),
+            config=RuntimeDispatcherConfig(
+                scheduler_kind=RuntimeSchedulerKind.KEYED_SERIAL,
+                worker_count=3,
+                scheduler_pending_limit=7,
+            ),
+        )
+
+        self.assertIsInstance(runtime._scheduler, KeyedSerialHandlerScheduler)
+        self.assertEqual(runtime.metrics().scheduler.current_pending, 0)
+
     def test_factory_injects_custom_scheduler_without_starting_components(self) -> None:
         boundary = _FakeBoundary()
         factory = RecordingActionFactory(boundary.commands)
@@ -513,6 +531,47 @@ class RuntimeFactoryIntegrationTests(unittest.TestCase):
             config=RuntimeDispatcherConfig(
                 event_poll_interval=0.005,
                 session_poll_interval=0.005,
+            ),
+        )
+        runtime_holder["runtime"] = runtime
+        run_error: list[Exception] = []
+        runner = Thread(target=lambda: _capture_error(runtime.run_forever, run_error))
+        runner.start()
+
+        self.assertTrue(returned.wait(1))
+        runner.join(1)
+
+        self.assertFalse(runner.is_alive())
+        self.assertEqual(run_error, [])
+        self.assertEqual(boundary.close_calls, 1)
+        self.assertEqual(boundary.close_threads, ["mirabox-next-runtime-close"])
+        self.assertEqual(len(boundary.events.acknowledged), 1)
+
+    def test_close_from_keyed_scheduler_callback_is_deferred_without_deadlock(self) -> None:
+        returned = Event()
+        runtime_holder: dict[str, ComposedStreamDockRuntime] = {}
+
+        class ClosingAction(RecordingAction):
+            def on_will_appear(self, event: object) -> None:
+                self.events.append(event)
+                runtime_holder["runtime"].close()
+                returned.set()
+
+        boundary = _FakeBoundary(
+            events=FakeInboundEventSource((will_appear_event(),)),
+            session_events=FakeSessionEventSource((Connected(),)),
+            block_run_until_close=True,
+        )
+        runtime = create_stream_dock_runtime(
+            _launch_arguments(),
+            boundary=boundary,
+            action_factory=RecordingActionFactory(boundary.commands, ClosingAction),
+            config=RuntimeDispatcherConfig(
+                event_poll_interval=0.005,
+                session_poll_interval=0.005,
+                scheduler_kind=RuntimeSchedulerKind.KEYED_SERIAL,
+                worker_count=2,
+                scheduler_pending_limit=4,
             ),
         )
         runtime_holder["runtime"] = runtime

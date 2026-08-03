@@ -14,6 +14,7 @@ from ..boundary.ports import StreamDockBoundary
 from .adapters import LegacyActionFactoryAdapter, LegacyActionRegistry
 from .config import RuntimeDispatcherConfig
 from .global_settings import DefaultGlobalSettingsState
+from .keyed_scheduler import KeyedSerialHandlerScheduler
 from .metrics import ActionContextMetrics, RuntimeRouterMetrics, StreamDockRuntimeMetrics
 from .models import RuntimeLifecycleState, RuntimeSchedulerKind, transition_runtime_state
 from .ports import (
@@ -228,8 +229,13 @@ class ComposedStreamDockRuntime(RuntimeLifecycle):
             close_before_run = self._state is RuntimeLifecycleState.NEW
             called_from_lifecycle = self._lifecycle_thread is current_thread()
 
+        scheduler_thread_probe = getattr(self._scheduler, "is_dispatch_thread", None)
+        called_from_scheduler = bool(
+            scheduler_thread_probe() if callable(scheduler_thread_probe) else False
+        )
         called_from_worker = (
             called_from_lifecycle
+            or called_from_scheduler
             or self._event_pump.is_worker_thread()
             or self._session_pump.is_worker_thread()
         )
@@ -474,9 +480,14 @@ def create_stream_dock_runtime(
     )
 
     if scheduler_factory is None:
-        if resolved_config.scheduler_kind is not RuntimeSchedulerKind.SEQUENTIAL:
-            raise NotImplementedError("keyed-serial scheduler is not implemented")
-        scheduler: HandlerScheduler = SequentialHandlerScheduler(router)
+        if resolved_config.scheduler_kind is RuntimeSchedulerKind.SEQUENTIAL:
+            scheduler: HandlerScheduler = SequentialHandlerScheduler(router)
+        else:
+            scheduler = KeyedSerialHandlerScheduler(
+                router,
+                worker_count=resolved_config.worker_count,
+                pending_limit=resolved_config.scheduler_pending_limit,
+            )
     else:
         if not isinstance(scheduler_factory, HandlerSchedulerFactory):
             raise TypeError("scheduler_factory must implement HandlerSchedulerFactory")

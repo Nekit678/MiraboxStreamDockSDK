@@ -30,6 +30,7 @@ from ._next.runtime.composition import (
 )
 from ._next.runtime.config import RuntimeDispatcherConfig
 from ._next.runtime.metrics import StreamDockRuntimeMetrics
+from ._next.runtime.models import RuntimeSchedulerKind
 from ._next.runtime.ports import ActionFactory, PluginHooks, RuntimeLifecycle
 from ._next.transport.ports import SessionEventSourceClosedError
 from ._next.transport.session import Connected, Disconnected, SessionEvent, TransportError
@@ -521,6 +522,7 @@ __all__ = [
     "ExperimentalBoundaryRuntimeError",
     "ExperimentalStreamDockApplication",
     "RuntimeDispatcherConfig",
+    "RuntimeSchedulerKind",
     "create_experimental_stream_dock_application",
     "create_experimental_stream_dock_connection",
 ]
