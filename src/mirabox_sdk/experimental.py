@@ -1,4 +1,4 @@
-"""Explicit runtime integration for the experimental Stream Dock boundary.
+"""Explicit application integrations for the experimental Stream Dock stack.
 
 Nothing in this module is re-exported from :mod:`mirabox_sdk`. Applications
 must import it deliberately while the legacy WebSocket connection remains the
@@ -8,6 +8,7 @@ default supported implementation.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from math import isfinite
 from threading import Lock, Thread, current_thread
 
@@ -21,12 +22,27 @@ from ._next.messaging.outbound import (
 )
 from ._next.messaging.outbound import OutboundQueueFullError as BoundaryQueueFullError
 from ._next.messaging.ports import InboundEventSourceClosedError, OutboundCommandSink
+from ._next.runtime.adapters import LegacyActionRegistry
+from ._next.runtime.composition import (
+    ComposedStreamDockRuntime,
+    HandlerSchedulerFactory,
+    create_stream_dock_runtime,
+)
+from ._next.runtime.config import RuntimeDispatcherConfig
+from ._next.runtime.metrics import StreamDockRuntimeMetrics
+from ._next.runtime.ports import ActionFactory, PluginHooks, RuntimeLifecycle
 from ._next.transport.ports import SessionEventSourceClosedError
 from ._next.transport.session import Connected, Disconnected, SessionEvent, TransportError
 from .commands import StreamDockCommand
 from .inbound import InboundOverflowPolicy
 from .outbound import CommandFuture, OutboundCommandBusClosedError, OutboundQueueFullError
-from .protocols import StreamDockConnection, StreamDockListener
+from .protocols import (
+    StreamDockActionDependencies,
+    StreamDockConnection,
+    StreamDockListener,
+    StreamDockSender,
+)
+from .registration import PluginLaunchArguments
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +109,43 @@ class _LegacyCommandSenderAdapter:
         except BoundaryCommandQueueClosedError as exc:
             raise OutboundCommandBusClosedError(str(exc)) from exc
         return _LegacyCommandFutureAdapter(completion)
+
+
+class ExperimentalStreamDockApplication:
+    """Adapt the experimental runtime facade to the current CLI lifecycle.
+
+    The wrapper exposes only application-level lifecycle and metrics. In
+    particular, it does not expose the boundary event or session sources, so
+    application code cannot receive or acknowledge protocol work directly.
+    """
+
+    __slots__ = ("_runtime",)
+
+    def __init__(self, runtime: ComposedStreamDockRuntime) -> None:
+        if not isinstance(runtime, RuntimeLifecycle):
+            raise TypeError("runtime must implement RuntimeLifecycle")
+        self._runtime = runtime
+
+    @property
+    def runtime(self) -> ComposedStreamDockRuntime:
+        """Return the runtime facade for state and diagnostic inspection."""
+
+        return self._runtime
+
+    def run(self) -> None:
+        """Run the experimental runtime on the application lifecycle thread."""
+
+        self._runtime.run_forever()
+
+    def stop(self) -> None:
+        """Idempotently request graceful runtime shutdown."""
+
+        self._runtime.close()
+
+    def metrics(self) -> StreamDockRuntimeMetrics:
+        """Return the aggregate runtime and boundary diagnostic snapshot."""
+
+        return self._runtime.metrics()
 
 
 class BoundaryStreamDockConnection(StreamDockConnection):
@@ -327,6 +380,95 @@ def create_experimental_stream_dock_connection(
 ) -> BoundaryStreamDockConnection:
     """Create the opt-in runtime connection backed by the experimental boundary."""
 
+    boundary = _create_experimental_boundary(
+        port,
+        queue_config=queue_config,
+        shutdown_config=shutdown_config,
+        connector_factory=connector_factory,
+        inbound_overflow_policy=inbound_overflow_policy,
+        coalesce_dial_rotations=coalesce_dial_rotations,
+        coalesce_commands=coalesce_commands,
+    )
+    logger.info(
+        "Transitional BoundaryStreamDockConnection selected; "
+        "use create_experimental_stream_dock_application() to exercise the new runtime"
+    )
+    return BoundaryStreamDockConnection(
+        boundary,
+        dispatcher_poll_interval=dispatcher_poll_interval,
+        dispatcher_shutdown_timeout=dispatcher_shutdown_timeout,
+    )
+
+
+def create_experimental_stream_dock_application(
+    launch_arguments: PluginLaunchArguments,
+    *,
+    action_factory: ActionFactory | LegacyActionRegistry,
+    action_dependencies_factory: (
+        Callable[[StreamDockSender], StreamDockActionDependencies] | None
+    ) = None,
+    plugin_hooks: PluginHooks | None = None,
+    queue_config: BoundaryQueueConfig | None = None,
+    shutdown_config: BoundaryShutdownConfig | None = None,
+    runtime_config: RuntimeDispatcherConfig | None = None,
+    scheduler_factory: HandlerSchedulerFactory | None = None,
+    inbound_overflow_policy: InboundOverflowPolicy = InboundOverflowPolicy.DROP_NEWEST,
+    coalesce_dial_rotations: bool = False,
+    coalesce_commands: bool = False,
+    connector_factory: WebSocketConnectorFactory | None = None,
+) -> ExperimentalStreamDockApplication:
+    """Create an unstarted opt-in application over the new runtime dispatcher.
+
+    Existing four-argument :class:`ActionRegistry` instances require
+    ``action_dependencies_factory``. It receives the temporary legacy sender
+    adapter so current actions retain their ``CommandFuture`` and submission
+    error contracts during the migration window. Native three-argument action
+    factories leave it unset.
+    """
+
+    if not isinstance(launch_arguments, PluginLaunchArguments):
+        raise TypeError("launch_arguments must be PluginLaunchArguments")
+    if action_dependencies_factory is not None and not callable(action_dependencies_factory):
+        raise TypeError("action_dependencies_factory must be callable or None")
+
+    boundary = _create_experimental_boundary(
+        launch_arguments.port,
+        queue_config=queue_config,
+        shutdown_config=shutdown_config,
+        connector_factory=connector_factory,
+        inbound_overflow_policy=inbound_overflow_policy,
+        coalesce_dial_rotations=coalesce_dial_rotations,
+        coalesce_commands=coalesce_commands,
+    )
+    action_dependencies = None
+    if action_dependencies_factory is not None:
+        action_dependencies = action_dependencies_factory(
+            _LegacyCommandSenderAdapter(boundary.commands)
+        )
+
+    runtime = create_stream_dock_runtime(
+        launch_arguments,
+        boundary=boundary,
+        action_factory=action_factory,
+        action_dependencies=action_dependencies,
+        plugin_hooks=plugin_hooks,
+        config=runtime_config,
+        scheduler_factory=scheduler_factory,
+    )
+    logger.info("Experimental runtime dispatcher selected; the legacy runtime remains the default")
+    return ExperimentalStreamDockApplication(runtime)
+
+
+def _create_experimental_boundary(
+    port: int,
+    *,
+    queue_config: BoundaryQueueConfig | None,
+    shutdown_config: BoundaryShutdownConfig | None,
+    connector_factory: WebSocketConnectorFactory | None,
+    inbound_overflow_policy: InboundOverflowPolicy,
+    coalesce_dial_rotations: bool,
+    coalesce_commands: bool,
+) -> StreamDockBoundary:
     if queue_config is None:
         queue_config = BoundaryQueueConfig(
             raw_inbound_limit=_DEFAULT_QUEUE_LIMIT,
@@ -340,7 +482,7 @@ def create_experimental_stream_dock_connection(
     except (AttributeError, TypeError, ValueError):
         raise ValueError("inbound_overflow_policy must be an InboundOverflowPolicy") from None
 
-    boundary = create_stream_dock_boundary(
+    return create_stream_dock_boundary(
         port,
         queue_config,
         shutdown_config=shutdown_config,
@@ -348,11 +490,6 @@ def create_experimental_stream_dock_connection(
         inbound_overflow_policy=boundary_overflow_policy,
         coalesce_dial_rotations=coalesce_dial_rotations,
         coalesce_commands=coalesce_commands,
-    )
-    return BoundaryStreamDockConnection(
-        boundary,
-        dispatcher_poll_interval=dispatcher_poll_interval,
-        dispatcher_shutdown_timeout=dispatcher_shutdown_timeout,
     )
 
 
@@ -382,5 +519,8 @@ __all__ = [
     "BoundaryShutdownConfig",
     "BoundaryStreamDockConnection",
     "ExperimentalBoundaryRuntimeError",
+    "ExperimentalStreamDockApplication",
+    "RuntimeDispatcherConfig",
+    "create_experimental_stream_dock_application",
     "create_experimental_stream_dock_connection",
 ]

@@ -50,14 +50,15 @@ PYTHONPATH=examples/counter_plugin/src python -m counter_plugin \
 
 The command waits for Stream Dock protocol messages; it is not a standalone UI.
 
-## Experimental boundary opt-in
+## Experimental runtime opt-in
 
-The example continues to use `WebSocketStreamDockConnection` by default. To run
-this one plugin through the experimental typed boundary, set
-`MIRABOX_SDK_EXPERIMENTAL_BOUNDARY` to the exact value `1` before starting it:
+The example continues to use the legacy `WebSocketStreamDockConnection` and
+`StreamDockPlugin` by default. To run this one plugin directly through the
+experimental typed boundary and the new runtime dispatcher, set
+`MIRABOX_SDK_EXPERIMENTAL_RUNTIME` to the exact value `1` before starting it:
 
 ```powershell
-$env:MIRABOX_SDK_EXPERIMENTAL_BOUNDARY = "1"
+$env:MIRABOX_SDK_EXPERIMENTAL_RUNTIME = "1"
 python -m counter_plugin `
   -port 12345 `
   -pluginUUID com.example.counter `
@@ -67,12 +68,21 @@ python -m counter_plugin `
 
 For the packaged executable, set the variable before launching Stream Dock so
 the plugin process inherits it. Unset the variable and restart Stream Dock to
-return to the legacy connection.
+return to the legacy runtime. The opt-in path uses
+`create_experimental_stream_dock_application()` and does not place
+`BoundaryStreamDockConnection` between the dispatcher and boundary.
 
-The experimental adapter was manually verified on 2026-07-28 with installed
-Stream Dock `3.10.203.0701`. The host's `-info.application.version` launch
-metadata reported the compatibility value `2.10.179.426`; the installed
-application version and the launch metadata are therefore recorded separately.
+The older `MIRABOX_SDK_EXPERIMENTAL_BOUNDARY=1` switch remains available during
+the migration window. It selects the typed boundary with the legacy runtime
+through `BoundaryStreamDockConnection`. If both variables are `1`, the new
+runtime opt-in takes precedence. SDK diagnostics identify which experimental
+path was selected without logging event payloads.
+
+The transitional boundary adapter was manually verified on 2026-07-28 with
+installed Stream Dock `3.10.203.0701`. The host's
+`-info.application.version` launch metadata reported the compatibility value
+`2.10.179.426`; the installed application version and the launch metadata are
+therefore recorded separately.
 The acceptance run confirmed all of the following:
 
 1. the Counter plugin registers and remains connected;
@@ -84,6 +94,11 @@ The acceptance run confirmed all of the following:
 
 The observed title sequence was `0 → 1 → 0`, and the Stream Dock log recorded
 `com.example.counter.sdPlugin` as connected.
+
+The new runtime-dispatcher path has the same registration, global-settings,
+action, outbound-command, acknowledgement, and shutdown flows covered by a fake
+connector integration test. A separate real-device acceptance run is still
+required before this experimental path can be promoted.
 
 ## Test
 

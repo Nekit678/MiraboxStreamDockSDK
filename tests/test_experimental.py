@@ -54,6 +54,9 @@ from mirabox_sdk.experimental import (
     BoundaryQueueConfig,
     BoundaryShutdownConfig,
     BoundaryStreamDockConnection,
+    ExperimentalStreamDockApplication,
+    RuntimeDispatcherConfig,
+    create_experimental_stream_dock_application,
     create_experimental_stream_dock_connection,
 )
 
@@ -103,6 +106,15 @@ def _event_frame(event_name: str) -> str:
             "context": "button",
             "device": "device-uuid",
             "payload": payload,
+        }
+    )
+
+
+def _global_settings_frame() -> str:
+    return json.dumps(
+        {
+            "event": "didReceiveGlobalSettings",
+            "payload": {"settings": {"theme": "dark"}},
         }
     )
 
@@ -290,6 +302,7 @@ class ExperimentalRuntimeIntegrationTests(unittest.TestCase):
             mirabox_sdk.connection.WebSocketStreamDockConnection,
         )
         self.assertFalse(hasattr(mirabox_sdk, "create_experimental_stream_dock_connection"))
+        self.assertFalse(hasattr(mirabox_sdk, "create_experimental_stream_dock_application"))
 
     def test_dispatcher_stops_on_port_level_source_close_errors(self) -> None:
         connection = BoundaryStreamDockConnection(
@@ -398,6 +411,98 @@ class ExperimentalRuntimeIntegrationTests(unittest.TestCase):
         metrics = connection.boundary.metrics()
         self.assertEqual(metrics.inbound_events.acknowledged, 2)
         self.assertEqual(metrics.connector.outbound_frames_sent, 4)
+
+    def test_new_runtime_application_runs_full_pipeline_without_connection_adapter(self) -> None:
+        factory = _RuntimeConnectorFactory(
+            (
+                _global_settings_frame(),
+                _event_frame("willAppear"),
+                _event_frame("keyDown"),
+            )
+        )
+        registry: ActionRegistry[_Dependencies] = ActionRegistry()
+        registry.register(_ACTION_UUID)(_RuntimeAction)
+
+        with self.assertLogs("mirabox_sdk.experimental", level="INFO") as logs:
+            application = create_experimental_stream_dock_application(
+                _launch_arguments(),
+                action_factory=registry,
+                action_dependencies_factory=_Dependencies,
+                queue_config=BoundaryQueueConfig(
+                    raw_inbound_limit=16,
+                    inbound_event_limit=16,
+                    outbound_command_limit=16,
+                    raw_outbound_limit=16,
+                    session_event_limit=16,
+                ),
+                shutdown_config=BoundaryShutdownConfig(
+                    raw_inbound_drain_timeout=0.5,
+                    inbound_event_drain_timeout=0.5,
+                    outbound_command_drain_timeout=0.5,
+                    raw_outbound_drain_timeout=0.5,
+                    session_event_drain_timeout=0.5,
+                    worker_stop_timeout=0.5,
+                    connector_stop_timeout=0.5,
+                ),
+                runtime_config=RuntimeDispatcherConfig(
+                    event_poll_interval=0.005,
+                    session_poll_interval=0.005,
+                ),
+                connector_factory=factory,
+            )
+
+        self.assertIsInstance(application, ExperimentalStreamDockApplication)
+        self.assertNotIsInstance(application, BoundaryStreamDockConnection)
+        self.assertFalse(hasattr(application.runtime, "events"))
+        self.assertIn("legacy runtime remains the default", "\n".join(logs.output))
+        assert factory.connector is not None
+        connector = factory.connector
+        errors: list[Exception] = []
+
+        def run() -> None:
+            try:
+                application.run()
+            except Exception as exc:
+                errors.append(exc)
+
+        runtime_thread = Thread(
+            target=run,
+            name="test-next-runtime-application",
+        )
+
+        runtime_thread.start()
+        try:
+            self.assertTrue(connector.started.wait(1))
+            _wait_until(lambda: len(connector.sent) == 4)
+        finally:
+            application.stop()
+            runtime_thread.join(1)
+
+        self.assertFalse(runtime_thread.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(
+            [json.loads(frame) for frame in connector.sent],
+            [
+                {"event": "registerPlugin", "uuid": "plugin-uuid"},
+                {"event": "getGlobalSettings", "context": "plugin-uuid"},
+                {
+                    "event": "setTitle",
+                    "context": "button",
+                    "payload": {"title": "ready", "target": 0},
+                },
+                {
+                    "event": "setTitle",
+                    "context": "button",
+                    "payload": {"title": "pressed", "target": 0},
+                },
+            ],
+        )
+        metrics = application.metrics()
+        self.assertEqual(metrics.session.initialization_succeeded, 1)
+        self.assertEqual(metrics.event_pump.events_acknowledged, 3)
+        self.assertEqual(metrics.actions.global_settings_updates, 1)
+        self.assertEqual(metrics.actions.global_settings_replays, 1)
+        self.assertEqual(metrics.boundary.connector.outbound_frames_sent, 4)
 
     def test_close_from_runtime_callback_does_not_deadlock(self) -> None:
         factory = _RuntimeConnectorFactory(('{"event":"systemDidWakeUp"}',))

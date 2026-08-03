@@ -6,6 +6,12 @@ change public APIs between minor versions.
 
 ## [Unreleased]
 
+### Added
+
+- Add an explicit experimental application factory that composes the typed
+  boundary directly with the new runtime dispatcher, plus a separate Counter
+  example opt-in and migration diagnostics while preserving both legacy paths.
+
 ## [0.4.0] - 2026-07-28
 
 ### Added
