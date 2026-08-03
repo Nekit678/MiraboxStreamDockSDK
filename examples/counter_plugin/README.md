@@ -95,10 +95,18 @@ The acceptance run confirmed all of the following:
 The observed title sequence was `0 → 1 → 0`, and the Stream Dock log recorded
 `com.example.counter.sdPlugin` as connected.
 
-The new runtime-dispatcher path has the same registration, global-settings,
-action, outbound-command, acknowledgement, and shutdown flows covered by a fake
-connector integration test. A separate real-device acceptance run is still
-required before this experimental path can be promoted.
+The new runtime-dispatcher path was manually verified on 2026-08-03 with the
+same installed Stream Dock `3.10.203.0701`. A Windows bundle built from the
+current tree was launched with a process-local runtime opt-in. The host log
+confirmed registration, the device and Property Inspector produced the same
+`0 → 1 → 0` sequence, and the profile persisted the final `count: 0`. When the
+host process ended, both plugin processes and their WebSocket connection exited
+without hanging. The original installed bundle and legacy-default Stream Dock
+launch were restored after the acceptance run.
+
+The fake-connector integration test additionally covers registration,
+global-settings, action, outbound-command, acknowledgement, and shutdown flows
+deterministically.
 
 ## Test
 
