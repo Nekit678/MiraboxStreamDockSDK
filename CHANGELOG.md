@@ -11,7 +11,7 @@ change public APIs between minor versions.
 - Add the stable `mirabox_sdk.runtime` package and package-level
   `create_stream_dock_application()` production composition factory.
 - Add public immutable runtime/boundary metrics, queue/shutdown configuration,
-  plugin hooks, global-settings methods, and a runtime migration guide.
+  plugin hooks, and global-settings methods.
 - Add shared legacy/experimental runtime behavioral contracts and an executable
   scheduler performance gate with throughput, callback-latency, boundedness,
   and boundary-coalescing budgets.
