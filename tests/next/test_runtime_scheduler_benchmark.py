@@ -53,6 +53,99 @@ class RuntimeSchedulerBenchmarkTests(unittest.TestCase):
         self.assertEqual(benchmark_runtime_scheduler._percentile((0, 10), 50), 5)
         self.assertEqual(benchmark_runtime_scheduler._percentile((30, 10, 20), 95), 29)
 
+    def test_scheduler_gate_reports_throughput_and_boundedness_violations(self) -> None:
+        measurements = []
+        for scenario in benchmark_runtime_scheduler.SCHEDULER_PERFORMANCE_BUDGETS:
+            measurements.extend(
+                (
+                    _scheduler_measurement(scenario, "sequential", throughput=100, peak_pending=0),
+                    _scheduler_measurement(
+                        scenario,
+                        "keyed_serial",
+                        throughput=50,
+                        peak_pending=9,
+                        callback_start_p95_ms=31,
+                    ),
+                )
+            )
+
+        comparisons = benchmark_runtime_scheduler.evaluate_scheduler_performance(
+            measurements,
+            pending_limit=8,
+        )
+
+        self.assertEqual(len(comparisons), 4)
+        self.assertTrue(all(not comparison.within_budget for comparison in comparisons))
+        self.assertTrue(all(comparison.violations for comparison in comparisons))
+        self.assertEqual(comparisons[0].keyed_to_sequential_throughput_ratio, 0.5)
+        self.assertIn("callback-start p95", " ".join(comparisons[0].violations))
+
+    def test_every_canonical_measurement_has_an_explicit_performance_budget(self) -> None:
+        self.assertEqual(
+            set(benchmark_runtime_scheduler.SCHEDULER_PERFORMANCE_BUDGETS),
+            {"single_context", "contexts_4", "contexts_16", "contexts_64"},
+        )
+        self.assertEqual(
+            set(benchmark_runtime_scheduler.COALESCING_PERFORMANCE_BUDGETS),
+            {1, 4, 16, 64},
+        )
+        for budget in benchmark_runtime_scheduler.SCHEDULER_PERFORMANCE_BUDGETS.values():
+            with self.subTest(budget=budget):
+                self.assertGreater(budget.min_throughput_ratio, 0)
+                self.assertGreater(budget.max_callback_start_p95_ms, 0)
+                self.assertTrue(budget.reason)
+        for budget in benchmark_runtime_scheduler.COALESCING_PERFORMANCE_BUDGETS.values():
+            with self.subTest(budget=budget):
+                self.assertGreaterEqual(budget.min_coalescing_ratio, 0)
+                self.assertLessEqual(budget.min_coalescing_ratio, 1)
+                self.assertTrue(budget.reason)
+
+    def test_coalescing_gate_requires_the_complete_canonical_matrix(self) -> None:
+        with self.assertRaisesRegex(ValueError, "pending limit 4"):
+            benchmark_runtime_scheduler.evaluate_coalescing_performance(
+                (_coalescing_measurement(1, ratio=1),)
+            )
+
+
+def _scheduler_measurement(
+    scenario: str,
+    scheduler: str,
+    *,
+    throughput: float,
+    peak_pending: float,
+    callback_start_p95_ms: float = 0,
+) -> benchmark_runtime_scheduler.SchedulerBenchmarkMeasurement:
+    return benchmark_runtime_scheduler.SchedulerBenchmarkMeasurement(
+        scenario=scenario,
+        scheduler=scheduler,
+        event_count=100,
+        duration_seconds=1,
+        throughput_per_second=throughput,
+        callback_start_p50_ms=0,
+        callback_start_p95_ms=callback_start_p95_ms,
+        callback_start_p99_ms=0,
+        peak_pending=peak_pending,
+        peak_active_callbacks=1,
+        admission_backpressure=0,
+    )
+
+
+def _coalescing_measurement(
+    pending_limit: int,
+    *,
+    ratio: float,
+) -> benchmark_runtime_scheduler.CoalescingMeasurement:
+    return benchmark_runtime_scheduler.CoalescingMeasurement(
+        pending_limit=pending_limit,
+        submitted_rotations=100,
+        coalesced_rotations=int(ratio * 100),
+        coalescing_ratio=ratio,
+        dispatched_events=1,
+        peak_boundary_depth=1,
+        peak_scheduler_pending=pending_limit,
+        scheduler_backpressure=1,
+    )
+
 
 if __name__ == "__main__":
     unittest.main()

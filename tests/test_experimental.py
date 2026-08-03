@@ -6,10 +6,12 @@ import json
 import unittest
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from threading import Event, Lock, Thread
 from time import monotonic, sleep
 
 import mirabox_sdk
+import mirabox_sdk.experimental as experimental
 from mirabox_sdk import (
     Action,
     ActionRegistry,
@@ -297,6 +299,27 @@ class _ClosedPortBoundary:
 
 
 class ExperimentalRuntimeIntegrationTests(unittest.TestCase):
+    def test_experimental_runtime_exports_are_explicit_and_typed(self) -> None:
+        expected = {
+            "BoundaryQueueConfig",
+            "BoundaryShutdownConfig",
+            "BoundaryStreamDockConnection",
+            "ExperimentalBoundaryRuntimeError",
+            "ExperimentalStreamDockApplication",
+            "RuntimeDispatcherConfig",
+            "RuntimeSchedulerKind",
+            "create_experimental_stream_dock_application",
+            "create_experimental_stream_dock_connection",
+        }
+
+        self.assertEqual(set(experimental.__all__), expected)
+        self.assertTrue(all(hasattr(experimental, name) for name in expected))
+        package_file = mirabox_sdk.__file__
+        self.assertIsNotNone(package_file)
+        assert package_file is not None
+        self.assertTrue((Path(package_file).parent / "py.typed").is_file())
+        self.assertFalse(expected.intersection(mirabox_sdk.__all__))
+
     def test_keyed_scheduler_kind_is_explicitly_available_only_from_experimental(self) -> None:
         self.assertEqual(RuntimeSchedulerKind.KEYED_SERIAL.value, "keyed_serial")
         self.assertFalse(hasattr(mirabox_sdk, "RuntimeSchedulerKind"))
@@ -308,6 +331,30 @@ class ExperimentalRuntimeIntegrationTests(unittest.TestCase):
         )
         self.assertFalse(hasattr(mirabox_sdk, "create_experimental_stream_dock_connection"))
         self.assertFalse(hasattr(mirabox_sdk, "create_experimental_stream_dock_application"))
+
+    def test_transitional_adapter_redacts_session_reasons_and_callback_errors(self) -> None:
+        secret = "adapter-secret-must-not-appear"
+
+        class _SensitiveListener:
+            def on_stream_dock_connected(self) -> None:
+                raise RuntimeError(secret)
+
+            def on_stream_dock_event(self, _event: StreamDockEvent) -> None:
+                raise RuntimeError(secret)
+
+        connection = BoundaryStreamDockConnection(_ClosedPortBoundary())
+        connection.set_listener(_SensitiveListener())
+
+        with self.assertLogs("mirabox_sdk.experimental", level="INFO") as logs:
+            self.assertFalse(connection._handle_session_event(Connected()))
+            self.assertFalse(
+                connection._handle_session_event(Disconnected(status_code=1000, reason=secret))
+            )
+
+        output = "\n".join(logs.output)
+        self.assertNotIn(secret, output)
+        self.assertIn("exception_type=RuntimeError", output)
+        self.assertIn("status_code=1000", output)
 
     def test_dispatcher_stops_on_port_level_source_close_errors(self) -> None:
         connection = BoundaryStreamDockConnection(

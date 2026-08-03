@@ -311,10 +311,11 @@ class BoundaryStreamDockConnection(StreamDockConnection):
                         )
                     else:
                         listener.on_stream_dock_event(event)
-                except Exception:
-                    logger.exception(
-                        "Failed to dispatch inbound Stream Dock event %s",
+                except Exception as exc:
+                    logger.error(
+                        "Failed to dispatch inbound Stream Dock event %s; exception_type=%s",
                         event.event_name,
+                        type(exc).__name__,
                     )
                 finally:
                     self._boundary.events.task_done()
@@ -345,7 +346,11 @@ class BoundaryStreamDockConnection(StreamDockConnection):
             try:
                 listener.on_stream_dock_connected()
             except Exception as exc:
-                logger.exception("Failed to initialize the Stream Dock runtime after connection")
+                logger.error(
+                    "Failed to initialize the Stream Dock runtime after connection; "
+                    "exception_type=%s",
+                    type(exc).__name__,
+                )
                 with self._state_lock:
                     if self._dispatcher_error is None:
                         self._dispatcher_error = exc
@@ -354,9 +359,8 @@ class BoundaryStreamDockConnection(StreamDockConnection):
             return True
         if isinstance(event, Disconnected):
             logger.info(
-                "Stream Dock connection closed: %s %s",
+                "Stream Dock connection closed: status_code=%s",
                 event.status_code,
-                event.reason or "",
             )
             return False
         if isinstance(event, TransportError):

@@ -168,8 +168,12 @@ class ActionStore(Generic[DependenciesT]):
             self.remove(event.context, expected=action)
             try:
                 action.on_will_disappear()
-            except Exception:
-                logger.exception("Failed to roll back action context %s", event.context)
+            except Exception as exc:
+                logger.error(
+                    "Failed to roll back action context %s; exception_type=%s",
+                    event.context,
+                    type(exc).__name__,
+                )
             raise
         return action
 
@@ -327,12 +331,14 @@ class ActionStore(Generic[DependenciesT]):
 
         try:
             self._invoke(action, event, descriptor)
-        except Exception:
-            logger.exception(
-                "Failed to process broadcast Stream Dock event %s for action %s context %s",
+        except Exception as exc:
+            logger.error(
+                "Failed to process broadcast Stream Dock event %s for action %s context %s; "
+                "exception_type=%s",
                 event.event_name,
                 action.action,
                 action.context,
+                type(exc).__name__,
             )
 
     @staticmethod

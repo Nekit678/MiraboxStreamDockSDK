@@ -292,12 +292,13 @@ class _InboundEventDispatcher:
 
             try:
                 delivered = self._dispatch(queued.event)
-            except Exception:
+            except Exception as exc:
                 with self._condition:
                     self._callback_failures += 1
-                logger.exception(
-                    "Failed to dispatch inbound Stream Dock event %s",
+                logger.error(
+                    "Failed to dispatch inbound Stream Dock event %s; exception_type=%s",
                     queued.event.event_name,
+                    type(exc).__name__,
                 )
             else:
                 with self._condition:

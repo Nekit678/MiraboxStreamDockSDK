@@ -11,6 +11,17 @@ change public APIs between minor versions.
 - Add an explicit experimental application factory that composes the typed
   boundary directly with the new runtime dispatcher, plus a separate Counter
   example opt-in and migration diagnostics while preserving both legacy paths.
+- Add shared legacy/experimental runtime behavioral contracts and an executable
+  scheduler performance gate with throughput, callback-latency, boundedness,
+  and boundary-coalescing budgets.
+- Add release gates that keep supported Python metadata aligned with CI and
+  verify the explicit experimental runtime/type distribution surface.
+
+### Changed
+
+- Redact callback exception messages and disconnect reasons from legacy,
+  experimental-adapter, and new-runtime diagnostics while retaining event,
+  context, status, and exception-type metadata.
 
 ## [0.4.0] - 2026-07-28
 

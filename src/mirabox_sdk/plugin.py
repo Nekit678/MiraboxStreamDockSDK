@@ -167,20 +167,31 @@ class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
 
         try:
             self.stream_dock.close()
-        except Exception:
-            logger.exception("Failed to close Stream Dock connection")
+        except Exception as exc:
+            logger.error(
+                "Failed to close Stream Dock connection; exception_type=%s",
+                type(exc).__name__,
+            )
 
         for action in self.action_store.clear():
             try:
                 action.on_will_disappear()
-            except Exception:
-                logger.exception("Failed to release action context %s", action.context)
+            except Exception as exc:
+                logger.error(
+                    "Failed to release action context %s; exception_type=%s",
+                    action.context,
+                    type(exc).__name__,
+                )
 
         for service in reversed(self._started_services):
             try:
                 service.stop()
-            except Exception:
-                logger.exception("Failed to stop plugin service %r", service)
+            except Exception as exc:
+                logger.error(
+                    "Failed to stop plugin service; service_type=%s exception_type=%s",
+                    type(service).__name__,
+                    type(exc).__name__,
+                )
         self._started_services.clear()
 
         logger.info("Stream Dock plugin %s stopped", self.plugin_uuid)
@@ -208,8 +219,12 @@ class StreamDockPlugin(StreamDockListener, Generic[DependenciesT]):
 
         try:
             self._dispatch(event)
-        except Exception:
-            logger.exception("Failed to process Stream Dock event %s", event.event_name)
+        except Exception as exc:
+            logger.error(
+                "Failed to process Stream Dock event %s; exception_type=%s",
+                event.event_name,
+                type(exc).__name__,
+            )
 
     def on_unhandled_event(self, _event: UnknownStreamDockEvent) -> None:
         """Handle an event that has no descriptor in this SDK version.
