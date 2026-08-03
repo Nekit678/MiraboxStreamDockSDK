@@ -33,12 +33,14 @@ from ...events import (
 )
 from ...json_types import JsonObject
 from ..messaging.models import CommandFuture
+from ..transport.session import SessionEvent
 from .metrics import (
     HandlerSchedulerMetrics,
     RuntimeEventPumpMetrics,
+    SessionCoordinatorMetrics,
     StreamDockRuntimeMetrics,
 )
-from .models import DispatchResult
+from .models import DispatchResult, SessionState
 
 
 @runtime_checkable
@@ -209,6 +211,135 @@ class RuntimeLifecycle(Protocol):
     @abstractmethod
     def metrics(self) -> StreamDockRuntimeMetrics:
         """Return an immutable aggregate runtime snapshot."""
+
+        ...
+
+
+@runtime_checkable
+class SessionReadiness(Protocol):
+    """Read-only latch that guards protocol-event consumption."""
+
+    @property
+    @abstractmethod
+    def ready(self) -> bool:
+        """Return whether mandatory session initialization succeeded."""
+
+        ...
+
+    @property
+    @abstractmethod
+    def terminal(self) -> bool:
+        """Return whether the session can no longer become ready."""
+
+        ...
+
+    @property
+    @abstractmethod
+    def failure(self) -> Exception | None:
+        """Return the fatal readiness failure, when one occurred."""
+
+        ...
+
+    @abstractmethod
+    def wait(self, timeout: float | None = None) -> bool:
+        """Wait for a state change and return whether readiness is open."""
+
+        ...
+
+
+@runtime_checkable
+class SessionEventCoordinator(Protocol):
+    """Apply one-session initialization and lifecycle policy."""
+
+    @property
+    @abstractmethod
+    def state(self) -> SessionState:
+        """Return the current single-session state."""
+
+        ...
+
+    @property
+    @abstractmethod
+    def readiness(self) -> SessionReadiness:
+        """Return the latch consumed by the protocol event pump."""
+
+        ...
+
+    @abstractmethod
+    def handle(self, event: SessionEvent) -> None:
+        """Apply one typed transport lifecycle event."""
+
+        ...
+
+    @abstractmethod
+    def record_source_poll_timeout(self) -> None:
+        """Record one bounded session-source poll timeout."""
+
+        ...
+
+    @abstractmethod
+    def record_source_closed(self) -> None:
+        """Record terminal source close and terminate unopened readiness."""
+
+        ...
+
+    @abstractmethod
+    def fail_readiness(self, error: Exception) -> None:
+        """Unblock readiness after a fatal session-pump failure."""
+
+        ...
+
+    @abstractmethod
+    def metrics(self) -> SessionCoordinatorMetrics:
+        """Return an immutable session metrics snapshot."""
+
+        ...
+
+
+@runtime_checkable
+class SessionEventPumpWorker(Protocol):
+    """Lifecycle and observability port for the session event consumer."""
+
+    @property
+    @abstractmethod
+    def failure(self) -> Exception | None:
+        """Return the first fatal source or coordinator failure."""
+
+        ...
+
+    @abstractmethod
+    def start(self) -> None:
+        """Start the single session-source consumer."""
+
+        ...
+
+    @abstractmethod
+    def request_stop(self) -> None:
+        """Request a non-blocking worker stop."""
+
+        ...
+
+    @abstractmethod
+    def drain(self, *, timeout: float | None = None) -> bool:
+        """Wait until the worker exits."""
+
+        ...
+
+    @abstractmethod
+    def stop(self, *, timeout: float | None = None) -> bool:
+        """Request stop and wait when outside the worker."""
+
+        ...
+
+    @abstractmethod
+    def is_worker_thread(self) -> bool:
+        """Return whether the caller is the session-pump thread."""
+
+        ...
+
+    @abstractmethod
+    def metrics(self) -> SessionCoordinatorMetrics:
+        """Return an immutable combined session snapshot."""
 
         ...
 

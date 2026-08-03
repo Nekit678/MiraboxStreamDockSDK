@@ -17,6 +17,7 @@ from mirabox_sdk import (
     DidReceiveSettingsEvent,
     JsonObject,
     KeyDownEvent,
+    StreamDockCommand,
     StreamDockEvent,
     StreamDockSender,
     SystemDidWakeUpEvent,
@@ -27,9 +28,11 @@ from mirabox_sdk import (
     WillAppearEvent,
     WillDisappearEvent,
 )
+from mirabox_sdk._next.messaging.models import CommandFuture
 from mirabox_sdk._next.messaging.ports import InboundEventSourceClosedError
 from mirabox_sdk._next.runtime.models import DispatchResult
 from mirabox_sdk._next.runtime.ports import RuntimeActionCallbacks
+from mirabox_sdk._next.transport.ports import SessionEventSourceClosedError
 
 ACTION_UUID = "com.example.runtime.action"
 
@@ -100,6 +103,82 @@ class FakeInboundEventSource:
                 lambda: len(self.acknowledged) >= count,
                 timeout=timeout,
             )
+
+
+class FakeSessionEventSource:
+    """Deterministic typed session source with explicit terminal close."""
+
+    def __init__(self, events: tuple[object, ...] = ()) -> None:
+        self._condition = Condition()
+        self._events = deque(events)
+        self._accepting = True
+        self.received: list[object] = []
+
+    def submit(self, event: object) -> None:
+        with self._condition:
+            if not self._accepting:
+                raise SessionEventSourceClosedError("session source is closed")
+            self._events.append(event)
+            self._condition.notify_all()
+
+    def close(self) -> None:
+        with self._condition:
+            self._accepting = False
+            self._condition.notify_all()
+
+    def receive(self, *, timeout: float | None = None) -> object:
+        timeout = _validate_timeout(timeout)
+        deadline = None if timeout is None else monotonic() + timeout
+        with self._condition:
+            while not self._events:
+                if not self._accepting:
+                    raise SessionEventSourceClosedError("session source is closed")
+                remaining = None if deadline is None else deadline - monotonic()
+                if remaining is not None and remaining <= 0:
+                    raise TimeoutError("timed out waiting for fake session event")
+                self._condition.wait(remaining)
+            event = self._events.popleft()
+            self.received.append(event)
+            self._condition.notify_all()
+            return event
+
+    def wait_for_received(self, count: int, *, timeout: float = 1.0) -> bool:
+        with self._condition:
+            return self._condition.wait_for(lambda: len(self.received) >= count, timeout=timeout)
+
+
+class RecordingCommandSink:
+    """Synchronous command fake with controllable per-command failures."""
+
+    def __init__(self) -> None:
+        self._condition = Condition()
+        self.commands: list[StreamDockCommand] = []
+        self.failures: dict[type[StreamDockCommand], Exception] = {}
+        self.on_send: Callable[[StreamDockCommand], None] | None = None
+
+    def send(self, command: StreamDockCommand) -> None:
+        with self._condition:
+            self.commands.append(command)
+            self._condition.notify_all()
+        if self.on_send is not None:
+            self.on_send(command)
+        error = self.failures.get(type(command))
+        if error is not None:
+            raise error
+
+    def send_async(self, command: StreamDockCommand) -> CommandFuture:
+        completion = CommandFuture()
+        try:
+            self.send(command)
+        except Exception as exc:
+            completion._finish(error=exc)
+        else:
+            completion._finish()
+        return completion
+
+    def wait_for_commands(self, count: int, *, timeout: float = 1.0) -> bool:
+        with self._condition:
+            return self._condition.wait_for(lambda: len(self.commands) >= count, timeout=timeout)
 
 
 @dataclass(frozen=True, slots=True)

@@ -11,15 +11,27 @@ from time import monotonic
 
 from ...events import StreamDockEvent
 from ..messaging.ports import InboundEventSource, InboundEventSourceClosedError
-from .metrics import RuntimeEventPumpMetrics
+from ..transport.ports import SessionEventSource, SessionEventSourceClosedError
+from .metrics import RuntimeEventPumpMetrics, SessionCoordinatorMetrics
 from .models import DispatchOutcome, DispatchResult
-from .ports import DispatchCompletion, HandlerScheduler, RuntimeEventPumpWorker
+from .ports import (
+    DispatchCompletion,
+    HandlerScheduler,
+    RuntimeEventPumpWorker,
+    SessionEventCoordinator,
+    SessionEventPumpWorker,
+    SessionReadiness,
+)
 
 logger = logging.getLogger(__name__)
 
 
 class RuntimeEventPumpLifecycleError(RuntimeError):
     """Report use of an event pump outside its single-run lifecycle."""
+
+
+class SessionEventPumpLifecycleError(RuntimeError):
+    """Report use of a session pump outside its single-run lifecycle."""
 
 
 @dataclass(slots=True)
@@ -36,6 +48,7 @@ class RuntimeEventPump(RuntimeEventPumpWorker):
         scheduler: HandlerScheduler,
         *,
         poll_interval: float = 0.05,
+        readiness_gate: SessionReadiness | None = None,
         on_fatal_error: Callable[[Exception], None] | None = None,
     ) -> None:
         if not isinstance(source, InboundEventSource):
@@ -43,12 +56,15 @@ class RuntimeEventPump(RuntimeEventPumpWorker):
         if not isinstance(scheduler, HandlerScheduler):
             raise TypeError("scheduler must implement HandlerScheduler")
         poll_interval = _validate_poll_interval(poll_interval)
+        if readiness_gate is not None and not isinstance(readiness_gate, SessionReadiness):
+            raise TypeError("readiness_gate must implement SessionReadiness or be None")
         if on_fatal_error is not None and not callable(on_fatal_error):
             raise TypeError("on_fatal_error must be callable or None")
 
         self._source = source
         self._scheduler = scheduler
         self._poll_interval = poll_interval
+        self._readiness_gate = readiness_gate
         self._on_fatal_error = on_fatal_error
         self._condition = Condition()
         self._thread: Thread | None = None
@@ -156,6 +172,8 @@ class RuntimeEventPump(RuntimeEventPumpWorker):
 
     def _run(self) -> None:
         try:
+            if not self._await_readiness():
+                return
             while True:
                 with self._condition:
                     if self._stop_requested:
@@ -208,6 +226,22 @@ class RuntimeEventPump(RuntimeEventPumpWorker):
             with self._condition:
                 self._stopped = True
                 self._condition.notify_all()
+
+    def _await_readiness(self) -> bool:
+        readiness = self._readiness_gate
+        if readiness is None:
+            return True
+
+        while True:
+            with self._condition:
+                if self._stop_requested:
+                    return False
+            if readiness.wait(self._poll_interval):
+                return True
+            if readiness.failure is not None:
+                return False
+            if readiness.terminal:
+                return False
 
     def _take_ownership(self) -> _OwnedEvent:
         with self._condition:
@@ -282,6 +316,153 @@ class RuntimeEventPump(RuntimeEventPumpWorker):
             except Exception as exc:
                 logger.error(
                     "Runtime fatal-error observer failed; exception_type=%s",
+                    type(exc).__name__,
+                )
+
+
+class SessionEventPump(SessionEventPumpWorker):
+    """Consume typed session events independently from protocol events."""
+
+    def __init__(
+        self,
+        source: SessionEventSource,
+        coordinator: SessionEventCoordinator,
+        *,
+        poll_interval: float = 0.05,
+        on_fatal_error: Callable[[Exception], None] | None = None,
+    ) -> None:
+        if not isinstance(source, SessionEventSource):
+            raise TypeError("source must implement SessionEventSource")
+        if not isinstance(coordinator, SessionEventCoordinator):
+            raise TypeError("coordinator must implement SessionEventCoordinator")
+        poll_interval = _validate_poll_interval(poll_interval)
+        if on_fatal_error is not None and not callable(on_fatal_error):
+            raise TypeError("on_fatal_error must be callable or None")
+
+        self._source = source
+        self._coordinator = coordinator
+        self._poll_interval = poll_interval
+        self._on_fatal_error = on_fatal_error
+        self._condition = Condition()
+        self._thread: Thread | None = None
+        self._started = False
+        self._stop_requested = False
+        self._stopped = False
+        self._failure: Exception | None = None
+
+    @property
+    def failure(self) -> Exception | None:
+        with self._condition:
+            return self._failure
+
+    def start(self) -> None:
+        """Start the single session-source consumer once."""
+
+        with self._condition:
+            if self._started and not self._stopped:
+                return
+            if self._stopped or self._stop_requested:
+                raise SessionEventPumpLifecycleError("session pump has already been stopped")
+            thread = Thread(
+                target=self._run,
+                name="mirabox-next-runtime-session",
+                daemon=True,
+            )
+            self._thread = thread
+            self._started = True
+            try:
+                thread.start()
+            except Exception:
+                self._thread = None
+                self._started = False
+                raise
+
+    def request_stop(self) -> None:
+        """Request a non-blocking stop of session event consumption."""
+
+        with self._condition:
+            self._stop_requested = True
+            if self._thread is None:
+                self._stopped = True
+            self._condition.notify_all()
+
+    def drain(self, *, timeout: float | None = None) -> bool:
+        """Wait until the session worker exits."""
+
+        timeout = _validate_timeout(timeout)
+        with self._condition:
+            return self._condition.wait_for(lambda: self._stopped, timeout=timeout)
+
+    def stop(self, *, timeout: float | None = None) -> bool:
+        """Request stop and join unless called from the session worker."""
+
+        timeout = _validate_timeout(timeout)
+        self.request_stop()
+        with self._condition:
+            thread = self._thread
+            if thread is None or thread is current_thread():
+                return True
+
+        thread.join(timeout)
+        return not thread.is_alive()
+
+    def is_worker_thread(self) -> bool:
+        with self._condition:
+            return self._thread is current_thread()
+
+    def metrics(self) -> SessionCoordinatorMetrics:
+        return self._coordinator.metrics()
+
+    def _run(self) -> None:
+        try:
+            while True:
+                with self._condition:
+                    if self._stop_requested:
+                        return
+
+                try:
+                    event = self._source.receive(timeout=self._poll_interval)
+                except TimeoutError:
+                    self._coordinator.record_source_poll_timeout()
+                    continue
+                except SessionEventSourceClosedError:
+                    self._coordinator.record_source_closed()
+                    return
+                except Exception as exc:
+                    logger.error(
+                        "Runtime session event source failed; exception_type=%s",
+                        type(exc).__name__,
+                    )
+                    self._coordinator.fail_readiness(exc)
+                    self._record_fatal(exc)
+                    return
+
+                try:
+                    self._coordinator.handle(event)
+                except Exception as exc:
+                    self._coordinator.fail_readiness(exc)
+                    self._record_fatal(exc)
+                    return
+        finally:
+            with self._condition:
+                self._stopped = True
+                self._condition.notify_all()
+
+    def _record_fatal(self, error: Exception) -> None:
+        callback: Callable[[Exception], None] | None = None
+        with self._condition:
+            if self._failure is not None:
+                return
+            self._failure = error
+            self._stop_requested = True
+            callback = self._on_fatal_error
+            self._condition.notify_all()
+        if callback is not None:
+            try:
+                callback(error)
+            except Exception as exc:
+                logger.error(
+                    "Runtime session fatal-error observer failed; exception_type=%s",
                     type(exc).__name__,
                 )
 

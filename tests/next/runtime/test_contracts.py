@@ -7,8 +7,12 @@ from pathlib import Path
 
 from mirabox_sdk import RegisterPluginCommand, StreamDockEvent
 from mirabox_sdk._next.messaging.models import CommandFuture
-from mirabox_sdk._next.runtime.metrics import HandlerSchedulerMetrics, RuntimeEventPumpMetrics
-from mirabox_sdk._next.runtime.models import DispatchOutcome, DispatchResult
+from mirabox_sdk._next.runtime.metrics import (
+    HandlerSchedulerMetrics,
+    RuntimeEventPumpMetrics,
+    SessionCoordinatorMetrics,
+)
+from mirabox_sdk._next.runtime.models import DispatchOutcome, DispatchResult, SessionState
 from mirabox_sdk._next.runtime.ports import (
     ActionContextManager,
     ActionFactory,
@@ -19,6 +23,9 @@ from mirabox_sdk._next.runtime.ports import (
     RuntimeEventDispatcher,
     RuntimeEventPumpWorker,
     RuntimeLifecycle,
+    SessionEventCoordinator,
+    SessionEventPumpWorker,
+    SessionReadiness,
     StreamDockSender,
 )
 
@@ -114,6 +121,57 @@ class _EventPump:
         return RuntimeEventPumpMetrics()
 
 
+class _Readiness:
+    ready = False
+    terminal = False
+    failure: Exception | None = None
+
+    def wait(self, timeout: float | None = None) -> bool:
+        return self.ready
+
+
+class _SessionCoordinator:
+    state = SessionState.WAITING_CONNECTED
+    readiness = _Readiness()
+
+    def handle(self, event: object) -> None:
+        pass
+
+    def record_source_poll_timeout(self) -> None:
+        pass
+
+    def record_source_closed(self) -> None:
+        pass
+
+    def fail_readiness(self, error: Exception) -> None:
+        pass
+
+    def metrics(self) -> SessionCoordinatorMetrics:
+        return SessionCoordinatorMetrics()
+
+
+class _SessionPump:
+    failure: Exception | None = None
+
+    def start(self) -> None:
+        pass
+
+    def request_stop(self) -> None:
+        pass
+
+    def drain(self, *, timeout: float | None = None) -> bool:
+        return True
+
+    def stop(self, *, timeout: float | None = None) -> bool:
+        return True
+
+    def is_worker_thread(self) -> bool:
+        return False
+
+    def metrics(self) -> SessionCoordinatorMetrics:
+        return SessionCoordinatorMetrics()
+
+
 class _Contexts:
     def __init__(self) -> None:
         self.action = _Action()
@@ -156,6 +214,9 @@ class RuntimePortContractTests(unittest.TestCase):
             (RuntimeEventDispatcher, _EventDispatcher()),
             (HandlerScheduler, _Scheduler()),
             (RuntimeEventPumpWorker, _EventPump()),
+            (SessionReadiness, _Readiness()),
+            (SessionEventCoordinator, _SessionCoordinator()),
+            (SessionEventPumpWorker, _SessionPump()),
             (ActionContextManager, _Contexts()),
             (RuntimeLifecycle, _Lifecycle()),
         )
@@ -182,6 +243,7 @@ class RuntimePortContractTests(unittest.TestCase):
             "mirabox_sdk._next.runtime.router",
             "mirabox_sdk._next.runtime.routes",
             "mirabox_sdk._next.runtime.scheduler",
+            "mirabox_sdk._next.runtime.session",
         )
         script = (
             "import importlib\n"
