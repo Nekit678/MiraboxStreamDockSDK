@@ -6,8 +6,8 @@ transport, typed JSON codecs, executable launch validation, logging, and the
 version-matched Property Inspector browser client.
 
 Typical applications register :class:`Action` subclasses in an
-:class:`ActionRegistry`, construct :class:`StreamDockPlugin` with a
-:class:`WebSocketStreamDockConnection`, and pass the resulting factory to
+:class:`ActionRegistry`, build :class:`StreamDockApplication` with
+:func:`create_stream_dock_application`, and pass the resulting factory to
 :func:`run_plugin_cli`.
 
 SDK logging is silent by default. Call :func:`configure_logging` explicitly when
@@ -15,8 +15,6 @@ transport or event-dispatch diagnostics are required.
 """
 
 __version__ = "0.4.0"
-
-from typing import TYPE_CHECKING
 
 from .action import Action
 from .action_registry import ActionRegistry
@@ -46,7 +44,12 @@ from .commands import (
     StreamDockCommand,
     ValidatedWireMessage,
 )
-from .connection import WebSocketStreamDockConnection
+from .completion import (
+    CommandFuture,
+    OutboundCommandBusClosedError,
+    OutboundCommandBusError,
+    OutboundQueueFullError,
+)
 from .errors import (
     InvalidFieldError,
     InvalidPluginLaunchArgumentsError,
@@ -76,8 +79,6 @@ from .events import (
     DialUpEvent,
     DidReceiveGlobalSettingsEvent,
     DidReceiveSettingsEvent,
-    EventDescriptor,
-    EventScope,
     KeyDownEvent,
     KeyEvent,
     KeyUpEvent,
@@ -96,24 +97,12 @@ from .events import (
     WillAppearEvent,
     WillDisappearEvent,
 )
-from .inbound import InboundOverflowPolicy, InboundQueueMetrics
 from .json_types import JsonObject, JsonValue, OwnedJsonPayload, ValidatedJsonObject
 from .logging_config import LoggingOverflowPolicy, configure_logging, dropped_log_records
-from .outbound import (
-    CommandFuture,
-    OutboundCommandBusClosedError,
-    OutboundCommandBusError,
-    OutboundQueueFullError,
-    OutboundQueueMetrics,
-)
 from .parser import parse_stream_dock_event
-from .plugin import StreamDockPlugin
 from .protocols import (
-    LifecycleService,
     PluginApplication,
     StreamDockActionDependencies,
-    StreamDockConnection,
-    StreamDockListener,
     StreamDockSender,
 )
 from .registration import (
@@ -131,30 +120,34 @@ from .resources import (
     copy_property_inspector_client,
     property_inspector_client_bytes,
 )
-from .stores import ActionStore, GlobalSettingsStore
-
-if TYPE_CHECKING:
-    from collections.abc import Mapping
-
-    EVENT_REGISTRY: Mapping[str, EventDescriptor]
-
-
-def __getattr__(name: str) -> object:
-    """Lazily expose migration-only compatibility objects."""
-
-    if name == "EVENT_REGISTRY":
-        from .parser import EVENT_REGISTRY
-
-        globals()[name] = EVENT_REGISTRY
-        return EVENT_REGISTRY
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
+from .runtime import (
+    ActionContextMetrics,
+    ActionFactory,
+    HandlerSchedulerMetrics,
+    InboundOverflowPolicy,
+    PluginHooks,
+    RuntimeDispatcherConfig,
+    RuntimeEventPumpMetrics,
+    RuntimeLifecycle,
+    RuntimeRouterMetrics,
+    RuntimeSchedulerKind,
+    SessionCoordinatorMetrics,
+    StreamDockApplication,
+    StreamDockBoundaryMetrics,
+    StreamDockQueueConfig,
+    StreamDockRuntime,
+    StreamDockRuntimeLifecycleError,
+    StreamDockRuntimeMetrics,
+    StreamDockShutdownConfig,
+    create_stream_dock_application,
+)
 
 __all__ = [
     "__version__",
     "Action",
+    "ActionContextMetrics",
+    "ActionFactory",
     "ActionRegistry",
-    "ActionStore",
     "ActionEvent",
     "ActionPayloadEvent",
     "ApplicationDidLaunchEvent",
@@ -173,18 +166,14 @@ __all__ = [
     "DialUpEvent",
     "DidReceiveGlobalSettingsEvent",
     "DidReceiveSettingsEvent",
-    "EVENT_REGISTRY",
-    "EventDescriptor",
-    "EventScope",
     "GetGlobalSettingsCommand",
     "GetSettingsCommand",
-    "GlobalSettingsStore",
+    "HandlerSchedulerMetrics",
     "FunctionalJsonCodec",
     "InvalidFieldError",
     "InvalidPluginLaunchArgumentsError",
     "InvalidRegistrationInfoError",
     "InboundOverflowPolicy",
-    "InboundQueueMetrics",
     "JSON_OBJECT_CODEC",
     "JsonObject",
     "JsonObjectCodec",
@@ -196,7 +185,6 @@ __all__ = [
     "KeyDownEvent",
     "KeyEvent",
     "KeyUpEvent",
-    "LifecycleService",
     "LogMessageCommand",
     "LoggingOverflowPolicy",
     "MalformedEventError",
@@ -204,13 +192,13 @@ __all__ = [
     "OutboundCommandBusClosedError",
     "OutboundCommandBusError",
     "OutboundQueueFullError",
-    "OutboundQueueMetrics",
     "OwnedJsonPayload",
     "PropertyInspectorDidAppearEvent",
     "PropertyInspectorDidDisappearEvent",
     "PropertyInspectorMessage",
     "PluginLaunchArguments",
     "PluginApplication",
+    "PluginHooks",
     "PROPERTY_INSPECTOR_CLIENT_FILENAME",
     "RegisterPluginCommand",
     "RegistrationApplicationInfo",
@@ -229,13 +217,23 @@ __all__ = [
     "ShowOkCommand",
     "StreamDockCommand",
     "StreamDockActionDependencies",
-    "StreamDockConnection",
+    "RuntimeDispatcherConfig",
+    "RuntimeEventPumpMetrics",
+    "RuntimeLifecycle",
+    "RuntimeRouterMetrics",
+    "RuntimeSchedulerKind",
+    "SessionCoordinatorMetrics",
+    "StreamDockApplication",
+    "StreamDockBoundaryMetrics",
     "StreamDockEvent",
     "StreamDockEventType",
-    "StreamDockListener",
-    "StreamDockPlugin",
+    "StreamDockQueueConfig",
     "StreamDockProtocolError",
     "StreamDockSender",
+    "StreamDockRuntime",
+    "StreamDockRuntimeLifecycleError",
+    "StreamDockRuntimeMetrics",
+    "StreamDockShutdownConfig",
     "SystemDidWakeUpEvent",
     "TitleAlignment",
     "TitleParameters",
@@ -245,12 +243,12 @@ __all__ = [
     "UnsupportedEventError",
     "ValidatedJsonObject",
     "ValidatedWireMessage",
-    "WebSocketStreamDockConnection",
     "WillAppearEvent",
     "WillDisappearEvent",
     "build_plugin_argument_parser",
     "configure_logging",
     "copy_property_inspector_client",
+    "create_stream_dock_application",
     "decode_with_codec",
     "dropped_log_records",
     "encode_with_codec",

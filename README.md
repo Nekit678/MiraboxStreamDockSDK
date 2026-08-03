@@ -89,19 +89,18 @@ behavior is verified.
 
 ```mermaid
 flowchart LR
-    App["MiraBox Stream Dock<br>Windows"] <-->|"WebSocket · JSON"| Connection["WebSocketStreamDockConnection"]
-    Connection --> Runtime["StreamDockPlugin<br>event dispatcher"]
+    App["MiraBox Stream Dock<br>Windows"] <-->|"WebSocket · JSON"| Boundary["Typed Stream Dock boundary"]
+    Boundary --> Runtime["StreamDockRuntime<br>keyed-serial dispatcher"]
     Registry["ActionRegistry<br>UUID → Action class"] --> Runtime
     Runtime --> Actions["Action instances<br>one per context"]
-    Runtime --> Services["Lifecycle services"]
     PI["Property Inspector<br>HTML / JavaScript"] <-->|"settings and messages"| App
     Client["MiraBoxPropertyInspector<br>browser client"] --> PI
 ```
 
 Stream Dock starts the packaged plugin executable with the WebSocket port,
 plugin UUID, registration event, and application metadata. `run_plugin_cli()`
-parses those arguments, while `StreamDockPlugin` registers the plugin and maps
-incoming events to the appropriate action instance.
+parses those arguments, while `create_stream_dock_application()` composes the
+typed boundary and runtime that register the plugin and route incoming events.
 
 ## Requirements
 
@@ -158,7 +157,7 @@ python -m pip install -e ".[dev]"
 ## Quick start
 
 Define dependencies shared by your action instances, register each action UUID,
-and return a configured `StreamDockPlugin` from the application factory:
+and return a configured `StreamDockApplication` from the application factory:
 
 ```python
 from __future__ import annotations
@@ -171,10 +170,10 @@ from mirabox_sdk import (
     JsonObject,
     KeyDownEvent,
     PluginLaunchArguments,
-    StreamDockPlugin,
+    StreamDockApplication,
     StreamDockSender,
-    WebSocketStreamDockConnection,
     WillAppearEvent,
+    create_stream_dock_application,
     run_plugin_cli,
 )
 
@@ -204,13 +203,11 @@ class CounterAction(Action[JsonObject, Dependencies]):
         self._render()
 
 
-def build_application(arguments: PluginLaunchArguments) -> StreamDockPlugin[Dependencies]:
-    connection = WebSocketStreamDockConnection(arguments.port)
-    return StreamDockPlugin(
+def build_application(arguments: PluginLaunchArguments) -> StreamDockApplication:
+    return create_stream_dock_application(
         arguments,
-        stream_dock=connection,
-        action_registry=registry,
-        action_dependencies=Dependencies(connection),
+        action_factory=registry,
+        action_dependencies_factory=Dependencies,
     )
 
 
@@ -398,10 +395,10 @@ behavior implemented by this SDK.
 
 | Area | Public API |
 |---|---|
-| Runtime | `Action`, `ActionRegistry`, `ActionStore`, `GlobalSettingsStore`, `StreamDockPlugin`, `LifecycleService` |
-| Connection | `WebSocketStreamDockConnection`, inbound/outbound queue metrics and errors, `StreamDockConnection`, `StreamDockSender`, `StreamDockListener` |
+| Runtime | `StreamDockApplication`, `StreamDockRuntime`, `create_stream_dock_application`, `RuntimeDispatcherConfig`, runtime metrics and ports |
+| Actions | `Action`, `ActionRegistry`, `StreamDockSender` |
 | Launch and registration | `PluginLaunchArguments`, registration dataclasses, `parse_plugin_cli_arguments`, `run_plugin_cli` |
-| Input events | Typed models plus the read-only `EVENT_REGISTRY` describing parser, scope, callback, and stateful runtime handler |
+| Input events | Typed immutable event models and `InboundOverflowPolicy` |
 | Output commands | Registration, settings, title, image, state, feedback, URL, log, and Property Inspector command models; `ValidatedWireMessage` |
 | Application data | `JsonCodec`, `FunctionalJsonCodec`, `JsonObjectCodec`, `ValidatedJsonObject`, `OwnedJsonPayload`, typed encode/decode helpers |
 | Resources | `copy_property_inspector_client`, `property_inspector_client_bytes`, `mirabox-sdk` CLI |
@@ -427,46 +424,54 @@ also exported there.
 
 By default, `parse_stream_dock_event()` preserves an unknown but structurally
 valid envelope as `UnknownStreamDockEvent`. This lets the SDK tolerate protocol
-extensions while known events remain strictly validated. The standard runtime
-delivers each preserved event once to `StreamDockPlugin.on_unhandled_event()`;
-override that no-op hook in a plugin subclass to inspect or log new protocol
-events. Unknown envelopes are not broadcast to actions because their routing
-semantics are not known yet.
+extensions while known events remain strictly validated. The runtime delivers
+each preserved event once to the `PluginHooks` object passed to
+`create_stream_dock_application()`. Unknown envelopes are not broadcast to
+actions because their routing semantics are not known yet.
 
-Known events are parsed and dispatched from the same read-only
-`EVENT_REGISTRY`. Each `EventDescriptor` records the wire name, event model,
-parser, `EventScope`, action callback, and any stateful runtime handler. Registry
-validation fails during import if a `StreamDockEventType` member is missing, and
-the test suite verifies that every callback and package-level event export
-exists.
+Protocol parsing metadata and runtime routing metadata are maintained in
+separate validated internal registries. The public API exposes typed event
+models rather than registry implementation details.
 
 ## Inbound event queue
 
-`WebSocketStreamDockConnection` parses frames in the WebSocket reader and puts
-valid events into a bounded queue. A keyed-serial worker pool invokes plugin
+The typed boundary parses frames outside application callbacks and puts valid
+events into a bounded queue. A keyed-serial worker pool invokes action
 callbacks: one action context remains strictly ordered, while different
 contexts can make progress concurrently. `willAppear`, `willDisappear`,
 broadcast, and unknown events are exclusive ordering barriers; each waits for
 earlier context callbacks and completes before later callbacks start. On normal
-connection shutdown, the queue drains before `run_forever()` returns and before
-the runtime releases actions and services.
+shutdown, the queue drains before `StreamDockApplication.run()` returns and
+before the runtime releases actions.
 
 The pool defaults to four workers and the queue defaults to 1,024 events.
 Lifecycle, settings, input, broadcast, unknown, and every other event except
 `dialRotate` are lossless by default. `dialRotate` is explicitly coalescable
 and may be discarded on overflow. Configure worker concurrency, the limit, and
-overflow behavior for discardable events when constructing the connection:
+overflow behavior for discardable events when constructing the application:
 
 ```python
-from mirabox_sdk import InboundOverflowPolicy, WebSocketStreamDockConnection
+from mirabox_sdk import (
+    InboundOverflowPolicy,
+    RuntimeDispatcherConfig,
+    StreamDockQueueConfig,
+    create_stream_dock_application,
+)
 
-connection = WebSocketStreamDockConnection(
-    arguments.port,
-    inbound_queue_limit=512,
-    inbound_worker_count=4,
-    overflow_policy=InboundOverflowPolicy.DROP_OLDEST,
+application = create_stream_dock_application(
+    arguments,
+    action_factory=registry,
+    action_dependencies_factory=Dependencies,
+    queue_config=StreamDockQueueConfig(
+        raw_inbound_limit=512,
+        inbound_event_limit=512,
+        outbound_command_limit=512,
+        raw_outbound_limit=512,
+        session_event_limit=16,
+    ),
+    runtime_config=RuntimeDispatcherConfig(worker_count=4),
+    inbound_overflow_policy=InboundOverflowPolicy.DROP_OLDEST,
     coalesce_dial_rotations=True,
-    inbound_shutdown_timeout=5.0,
 )
 ```
 
@@ -481,13 +486,11 @@ Rotation coalescing is opt-in: compatible pending `dialRotate` events for the
 same context and pressed state are combined by summing `ticks`; an intervening
 event for that context, or any broadcast/unknown event, prevents coalescing.
 
-Read `connection.inbound_queue_metrics` for an atomic
-`InboundQueueMetrics` snapshot. It reports current and peak depth, received,
-enqueued, coalesced, backpressured, dispatched, dropped, and callback-failure
-and callback-timeout counts. The default `inbound_shutdown_timeout=5.0` bounds
-the drain; pass `None` explicitly only when an unbounded wait is required. At a
-timeout, queued events are discarded and each callback still running is logged
-with its event name and context.
+Read `application.metrics()` for immutable queue, event-pump, scheduler, route,
+action, session, and transport snapshots. Runtime and boundary shutdown stages
+are bounded to five seconds by default; pass `None` explicitly only when an
+unbounded wait is required. At a timeout, pending and active work remains
+observable in metrics and metadata-only diagnostics.
 
 Python cannot safely stop a running thread. A callback that exceeds the timeout
 continues on its daemon worker until the callback itself returns, even though
@@ -496,7 +499,7 @@ cooperative cancellation where appropriate.
 
 ## Outbound command bus
 
-Every `WebSocketStreamDockConnection` owns one dedicated outbound writer.
+Every `StreamDockApplication` owns one dedicated outbound writer.
 Calling `send()` puts the typed command into a bounded FIFO queue; only that
 writer validates and serializes the command, emits its protocol log, and calls
 the WebSocket transport. Concurrent plugin threads therefore cannot interleave
@@ -514,17 +517,24 @@ Rollback-sensitive settings helpers remain synchronous.
 
 The outbound queue holds 1,024 waiting commands by default. It never silently
 drops a command when full: `send()` and `send_async()` raise
-`OutboundQueueFullError`. Configure the queue and graceful-drain timeout on the
-connection:
+`OutboundQueueFullError`. Configure its capacity together with the other
+boundary limits:
 
 ```python
-from mirabox_sdk import WebSocketStreamDockConnection
+from mirabox_sdk import StreamDockQueueConfig, create_stream_dock_application
 
-connection = WebSocketStreamDockConnection(
-    arguments.port,
-    outbound_queue_limit=512,
-    coalesce_outbound_commands=True,
-    outbound_shutdown_timeout=5.0,
+application = create_stream_dock_application(
+    arguments,
+    action_factory=registry,
+    action_dependencies_factory=Dependencies,
+    queue_config=StreamDockQueueConfig(
+        raw_inbound_limit=512,
+        inbound_event_limit=512,
+        outbound_command_limit=512,
+        raw_outbound_limit=512,
+        session_event_limit=16,
+    ),
+    coalesce_commands=True,
 )
 ```
 
@@ -536,14 +546,10 @@ distinct `CommandFuture` handles backed by the queued command's single
 completion state, and therefore observe the same final write result. The queue
 retains at most one completion state per physical entry.
 
-Read `connection.outbound_queue_metrics` for an atomic `OutboundQueueMetrics`
-snapshot. It reports current and peak depth, submissions, enqueues, coalescing,
-successful serialization and writes, queue rejections, shutdown discards, and
-serialization or transport failures. Once shutdown starts, new submissions
-raise `OutboundCommandBusClosedError`; queued commands drain before the
-WebSocket closes unless `outbound_shutdown_timeout` expires. A timed-out write
-already in progress cannot be cancelled and may still complete while its caller
-receives a shutdown error.
+Read `application.metrics().boundary` for atomic outbound queue, writer, raw
+transport, and connector snapshots. Once shutdown starts, new submissions raise
+`OutboundCommandBusClosedError`; accepted commands receive exactly one terminal
+result through the canonical `CommandFuture`.
 
 ## Concurrency contract
 
@@ -551,12 +557,11 @@ The runtime uses explicit thread ownership:
 
 | Surface | Supported caller or owner |
 |---|---|
-| `configure_logging()` and `StreamDockPlugin.run()` / `stop()` | Application lifecycle thread; configure logging before `run()`, and call `stop()` after it returns |
-| WebSocket parsing and `on_stream_dock_connected()` | WebSocket loop/reader thread |
-| `on_stream_dock_event()` and every `Action` callback | Connection-owned inbound workers; callbacks are serial per context and may overlap across contexts, while lifecycle, broadcast, and unknown barriers run exclusively |
+| `configure_logging()` and `StreamDockApplication.run()` / `stop()` | Application lifecycle thread; configure logging before `run()`; `stop()` is idempotent and may also be called concurrently |
+| WebSocket frame I/O and typed protocol parsing | Boundary-owned transport/codec workers |
+| Every `Action` callback and `PluginHooks` callback | Runtime-owned keyed workers; callbacks are serial per context and may overlap across contexts, while lifecycle, broadcast, and unknown barriers run exclusively |
 | `StreamDockSender.send()` / `send_async()` and action command helpers | Any application, service, or action-callback thread; overlapping calls are supported |
-| `WebSocketStreamDockConnection.close()` | Any application or action-callback thread; calls are idempotent and may overlap |
-| `set_listener()` | Lifecycle thread before `run_forever()` starts |
+| `StreamDockApplication.stop()` | Any application or action-callback thread; calls are idempotent and may overlap |
 
 The outbound queue establishes FIFO order when it accepts commands. Calls that
 do not overlap retain caller order; the relative order of simultaneous calls
@@ -575,12 +580,10 @@ mutating thread at a time. Use `update_global_settings()` for serialized,
 rollback-safe updates from background services; do not share a live mutable
 view between threads.
 
-Shutdown rejects new inbound events, drains the inbound dispatcher while
-outbound commands are still accepted, rejects and drains outbound commands,
-then closes the WebSocket. `StreamDockPlugin.stop()` subsequently releases
-actions and stops services in reverse startup order. A background thread that
-needs to interrupt `run()` should call `connection.close()` and leave final
-plugin cleanup to the lifecycle thread.
+Shutdown closes the typed boundary, drains owned inbound work while callback
+commands can still finish, stops the scheduler and pumps, and finally releases
+all action contexts. A background thread that needs to interrupt `run()` calls
+`application.stop()`.
 
 ## Logging
 
@@ -673,14 +676,12 @@ MiraboxStreamDockSDK/
 ├── src/mirabox_sdk/
 │   ├── action.py                      # Reusable action base class
 │   ├── action_registry.py             # Action UUID registry
+│   ├── completion.py                  # Canonical command completion contract
 │   ├── commands.py                    # Typed outbound commands
 │   ├── events.py                      # Typed inbound event models
-│   ├── inbound.py                     # Bounded inbound event dispatcher
-│   ├── outbound.py                    # Bounded single-writer command bus
 │   ├── parser.py                      # Strict wire-message parser
-│   ├── stores.py                      # Action and global-settings state stores
-│   ├── plugin.py                      # Runtime and lifecycle dispatcher
-│   ├── connection.py                  # WebSocket transport
+│   ├── runtime/                       # Stable application/runtime API
+│   ├── _next/                         # Private boundary/dispatcher implementation
 │   ├── logging_config.py              # Isolated SDK logging configuration
 │   └── property_inspector/            # Browser-side SDK resource
 ├── examples/counter_plugin/           # Complete buildable plugin

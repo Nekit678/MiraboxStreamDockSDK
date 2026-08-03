@@ -6,7 +6,7 @@ import logging
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
-from threading import Condition, Event, Thread, current_thread
+from threading import Condition, Thread, current_thread
 
 from .commands import (
     SetGlobalSettingsCommand,
@@ -16,88 +16,14 @@ from .commands import (
     SetTitleCommand,
     StreamDockCommand,
 )
+from .completion import (
+    CommandFuture,
+    OutboundCommandBusClosedError,
+    OutboundCommandBusError,
+    OutboundQueueFullError,
+)
 
 logger = logging.getLogger(__name__)
-
-
-class OutboundCommandBusError(RuntimeError):
-    """Base error raised while submitting a command to the outbound bus."""
-
-
-class OutboundQueueFullError(OutboundCommandBusError):
-    """Raised when the bounded outbound queue cannot accept another command."""
-
-
-class OutboundCommandBusClosedError(OutboundCommandBusError):
-    """Raised when a command is submitted after outbound shutdown begins."""
-
-
-class _CommandCompletionState:
-    """Completion state shared by handles for one coalesced wire command."""
-
-    __slots__ = ("completed", "error")
-
-    def __init__(self) -> None:
-        self.completed = Event()
-        self.error: Exception | None = None
-
-
-class CommandFuture:
-    """Read-only completion handle returned for an accepted outbound command.
-
-    Queue-capacity and shutdown rejections are raised by ``send_async()``
-    before a future is returned. Serialization and transport failures happen
-    on the writer thread and are re-raised by :meth:`result`.
-    """
-
-    __slots__ = ("_state",)
-
-    def __init__(self) -> None:
-        self._state = _CommandCompletionState()
-
-    def _share(self) -> CommandFuture:
-        """Return a distinct handle backed by this completion state."""
-
-        shared = type(self).__new__(type(self))
-        shared._state = self._state
-        return shared
-
-    def done(self) -> bool:
-        """Return whether serialization and transport processing has finished."""
-
-        return self._state.completed.is_set()
-
-    def wait(self, timeout: float | None = None) -> bool:
-        """Wait up to ``timeout`` seconds and return whether the command finished."""
-
-        return self._state.completed.wait(timeout)
-
-    def result(self, timeout: float | None = None) -> None:
-        """Wait for completion and re-raise any writer-side failure.
-
-        Raises:
-            TimeoutError: If the command is still pending after ``timeout``.
-            Exception: The serialization, transport, or shutdown error recorded
-                by the outbound writer.
-        """
-
-        if not self.wait(timeout):
-            raise TimeoutError("Outbound command did not complete before the timeout")
-        if self._state.error is not None:
-            raise self._state.error
-
-    def exception(self, timeout: float | None = None) -> Exception | None:
-        """Wait for completion and return the recorded failure, if any."""
-
-        if not self.wait(timeout):
-            raise TimeoutError("Outbound command did not complete before the timeout")
-        return self._state.error
-
-    def _finish(self, *, error: Exception | None = None) -> None:
-        if self._state.completed.is_set():
-            return
-        self._state.error = error
-        self._state.completed.set()
 
 
 @dataclass(frozen=True, slots=True)
@@ -379,7 +305,8 @@ class _OutboundCommandBus:
         *,
         error: Exception | None = None,
     ) -> None:
-        queued.completion._finish(error=error)
+        if not queued.completion.done():
+            queued.completion._finish(error=error)
 
     def _discard_queued_commands(
         self,

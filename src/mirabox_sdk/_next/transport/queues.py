@@ -90,9 +90,7 @@ class _BoundedTransportQueue(Generic[ItemT]):
                 self._rejected_after_shutdown += 1
                 self._reject_item(
                     item,
-                    self._closed_error_type(
-                        f"{self._queue_name} is no longer accepting items"
-                    ),
+                    self._closed_error_type(f"{self._queue_name} is no longer accepting items"),
                 )
                 return False
 
@@ -116,9 +114,7 @@ class _BoundedTransportQueue(Generic[ItemT]):
                     self._rejected_after_shutdown += 1
                     self._reject_item(
                         item,
-                        self._closed_error_type(
-                            f"{self._queue_name} is no longer accepting items"
-                        ),
+                        self._closed_error_type(f"{self._queue_name} is no longer accepting items"),
                     )
                     return False
 

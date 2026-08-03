@@ -7,7 +7,6 @@ from unittest.mock import Mock
 from mirabox_sdk import (
     DidReceiveGlobalSettingsEvent,
     FunctionalJsonCodec,
-    GlobalSettingsStore,
     JsonCodecDecodeError,
     JsonObject,
     SystemDidWakeUpEvent,
@@ -18,6 +17,7 @@ from mirabox_sdk import (
 from mirabox_sdk._next.runtime.models import DispatchOutcome
 from mirabox_sdk._next.runtime.ports import RuntimeEventDispatcher
 from mirabox_sdk._next.runtime.router import RuntimeEventRouter
+from mirabox_sdk.stores import GlobalSettingsStore
 
 from .fakes import (
     FakeDependencies,

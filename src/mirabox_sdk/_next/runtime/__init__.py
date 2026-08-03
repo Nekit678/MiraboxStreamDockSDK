@@ -1,4 +1,4 @@
-"""Pure contracts and models for the experimental runtime dispatcher.
+"""Implementation contracts and models for the runtime dispatcher.
 
 Importing this package does not construct a runtime, start worker threads, or
 connect to a Stream Dock boundary. The synchronous dispatcher components only

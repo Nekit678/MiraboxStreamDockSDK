@@ -1,4 +1,4 @@
-"""Typed messaging ports for the experimental boundary."""
+"""Typed messaging ports for the internal boundary."""
 
 from __future__ import annotations
 

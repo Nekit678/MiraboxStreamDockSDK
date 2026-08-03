@@ -8,14 +8,14 @@ from mirabox_sdk._next.runtime.models import RuntimeSchedulerKind
 
 
 class RuntimeDispatcherConfigTests(unittest.TestCase):
-    def test_defaults_describe_bounded_sequential_dispatch(self) -> None:
+    def test_defaults_describe_bounded_keyed_serial_dispatch(self) -> None:
         config = RuntimeDispatcherConfig()
 
         self.assertEqual(config.session_poll_interval, 0.05)
         self.assertEqual(config.event_poll_interval, 0.05)
-        self.assertIs(config.scheduler_kind, RuntimeSchedulerKind.SEQUENTIAL)
-        self.assertEqual(config.worker_count, 1)
-        self.assertEqual(config.scheduler_pending_limit, 1)
+        self.assertIs(config.scheduler_kind, RuntimeSchedulerKind.KEYED_SERIAL)
+        self.assertEqual(config.worker_count, 4)
+        self.assertEqual(config.scheduler_pending_limit, 64)
         self.assertEqual(config.runtime_drain_timeout, 5.0)
         self.assertEqual(config.worker_stop_timeout, 5.0)
         self.assertIsNone(config.callback_timeout)
@@ -82,7 +82,10 @@ class RuntimeDispatcherConfigTests(unittest.TestCase):
             ValueError,
             "^sequential scheduler requires worker_count == 1$",
         ):
-            RuntimeDispatcherConfig(worker_count=2)
+            RuntimeDispatcherConfig(
+                scheduler_kind=RuntimeSchedulerKind.SEQUENTIAL,
+                worker_count=2,
+            )
 
         config = RuntimeDispatcherConfig(
             scheduler_kind=RuntimeSchedulerKind.KEYED_SERIAL,

@@ -6,8 +6,8 @@ from abc import abstractmethod
 from typing import Protocol
 
 from .commands import StreamDockCommand
+from .completion import CommandFuture
 from .events import StreamDockEvent
-from .outbound import CommandFuture
 
 
 class StreamDockSender(Protocol):

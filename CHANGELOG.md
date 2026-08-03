@@ -8,20 +8,35 @@ change public APIs between minor versions.
 
 ### Added
 
-- Add an explicit experimental application factory that composes the typed
-  boundary directly with the new runtime dispatcher, plus a separate Counter
-  example opt-in and migration diagnostics while preserving both legacy paths.
+- Add the stable `mirabox_sdk.runtime` package and package-level
+  `create_stream_dock_application()` production composition factory.
+- Add public immutable runtime/boundary metrics, queue/shutdown configuration,
+  plugin hooks, global-settings methods, and a runtime migration guide.
 - Add shared legacy/experimental runtime behavioral contracts and an executable
   scheduler performance gate with throughput, callback-latency, boundedness,
   and boundary-coalescing budgets.
 - Add release gates that keep supported Python metadata aligned with CI and
-  verify the explicit experimental runtime/type distribution surface.
+  verify the stable runtime, completion, typing, wheel, and sdist surface.
 
 ### Changed
 
 - Redact callback exception messages and disconnect reasons from legacy,
   experimental-adapter, and new-runtime diagnostics while retaining event,
   context, status, and exception-type metadata.
+- Make the bounded keyed-serial scheduler the default with four workers and a
+  pending limit of 64; sequential dispatch remains explicitly selectable.
+- Unify action and boundary command completion and submission errors around one
+  canonical `CommandFuture` contract.
+- Switch the Counter example unconditionally to the typed boundary and runtime
+  dispatcher.
+
+### Removed
+
+- Remove the public `StreamDockPlugin`, `WebSocketStreamDockConnection`,
+  connection/listener runtime contracts, combined `EVENT_REGISTRY`, and legacy
+  store/queue metrics from the package-level API.
+- Remove `mirabox_sdk.experimental`, its environment switches, the transitional
+  boundary application adapter, and the future/sender compatibility adapters.
 
 ## [0.4.0] - 2026-07-28
 

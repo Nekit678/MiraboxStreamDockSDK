@@ -12,13 +12,11 @@ from mirabox_sdk import (
     JSON_OBJECT_CODEC,
     Action,
     ActionRegistry,
-    ActionStore,
     CommandFuture,
     Controller,
     Coordinates,
     DidReceiveGlobalSettingsEvent,
     GetGlobalSettingsCommand,
-    GlobalSettingsStore,
     InvalidPluginLaunchArgumentsError,
     JsonCodecEncodeError,
     JsonObject,
@@ -33,7 +31,6 @@ from mirabox_sdk import (
     SetImageCommand,
     SetStateCommand,
     SetTitleCommand,
-    StreamDockPlugin,
     StreamDockSender,
     SystemDidWakeUpEvent,
     UnknownStreamDockEvent,
@@ -47,6 +44,8 @@ from mirabox_sdk.json_types import (
     _prepare_copy_on_write_json_object,
     clone_json_object,
 )
+from mirabox_sdk.plugin import StreamDockPlugin
+from mirabox_sdk.stores import ActionStore, GlobalSettingsStore
 
 ACTION_UUID = "com.example.counter"
 REGISTRATION_INFO_JSON = (

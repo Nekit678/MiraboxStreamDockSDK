@@ -1,4 +1,4 @@
-"""Compatibility adapter for the current dependency-aware action registry."""
+"""Bind dependency-aware action registries to the runtime factory port."""
 
 from __future__ import annotations
 
@@ -10,8 +10,8 @@ from ..ports import ActionFactory, RuntimeActionCallbacks
 
 
 @runtime_checkable
-class LegacyActionRegistry(Protocol):
-    """Structural view of the current dependency-aware registry."""
+class DependencyAwareActionRegistry(Protocol):
+    """Structural view of a registry whose actions share dependencies."""
 
     def create(
         self,
@@ -22,24 +22,18 @@ class LegacyActionRegistry(Protocol):
     ) -> RuntimeActionCallbacks | None: ...
 
 
-class LegacyActionFactoryAdapter(ActionFactory):
-    """Bind application dependencies to the current four-argument registry.
-
-    The runtime-owned :class:`ActionFactory` port deliberately accepts only
-    event-derived values. The public registry still needs the application
-    dependency container as a fourth argument, so composition binds it once
-    through this adapter rather than exposing it to routing code.
-    """
+class ActionRegistryFactoryAdapter(ActionFactory):
+    """Bind application dependencies without exposing them to event routing."""
 
     __slots__ = ("_dependencies", "_registry")
 
     def __init__(
         self,
-        registry: LegacyActionRegistry,
+        registry: DependencyAwareActionRegistry,
         dependencies: StreamDockActionDependencies,
     ) -> None:
-        if not isinstance(registry, LegacyActionRegistry):
-            raise TypeError("registry must implement LegacyActionRegistry")
+        if not isinstance(registry, DependencyAwareActionRegistry):
+            raise TypeError("registry must implement DependencyAwareActionRegistry")
         if not hasattr(dependencies, "stream_dock"):
             raise TypeError("dependencies must provide stream_dock")
         self._registry = registry
@@ -51,7 +45,7 @@ class LegacyActionFactoryAdapter(ActionFactory):
         context: str,
         initial_settings: JsonObject,
     ) -> RuntimeActionCallbacks | None:
-        """Create one current :class:`Action` through the bound registry."""
+        """Create one action through the bound dependency-aware registry."""
 
         return self._registry.create(  # type: ignore[attr-defined,no-any-return]
             action_uuid,
@@ -59,6 +53,3 @@ class LegacyActionFactoryAdapter(ActionFactory):
             initial_settings,
             self._dependencies,
         )
-
-
-_LegacyActionFactoryAdapter = LegacyActionFactoryAdapter

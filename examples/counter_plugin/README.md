@@ -50,59 +50,17 @@ PYTHONPATH=examples/counter_plugin/src python -m counter_plugin \
 
 The command waits for Stream Dock protocol messages; it is not a standalone UI.
 
-## Experimental runtime opt-in
+## Production runtime
 
-The example continues to use the legacy `WebSocketStreamDockConnection` and
-`StreamDockPlugin` by default. To run this one plugin directly through the
-experimental typed boundary and the new runtime dispatcher, set
-`MIRABOX_SDK_EXPERIMENTAL_RUNTIME` to the exact value `1` before starting it:
+The example uses `create_stream_dock_application()` directly. The typed
+boundary, runtime dispatcher, keyed-serial scheduler, and bounded queues are the
+default and require no environment switch. The former experimental runtime and
+boundary variables are no longer read.
 
-```powershell
-$env:MIRABOX_SDK_EXPERIMENTAL_RUNTIME = "1"
-python -m counter_plugin `
-  -port 12345 `
-  -pluginUUID com.example.counter `
-  -registerEvent registerPlugin `
-  -info '{"application":{"language":"en","platform":"windows","platformVersion":"11","version":"2.10.179.426"},"colors":{},"devicePixelRatio":1,"devices":[],"plugin":{"uuid":"com.example.counter","version":"0.1.0"}}'
-```
-
-For the packaged executable, set the variable before launching Stream Dock so
-the plugin process inherits it. Unset the variable and restart Stream Dock to
-return to the legacy runtime. The opt-in path uses
-`create_experimental_stream_dock_application()` and does not place
-`BoundaryStreamDockConnection` between the dispatcher and boundary.
-
-The older `MIRABOX_SDK_EXPERIMENTAL_BOUNDARY=1` switch remains available during
-the migration window. It selects the typed boundary with the legacy runtime
-through `BoundaryStreamDockConnection`. If both variables are `1`, the new
-runtime opt-in takes precedence. SDK diagnostics identify which experimental
-path was selected without logging event payloads.
-
-The transitional boundary adapter was manually verified on 2026-07-28 with
-installed Stream Dock `3.10.203.0701`. The host's
-`-info.application.version` launch metadata reported the compatibility value
-`2.10.179.426`; the installed application version and the launch metadata are
-therefore recorded separately.
-The acceptance run confirmed all of the following:
-
-1. the Counter plugin registers and remains connected;
-2. adding the Counter action delivers `willAppear` and renders its title;
-3. pressing the key delivers `keyDown`, persists the count, and updates the
-   title;
-4. resetting in the Property Inspector delivers `sendToPlugin` and sends the
-   expected settings and title commands.
-
-The observed title sequence was `0 → 1 → 0`, and the Stream Dock log recorded
-`com.example.counter.sdPlugin` as connected.
-
-The new runtime-dispatcher path was manually verified on 2026-08-03 with the
-same installed Stream Dock `3.10.203.0701`. A Windows bundle built from the
-current tree was launched with a process-local runtime opt-in. The host log
-confirmed registration, the device and Property Inspector produced the same
-`0 → 1 → 0` sequence, and the profile persisted the final `count: 0`. When the
-host process ended, both plugin processes and their WebSocket connection exited
-without hanging. The original installed bundle and legacy-default Stream Dock
-launch were restored after the acceptance run.
+The runtime-dispatcher path was manually verified on 2026-08-03 with installed
+Stream Dock `3.10.203.0701`. Registration, `willAppear`, physical `keyDown`,
+`sendToPlugin`, settings/title commands, the `0 → 2 → 0` Counter sequence, and
+bounded process/WebSocket shutdown were confirmed.
 
 The fake-connector integration test additionally covers registration,
 global-settings, action, outbound-command, acknowledgement, and shutdown flows

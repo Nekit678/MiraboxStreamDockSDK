@@ -26,8 +26,6 @@ from mirabox_sdk import (
     SetTitleCommand,
     StreamDockCommand,
     StreamDockEvent,
-    StreamDockListener,
-    StreamDockPlugin,
     StreamDockSender,
     SystemDidWakeUpEvent,
     TitleAlignment,
@@ -37,11 +35,13 @@ from mirabox_sdk import (
     WillAppearEvent,
     WillDisappearEvent,
 )
-from mirabox_sdk._next.runtime.adapters import LegacyActionFactoryAdapter
+from mirabox_sdk._next.runtime.adapters import ActionRegistryFactoryAdapter
 from mirabox_sdk._next.runtime.global_settings import DefaultGlobalSettingsState
 from mirabox_sdk._next.runtime.router import RuntimeEventRouter
 from mirabox_sdk._next.runtime.session import SessionCoordinator
 from mirabox_sdk._next.transport.session import Connected
+from mirabox_sdk.plugin import StreamDockPlugin
+from mirabox_sdk.protocols import StreamDockListener
 
 _ACTION_UUID = "com.example.runtime.parity"
 _FAILURE_SECRET = "runtime-parity-secret-must-not-appear"
@@ -242,7 +242,7 @@ class _ExperimentalHarness(_RuntimeHarness):
         dependencies = _Dependencies(self._sender)
         state = DefaultGlobalSettingsState("plugin-uuid", self._sender)
         self._router = RuntimeEventRouter(
-            LegacyActionFactoryAdapter(registry, dependencies),
+            ActionRegistryFactoryAdapter(registry, dependencies),
             state,
             plugin_hooks=self._hooks,
         )

@@ -1,4 +1,4 @@
-"""Configuration models for the experimental boundary."""
+"""Configuration models for the typed boundary implementation."""
 
 from __future__ import annotations
 

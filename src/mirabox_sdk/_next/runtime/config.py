@@ -1,4 +1,4 @@
-"""Configuration models for the experimental runtime dispatcher."""
+"""Configuration models for the Stream Dock runtime dispatcher."""
 
 from __future__ import annotations
 
@@ -41,9 +41,9 @@ class RuntimeDispatcherConfig:
 
     session_poll_interval: float = 0.05
     event_poll_interval: float = 0.05
-    scheduler_kind: RuntimeSchedulerKind = RuntimeSchedulerKind.SEQUENTIAL
-    worker_count: int = 1
-    scheduler_pending_limit: int = 1
+    scheduler_kind: RuntimeSchedulerKind = RuntimeSchedulerKind.KEYED_SERIAL
+    worker_count: int = 4
+    scheduler_pending_limit: int = 64
     runtime_drain_timeout: float | None = 5.0
     worker_stop_timeout: float | None = 5.0
     callback_timeout: float | None = None

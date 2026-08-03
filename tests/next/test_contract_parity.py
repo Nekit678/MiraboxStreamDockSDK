@@ -18,10 +18,6 @@ from mirabox_sdk import (
     StreamDockCommand,
     StreamDockEvent,
     UnknownStreamDockEvent,
-    WebSocketStreamDockConnection,
-)
-from mirabox_sdk import (
-    InboundOverflowPolicy as LegacyInboundOverflowPolicy,
 )
 from mirabox_sdk._next.boundary.composition import create_stream_dock_boundary
 from mirabox_sdk._next.boundary.config import BoundaryQueueConfig, BoundaryShutdownConfig
@@ -36,6 +32,8 @@ from mirabox_sdk._next.transport.ports import (
 )
 from mirabox_sdk._next.transport.queues import TransportQueueClosedError
 from mirabox_sdk._next.transport.session import Connected, Disconnected
+from mirabox_sdk.connection import WebSocketStreamDockConnection
+from mirabox_sdk.inbound import InboundOverflowPolicy as LegacyInboundOverflowPolicy
 
 from .wire_fixtures import known_command_wire_fixtures, known_event_envelopes
 
@@ -520,10 +518,7 @@ class StreamDockBoundaryContractParityTests(unittest.TestCase):
                     harness.send_async(LogMessageCommand("queue full"))
 
                 self.assertIsNot(old_title, new_title)
-                if implementation == "legacy":
-                    self.assertIs(old_title._state, new_title._state)
-                else:
-                    self.assertIs(old_title._future, new_title._future)
+                self.assertIs(old_title._future, new_title._future)
 
                 if implementation == "legacy":
                     queued_metrics = harness.connection.outbound_queue_metrics

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import unittest
 from collections.abc import Callable
 from pathlib import Path
@@ -24,7 +23,11 @@ from mirabox_sdk import (
     RegistrationColors,
     RegistrationInfo,
     RegistrationPluginInfo,
+    RuntimeDispatcherConfig,
     SendToPluginEvent,
+    StreamDockQueueConfig,
+    StreamDockShutdownConfig,
+    create_stream_dock_application,
 )
 from mirabox_sdk._next.transport.frames import OutboundFrame
 from mirabox_sdk._next.transport.metrics import WebSocketConnectorMetrics
@@ -36,12 +39,6 @@ from mirabox_sdk._next.transport.ports import (
 )
 from mirabox_sdk._next.transport.queues import TransportQueueClosedError
 from mirabox_sdk._next.transport.session import Connected, Disconnected
-from mirabox_sdk.experimental import (
-    BoundaryQueueConfig,
-    BoundaryShutdownConfig,
-    RuntimeDispatcherConfig,
-    create_experimental_stream_dock_application,
-)
 
 EXAMPLE_ROOT = Path(__file__).resolve().parents[1]
 
@@ -232,21 +229,21 @@ class CounterActionTests(unittest.TestCase):
         self.assertEqual(wires[-1]["payload"]["title"], "0")
 
 
-class CounterExperimentalRuntimeIntegrationTests(unittest.TestCase):
+class CounterRuntimeIntegrationTests(unittest.TestCase):
     def test_registration_global_settings_actions_outbound_and_shutdown(self) -> None:
         connector_factory = _CounterConnectorFactory()
-        application = create_experimental_stream_dock_application(
+        application = create_stream_dock_application(
             _launch_arguments(),
             action_factory=ACTION_REGISTRY,
             action_dependencies_factory=ActionDependencies,
-            queue_config=BoundaryQueueConfig(
+            queue_config=StreamDockQueueConfig(
                 raw_inbound_limit=16,
                 inbound_event_limit=16,
                 outbound_command_limit=16,
                 raw_outbound_limit=16,
                 session_event_limit=16,
             ),
-            shutdown_config=BoundaryShutdownConfig(
+            shutdown_config=StreamDockShutdownConfig(
                 raw_inbound_drain_timeout=0.5,
                 inbound_event_drain_timeout=0.5,
                 outbound_command_drain_timeout=0.5,
@@ -322,6 +319,9 @@ class CounterExperimentalRuntimeIntegrationTests(unittest.TestCase):
         self.assertEqual(metrics.actions.global_settings_updates, 1)
         self.assertEqual(metrics.actions.global_settings_replays, 1)
         self.assertEqual(metrics.boundary.connector.outbound_frames_sent, 7)
+        settings = application.global_settings
+        settings["profile"] = "mutated"
+        self.assertEqual(application.global_settings, {"profile": "integration"})
 
 
 class CounterBundleTests(unittest.TestCase):
@@ -345,68 +345,16 @@ class CounterBundleTests(unittest.TestCase):
 
 
 class CounterBootstrapTests(unittest.TestCase):
-    def test_uses_legacy_connection_by_default(self) -> None:
+    def test_uses_production_runtime_by_default(self) -> None:
         arguments = Mock(port=12345)
-        connection = Mock()
         application = Mock()
 
         with (
-            patch.dict(os.environ, {}, clear=True),
             patch.object(
                 bootstrap,
-                "WebSocketStreamDockConnection",
-                return_value=connection,
-            ) as connection_factory,
-            patch.object(bootstrap, "Plugin", return_value=application) as plugin_factory,
-        ):
-            result = bootstrap.build_application(arguments)
-
-        self.assertIs(result, application)
-        connection_factory.assert_called_once_with(12345)
-        plugin_factory.assert_called_once_with(arguments, stream_dock=connection)
-
-    def test_uses_boundary_only_after_explicit_opt_in(self) -> None:
-        arguments = Mock(port=12345)
-        connection = Mock()
-        application = Mock()
-
-        with (
-            patch.dict(
-                os.environ,
-                {bootstrap.EXPERIMENTAL_BOUNDARY_ENV: "1"},
-                clear=True,
-            ),
-            patch(
-                "mirabox_sdk.experimental.create_experimental_stream_dock_connection",
-                return_value=connection,
-            ) as connection_factory,
-            patch.object(bootstrap, "Plugin", return_value=application) as plugin_factory,
-        ):
-            result = bootstrap.build_application(arguments)
-
-        self.assertIs(result, application)
-        connection_factory.assert_called_once_with(12345)
-        plugin_factory.assert_called_once_with(arguments, stream_dock=connection)
-
-    def test_new_runtime_opt_in_takes_precedence_over_boundary_adapter(self) -> None:
-        arguments = Mock(port=12345)
-        application = Mock()
-
-        with (
-            patch.dict(
-                os.environ,
-                {
-                    bootstrap.EXPERIMENTAL_RUNTIME_ENV: "1",
-                    bootstrap.EXPERIMENTAL_BOUNDARY_ENV: "1",
-                },
-                clear=True,
-            ),
-            patch(
-                "mirabox_sdk.experimental.create_experimental_stream_dock_application",
+                "create_stream_dock_application",
                 return_value=application,
             ) as application_factory,
-            patch.object(bootstrap, "WebSocketStreamDockConnection") as legacy_factory,
-            patch.object(bootstrap, "Plugin") as plugin_factory,
         ):
             result = bootstrap.build_application(arguments)
 
@@ -416,8 +364,6 @@ class CounterBootstrapTests(unittest.TestCase):
             action_factory=bootstrap.ACTION_REGISTRY,
             action_dependencies_factory=ActionDependencies,
         )
-        legacy_factory.assert_not_called()
-        plugin_factory.assert_not_called()
 
 
 if __name__ == "__main__":

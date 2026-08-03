@@ -3,18 +3,18 @@ from __future__ import annotations
 import unittest
 
 from mirabox_sdk import ActionRegistry
-from mirabox_sdk._next.runtime.adapters import LegacyActionFactoryAdapter
+from mirabox_sdk._next.runtime.adapters import ActionRegistryFactoryAdapter
 
 from .fakes import FakeDependencies, RecordingAction, RecordingCommandSink
 
 
-class LegacyActionFactoryAdapterTests(unittest.TestCase):
+class ActionRegistryFactoryAdapterTests(unittest.TestCase):
     def test_binds_dependencies_without_exposing_them_to_runtime_route(self) -> None:
         sender = RecordingCommandSink()
         dependencies = FakeDependencies(sender)
         registry: ActionRegistry[FakeDependencies] = ActionRegistry()
         registry.register("com.example.action")(RecordingAction)
-        factory = LegacyActionFactoryAdapter(registry, dependencies)
+        factory = ActionRegistryFactoryAdapter(registry, dependencies)
 
         action = factory.create("com.example.action", "button", {"count": 1})
 

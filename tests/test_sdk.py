@@ -15,7 +15,6 @@ from unittest.mock import Mock, patch
 
 import mirabox_sdk
 from mirabox_sdk import (
-    EVENT_REGISTRY,
     JSON_OBJECT_CODEC,
     Action,
     CommandFuture,
@@ -26,10 +25,8 @@ from mirabox_sdk import (
     DeviceSize,
     DialRotateEvent,
     DidReceiveGlobalSettingsEvent,
-    EventScope,
     FunctionalJsonCodec,
     GetSettingsCommand,
-    InboundOverflowPolicy,
     InvalidFieldError,
     InvalidRegistrationInfoError,
     JsonCodecDecodeError,
@@ -56,9 +53,7 @@ from mirabox_sdk import (
     SetStateCommand,
     SetTitleCommand,
     StreamDockCommand,
-    StreamDockConnection,
     StreamDockEventType,
-    StreamDockPlugin,
     TitleAlignment,
     TitleParameters,
     TitleParametersDidChangeEvent,
@@ -67,7 +62,6 @@ from mirabox_sdk import (
     UnsupportedEventError,
     ValidatedJsonObject,
     ValidatedWireMessage,
-    WebSocketStreamDockConnection,
     WillAppearEvent,
     configure_logging,
     decode_with_codec,
@@ -76,7 +70,13 @@ from mirabox_sdk import (
     parse_registration_info,
     parse_stream_dock_event,
 )
+from mirabox_sdk.connection import WebSocketStreamDockConnection
+from mirabox_sdk.events import EventScope
+from mirabox_sdk.inbound import InboundOverflowPolicy
 from mirabox_sdk.json_types import clone_json_object
+from mirabox_sdk.parser import EVENT_REGISTRY
+from mirabox_sdk.plugin import StreamDockPlugin
+from mirabox_sdk.protocols import StreamDockConnection
 
 
 @dataclass(frozen=True, slots=True)

@@ -5,7 +5,6 @@ import unittest
 from unittest.mock import patch
 
 from mirabox_sdk import (
-    EVENT_REGISTRY,
     DidReceiveGlobalSettingsEvent,
     InvalidFieldError,
     MalformedEventError,
@@ -13,23 +12,24 @@ from mirabox_sdk import (
     UnknownStreamDockEvent,
     parse_stream_dock_event,
 )
-from mirabox_sdk._next.protocol.adapters.legacy import LegacyEventParserAdapter
+from mirabox_sdk._next.protocol.adapters.event_parser import EventParserAdapter
 from mirabox_sdk._next.protocol.decoder import JsonStreamDockEventDecoder
 from mirabox_sdk._next.protocol.ports import (
     DecodedEventParser,
     StreamDockEventDecoder,
 )
+from mirabox_sdk.parser import EVENT_REGISTRY
 
 from .wire_fixtures import known_event_envelopes
 
 
 class JsonStreamDockEventDecoderTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.event_parser = LegacyEventParserAdapter()
+        self.event_parser = EventParserAdapter()
         self.decoder = JsonStreamDockEventDecoder(self.event_parser)
 
     def test_implementations_explicitly_inherit_their_ports(self) -> None:
-        self.assertIn(DecodedEventParser, LegacyEventParserAdapter.__mro__)
+        self.assertIn(DecodedEventParser, EventParserAdapter.__mro__)
         self.assertIn(StreamDockEventDecoder, JsonStreamDockEventDecoder.__mro__)
         self.assertIsInstance(self.event_parser, DecodedEventParser)
         self.assertIsInstance(self.decoder, StreamDockEventDecoder)

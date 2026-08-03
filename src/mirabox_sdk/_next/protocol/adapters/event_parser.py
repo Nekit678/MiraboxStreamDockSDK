@@ -1,4 +1,4 @@
-"""Explicit temporary adapter around the existing event parser."""
+"""Adapter from the public pure event parser to the boundary parser port."""
 
 from __future__ import annotations
 
@@ -7,12 +7,12 @@ from ....parser import parse_stream_dock_event
 from ..ports import DecodedEventParser
 
 
-class LegacyEventParserAdapter(DecodedEventParser):
-    """Adapt the existing pure event parser to the new parser port."""
+class EventParserAdapter(DecodedEventParser):
+    """Expose the canonical event parser through the boundary parser port."""
 
     __slots__ = ()
 
     def parse(self, value: object) -> StreamDockEvent:
-        """Return the existing parser's typed representation of ``value``."""
+        """Return the typed representation of one decoded event envelope."""
 
         return parse_stream_dock_event(value)

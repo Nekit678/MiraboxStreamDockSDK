@@ -39,7 +39,7 @@ from mirabox_sdk._next.messaging.ports import (
 )
 from mirabox_sdk._next.messaging.reader import EventReader
 from mirabox_sdk._next.messaging.writer import CommandWriter
-from mirabox_sdk._next.protocol.adapters.legacy import LegacyEventParserAdapter
+from mirabox_sdk._next.protocol.adapters.event_parser import EventParserAdapter
 from mirabox_sdk._next.protocol.decoder import JsonStreamDockEventDecoder
 from mirabox_sdk._next.protocol.encoder import JsonStreamDockCommandEncoder
 from mirabox_sdk._next.protocol.ports import (
@@ -292,7 +292,7 @@ class BoundaryContractTests(unittest.TestCase):
             ),
             (EventReaderWorker, EventReader, ("start", "drain", "stop", "metrics")),
             (CommandWriterWorker, CommandWriter, ("start", "drain", "stop", "metrics")),
-            (DecodedEventParser, LegacyEventParserAdapter, ("parse",)),
+            (DecodedEventParser, EventParserAdapter, ("parse",)),
             (StreamDockEventDecoder, JsonStreamDockEventDecoder, ("decode",)),
             (StreamDockCommandEncoder, JsonStreamDockCommandEncoder, ("encode",)),
             (RawInboundSource, RawInboundQueue, ("receive",)),
@@ -396,7 +396,7 @@ class PackageIsolationTests(unittest.TestCase):
             "mirabox_sdk._next.messaging.writer",
             "mirabox_sdk._next.protocol",
             "mirabox_sdk._next.protocol.adapters",
-            "mirabox_sdk._next.protocol.adapters.legacy",
+            "mirabox_sdk._next.protocol.adapters.event_parser",
             "mirabox_sdk._next.protocol.decoder",
             "mirabox_sdk._next.protocol.encoder",
             "mirabox_sdk._next.protocol.ports",
@@ -474,27 +474,7 @@ class PackageIsolationTests(unittest.TestCase):
 
         self.assertEqual(
             parser_importers,
-            {Path("protocol/adapters/legacy.py")},
-        )
-
-    def test_experimental_dispatcher_uses_port_level_source_close_errors(self) -> None:
-        imported_names = _imported_names(PROJECT_ROOT / "src" / "mirabox_sdk" / "experimental.py")
-
-        self.assertIn(
-            "mirabox_sdk._next.messaging.ports.InboundEventSourceClosedError",
-            imported_names,
-        )
-        self.assertIn(
-            "mirabox_sdk._next.transport.ports.SessionEventSourceClosedError",
-            imported_names,
-        )
-        self.assertNotIn(
-            "mirabox_sdk._next.messaging.inbound.InboundEventQueueClosedError",
-            imported_names,
-        )
-        self.assertNotIn(
-            "mirabox_sdk._next.transport.queues.TransportQueueClosedError",
-            imported_names,
+            {Path("protocol/adapters/event_parser.py")},
         )
 
     def test_ports_are_declared_in_dedicated_port_modules(self) -> None:
@@ -562,7 +542,6 @@ class PackageIsolationTests(unittest.TestCase):
             "SessionEventSource",
             "SessionEventSourceClosedError",
             "StreamDockBoundary",
-            "StreamDockBoundaryMetrics",
             "StreamDockCommandEncoder",
             "StreamDockEventDecoder",
             "TransportReceipt",

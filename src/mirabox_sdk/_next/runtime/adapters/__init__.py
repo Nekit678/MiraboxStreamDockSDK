@@ -1,8 +1,8 @@
-"""Temporary adapters between the next runtime and the supported public API."""
+"""Application composition adapters for the runtime dispatcher."""
 
-from .legacy_actions import LegacyActionFactoryAdapter, LegacyActionRegistry
+from .action_registry import ActionRegistryFactoryAdapter, DependencyAwareActionRegistry
 
 __all__ = [
-    "LegacyActionFactoryAdapter",
-    "LegacyActionRegistry",
+    "ActionRegistryFactoryAdapter",
+    "DependencyAwareActionRegistry",
 ]

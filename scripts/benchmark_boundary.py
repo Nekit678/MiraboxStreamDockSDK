@@ -29,10 +29,6 @@ from mirabox_sdk import (
     SetTitleCommand,
     StreamDockCommand,
     StreamDockEvent,
-    WebSocketStreamDockConnection,
-)
-from mirabox_sdk import (
-    InboundOverflowPolicy as LegacyInboundOverflowPolicy,
 )
 from mirabox_sdk._next.boundary.composition import create_stream_dock_boundary
 from mirabox_sdk._next.boundary.config import BoundaryQueueConfig, BoundaryShutdownConfig
@@ -46,6 +42,8 @@ from mirabox_sdk._next.transport.ports import (
 )
 from mirabox_sdk._next.transport.queues import TransportQueueClosedError
 from mirabox_sdk._next.transport.session import Connected, Disconnected
+from mirabox_sdk.connection import WebSocketStreamDockConnection
+from mirabox_sdk.inbound import InboundOverflowPolicy as LegacyInboundOverflowPolicy
 
 
 @dataclass(frozen=True, slots=True)

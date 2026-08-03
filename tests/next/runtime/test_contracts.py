@@ -235,7 +235,7 @@ class RuntimePortContractTests(unittest.TestCase):
             "mirabox_sdk._next.runtime",
             "mirabox_sdk._next.runtime.actions",
             "mirabox_sdk._next.runtime.adapters",
-            "mirabox_sdk._next.runtime.adapters.legacy_actions",
+            "mirabox_sdk._next.runtime.adapters.action_registry",
             "mirabox_sdk._next.runtime.composition",
             "mirabox_sdk._next.runtime.config",
             "mirabox_sdk._next.runtime.global_settings",

@@ -16,21 +16,17 @@ from ...commands import (
     SetTitleCommand,
     StreamDockCommand,
 )
+from ...completion import (
+    OutboundCommandBusClosedError,
+    OutboundCommandBusError,
+    OutboundQueueFullError,
+)
 from .metrics import OutboundCommandQueueMetrics
 from .models import CommandFuture, CommandSubmission
 from .ports import OutboundCommandQueueControl, OutboundCommandSink, OutboundCommandSource
 
-
-class OutboundCommandQueueError(RuntimeError):
-    """Base error for typed outbound queue submission failures."""
-
-
-class OutboundQueueFullError(OutboundCommandQueueError):
-    """Report synchronous rejection by a full command queue."""
-
-
-class OutboundCommandQueueClosedError(OutboundCommandQueueError):
-    """Report submission after typed outbound shutdown began."""
+OutboundCommandQueueError = OutboundCommandBusError
+OutboundCommandQueueClosedError = OutboundCommandBusClosedError
 
 
 @dataclass(slots=True)

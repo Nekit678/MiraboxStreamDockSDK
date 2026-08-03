@@ -1,4 +1,4 @@
-"""Composition root and typed facade for the experimental boundary."""
+"""Composition root and typed facade for the internal boundary."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from ..messaging.ports import (
 )
 from ..messaging.reader import EventReader
 from ..messaging.writer import CommandWriter
-from ..protocol.adapters.legacy import LegacyEventParserAdapter
+from ..protocol.adapters.event_parser import EventParserAdapter
 from ..protocol.decoder import JsonStreamDockEventDecoder
 from ..protocol.encoder import JsonStreamDockCommandEncoder
 from ..protocol.ports import StreamDockCommandEncoder, StreamDockEventDecoder
@@ -349,7 +349,7 @@ def create_stream_dock_boundary(
     session_events = SessionEventQueue(queue_config.session_event_limit)
 
     resolved_decoder = (
-        decoder if decoder is not None else JsonStreamDockEventDecoder(LegacyEventParserAdapter())
+        decoder if decoder is not None else JsonStreamDockEventDecoder(EventParserAdapter())
     )
     resolved_encoder = encoder if encoder is not None else JsonStreamDockCommandEncoder()
     event_reader = event_reader_factory(raw_inbound, resolved_decoder, inbound_events)

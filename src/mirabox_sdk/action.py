@@ -18,6 +18,7 @@ from .commands import (
     ShowOkCommand,
     StreamDockCommand,
 )
+from .completion import CommandFuture
 from .events import (
     ApplicationDidLaunchEvent,
     ApplicationDidTerminateEvent,
@@ -41,7 +42,6 @@ from .events import (
     WillDisappearEvent,
 )
 from .json_types import JsonObject
-from .outbound import CommandFuture
 from .protocols import StreamDockActionDependencies
 
 SettingsT = TypeVar("SettingsT")

@@ -1,4 +1,4 @@
-"""Composition root and single lifecycle owner for the next runtime."""
+"""Composition root and single lifecycle owner for the runtime dispatcher."""
 
 from __future__ import annotations
 
@@ -6,12 +6,14 @@ import logging
 from collections.abc import Callable
 from inspect import Signature, signature
 from threading import Condition, Event, Lock, Thread, current_thread
-from typing import Protocol, cast, runtime_checkable
+from typing import Protocol, TypeVar, cast, runtime_checkable
 
+from ...codecs import JsonCodec
+from ...json_types import JsonObject, clone_json_object
 from ...protocols import StreamDockActionDependencies
 from ...registration import PluginLaunchArguments
 from ..boundary.ports import StreamDockBoundary
-from .adapters import LegacyActionFactoryAdapter, LegacyActionRegistry
+from .adapters import ActionRegistryFactoryAdapter, DependencyAwareActionRegistry
 from .config import RuntimeDispatcherConfig
 from .global_settings import DefaultGlobalSettingsState
 from .keyed_scheduler import KeyedSerialHandlerScheduler
@@ -33,6 +35,8 @@ from .scheduler import SequentialHandlerScheduler
 from .session import SessionCoordinator
 
 logger = logging.getLogger(__name__)
+
+GlobalSettingsT = TypeVar("GlobalSettingsT")
 
 
 class StreamDockRuntimeLifecycleError(RuntimeError):
@@ -269,6 +273,32 @@ class ComposedStreamDockRuntime(RuntimeLifecycle):
             boundary=self._boundary.metrics(),
         )
 
+    @property
+    def global_settings(self) -> JsonObject:
+        """Return an isolated snapshot of the current plugin-wide settings."""
+
+        router = cast(RuntimeEventRouter, self._router)
+        return clone_json_object(router.global_settings.settings)
+
+    def update_global_settings(self, update: Callable[[JsonObject], None]) -> None:
+        """Persist and commit one rollback-safe global-settings transaction."""
+
+        cast(RuntimeEventRouter, self._router).global_settings.update(update)
+
+    def set_global_settings(self, settings: JsonObject) -> None:
+        """Persist raw global settings and commit after command completion."""
+
+        cast(RuntimeEventRouter, self._router).global_settings.set(settings)
+
+    def set_typed_global_settings(
+        self,
+        settings: GlobalSettingsT,
+        codec: JsonCodec[GlobalSettingsT],
+    ) -> None:
+        """Encode, persist, and commit typed plugin-wide settings."""
+
+        cast(RuntimeEventRouter, self._router).global_settings.set_typed(settings, codec)
+
     def _shutdown_is_requested(self) -> bool:
         with self._condition:
             return self._shutdown_requested
@@ -430,7 +460,7 @@ def create_stream_dock_runtime(
     launch_arguments: PluginLaunchArguments,
     *,
     boundary: StreamDockBoundary,
-    action_factory: ActionFactory | LegacyActionRegistry,
+    action_factory: ActionFactory | DependencyAwareActionRegistry,
     action_dependencies: StreamDockActionDependencies | None = None,
     plugin_hooks: PluginHooks | None = None,
     config: RuntimeDispatcherConfig | None = None,
@@ -456,8 +486,8 @@ def create_stream_dock_runtime(
             raise TypeError(
                 "action_dependencies can only be bound to a four-argument action registry"
             )
-        resolved_action_factory: ActionFactory = LegacyActionFactoryAdapter(
-            cast(LegacyActionRegistry, action_factory),
+        resolved_action_factory: ActionFactory = ActionRegistryFactoryAdapter(
+            cast(DependencyAwareActionRegistry, action_factory),
             action_dependencies,
         )
     elif _accepts_positional_arguments(create_action, 3):

@@ -465,7 +465,7 @@ class RuntimeFactoryIntegrationTests(unittest.TestCase):
         for hidden_capability in ("events", "commands", "session_events", "boundary"):
             self.assertFalse(hasattr(runtime, hidden_capability))
 
-    def test_legacy_action_registry_is_bound_to_application_dependencies(self) -> None:
+    def test_action_registry_is_bound_to_application_dependencies(self) -> None:
         registry: ActionRegistry[FakeDependencies] = ActionRegistry()
         registry.register("com.example.runtime.action")(RecordingAction)
         events = FakeInboundEventSource((will_appear_event(),))

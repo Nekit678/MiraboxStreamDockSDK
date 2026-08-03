@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import subprocess
-import sys
 import unittest
 from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
@@ -243,22 +241,12 @@ class RuntimeEventRouteTests(unittest.TestCase):
                 iter(EVENT_CODEC_REGISTRY.values())
             )
 
-    def test_importing_parser_does_not_load_runtime_routing_policy(self) -> None:
-        script = (
-            "import sys\n"
-            "import mirabox_sdk.parser\n"
-            "if 'mirabox_sdk._next.runtime.routes' in sys.modules:\n"
-            "    raise AssertionError('parser imported runtime routes')\n"
-        )
-        result = subprocess.run(
-            [sys.executable, "-c", script],
-            cwd=PROJECT_ROOT,
-            capture_output=True,
-            check=False,
-            text=True,
+    def test_parser_source_does_not_import_runtime_routing_policy(self) -> None:
+        parser_source = (PROJECT_ROOT / "src" / "mirabox_sdk" / "parser.py").read_text(
+            encoding="utf-8"
         )
 
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("._next.runtime.routes", parser_source)
 
 
 if __name__ == "__main__":

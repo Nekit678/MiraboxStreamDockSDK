@@ -89,19 +89,18 @@
 
 ```mermaid
 flowchart LR
-    App["MiraBox Stream Dock<br>Windows"] <-->|"WebSocket · JSON"| Connection["WebSocketStreamDockConnection"]
-    Connection --> Runtime["StreamDockPlugin<br>диспетчер событий"]
+    App["MiraBox Stream Dock<br>Windows"] <-->|"WebSocket · JSON"| Boundary["Типизированная граница Stream Dock"]
+    Boundary --> Runtime["StreamDockRuntime<br>keyed-serial dispatcher"]
     Registry["ActionRegistry<br>UUID → класс Action"] --> Runtime
     Runtime --> Actions["Экземпляры Action<br>по одному на контекст"]
-    Runtime --> Services["Сервисы жизненного цикла"]
     PI["Property Inspector<br>HTML / JavaScript"] <-->|"настройки и сообщения"| App
     Client["MiraBoxPropertyInspector<br>браузерный клиент"] --> PI
 ```
 
 Stream Dock запускает упакованный `.exe` плагина и передаёт WebSocket-порт, UUID
 плагина, событие регистрации и метаданные приложения. `run_plugin_cli()`
-разбирает эти аргументы, а `StreamDockPlugin` регистрирует плагин и направляет
-входящие события нужному экземпляру действия.
+разбирает эти аргументы, а `create_stream_dock_application()` собирает typed
+boundary и runtime, регистрирует плагин и направляет входящие события actions.
 
 ## Требования
 
@@ -158,7 +157,7 @@ python -m pip install -e ".[dev]"
 ## Быстрый старт
 
 Опишите зависимости, общие для экземпляров действий, зарегистрируйте каждый
-UUID и верните настроенный `StreamDockPlugin` из фабрики приложения:
+UUID и верните настроенный `StreamDockApplication` из фабрики приложения:
 
 ```python
 from __future__ import annotations
@@ -171,10 +170,10 @@ from mirabox_sdk import (
     JsonObject,
     KeyDownEvent,
     PluginLaunchArguments,
-    StreamDockPlugin,
+    StreamDockApplication,
     StreamDockSender,
-    WebSocketStreamDockConnection,
     WillAppearEvent,
+    create_stream_dock_application,
     run_plugin_cli,
 )
 
@@ -204,13 +203,11 @@ class CounterAction(Action[JsonObject, Dependencies]):
         self._render()
 
 
-def build_application(arguments: PluginLaunchArguments) -> StreamDockPlugin[Dependencies]:
-    connection = WebSocketStreamDockConnection(arguments.port)
-    return StreamDockPlugin(
+def build_application(arguments: PluginLaunchArguments) -> StreamDockApplication:
+    return create_stream_dock_application(
         arguments,
-        stream_dock=connection,
-        action_registry=registry,
-        action_dependencies=Dependencies(connection),
+        action_factory=registry,
+        action_dependencies_factory=Dependencies,
     )
 
 
@@ -400,10 +397,10 @@ wire-событие и команду с Python-моделью или вспом
 
 | Область | Публичный API |
 |---|---|
-| Среда выполнения | `Action`, `ActionRegistry`, `ActionStore`, `GlobalSettingsStore`, `StreamDockPlugin`, `LifecycleService` |
-| Соединение | `WebSocketStreamDockConnection`, метрики и ошибки входящей/исходящей очередей, `StreamDockConnection`, `StreamDockSender`, `StreamDockListener` |
+| Среда выполнения | `StreamDockApplication`, `StreamDockRuntime`, `create_stream_dock_application`, `RuntimeDispatcherConfig`, runtime metrics и ports |
+| Actions | `Action`, `ActionRegistry`, `StreamDockSender` |
 | Запуск и регистрация | `PluginLaunchArguments`, модели регистрации, `parse_plugin_cli_arguments`, `run_plugin_cli` |
-| Входящие события | Типизированные модели и read-only `EVENT_REGISTRY` с parser, scope, callback и stateful runtime handler |
+| Входящие события | Типизированные immutable-модели и `InboundOverflowPolicy` |
 | Исходящие команды | Модели регистрации, настроек, заголовка, изображения, состояния, обратной связи, URL, логов и Property Inspector; `ValidatedWireMessage` |
 | Данные приложения | `JsonCodec`, `FunctionalJsonCodec`, `JsonObjectCodec`, `ValidatedJsonObject`, `OwnedJsonPayload`, типизированные функции кодирования и декодирования |
 | Ресурсы | `copy_property_inspector_client`, `property_inspector_client_bytes`, CLI `mirabox-sdk` |
@@ -429,48 +426,56 @@ wire-событие и команду с Python-моделью или вспом
 
 По умолчанию `parse_stream_dock_event()` сохраняет неизвестный, но структурно
 корректный конверт как `UnknownStreamDockEvent`. Это позволяет SDK переживать
-расширения протокола, сохраняя строгую проверку известных событий. Стандартный
-runtime один раз передаёт каждое такое событие в
-`StreamDockPlugin.on_unhandled_event()`. Переопределите этот no-op hook в
-подклассе плагина, чтобы анализировать или логировать новые события протокола.
+расширения протокола, сохраняя строгую проверку известных событий. Runtime один
+раз передаёт каждое такое событие объекту `PluginHooks`, указанному в
+`create_stream_dock_application()`.
 Неизвестные конверты не рассылаются action-объектам, потому что их правила
 маршрутизации ещё неизвестны.
 
-Разбор и доставка известных событий используют один неизменяемый
-`EVENT_REGISTRY`. Каждый `EventDescriptor` хранит wire name, модель события,
-parser, `EventScope`, callback action-объекта и специальный runtime handler при
-необходимости. Проверка registry при импорте обнаруживает отсутствующий элемент
-`StreamDockEventType`, а тесты проверяют наличие каждого callback и публичного
-экспорта модели события.
+Protocol parsing metadata и runtime routing metadata хранятся в отдельных
+валидируемых внутренних registries. Публичный API выставляет типизированные
+модели событий, а не детали реализации registry.
 
 ## Очередь входящих событий
 
-`WebSocketStreamDockConnection` разбирает frame в потоке WebSocket reader и
-помещает валидное событие в bounded queue. Keyed-serial пул workers вызывает
-callback-и плагина: один action context остаётся строго последовательным, а
+Typed boundary разбирает frame вне application callbacks и помещает валидное
+событие в bounded queue. Keyed-serial пул workers вызывает callbacks actions:
+один action context остаётся строго последовательным, а
 разные contexts могут выполняться параллельно. `willAppear`, `willDisappear`,
 broadcast- и unknown-события служат эксклюзивными ordering barriers: каждое
 ждёт завершения предшествующих context callbacks и завершается до запуска
 последующих. При штатном завершении соединения очередь дренируется до возврата
-из `run_forever()` и до освобождения actions и services средой выполнения.
+из `StreamDockApplication.run()` и до освобождения actions средой выполнения.
 
 По умолчанию пул содержит четыре worker-а, а очередь вмещает 1024 события.
 Lifecycle-, settings-, input-, broadcast-, unknown- и все остальные события,
 кроме `dialRotate`, считаются lossless. `dialRotate` явно классифицирован как
 coalescable и может быть отброшен при переполнении. Конкурентность workers,
 лимит и overflow policy для discardable-событий задаются при создании
-соединения:
+приложения:
 
 ```python
-from mirabox_sdk import InboundOverflowPolicy, WebSocketStreamDockConnection
+from mirabox_sdk import (
+    InboundOverflowPolicy,
+    RuntimeDispatcherConfig,
+    StreamDockQueueConfig,
+    create_stream_dock_application,
+)
 
-connection = WebSocketStreamDockConnection(
-    arguments.port,
-    inbound_queue_limit=512,
-    inbound_worker_count=4,
-    overflow_policy=InboundOverflowPolicy.DROP_OLDEST,
+application = create_stream_dock_application(
+    arguments,
+    action_factory=registry,
+    action_dependencies_factory=Dependencies,
+    queue_config=StreamDockQueueConfig(
+        raw_inbound_limit=512,
+        inbound_event_limit=512,
+        outbound_command_limit=512,
+        raw_outbound_limit=512,
+        session_event_limit=16,
+    ),
+    runtime_config=RuntimeDispatcherConfig(worker_count=4),
+    inbound_overflow_policy=InboundOverflowPolicy.DROP_OLDEST,
     coalesce_dial_rotations=True,
-    inbound_shutdown_timeout=5.0,
 )
 ```
 
@@ -486,15 +491,10 @@ Coalescing rotation-событий включается явно: совмест
 событие того же context, а также broadcast или unknown event разрывает
 объединение.
 
-Свойство `connection.inbound_queue_metrics` возвращает атомарный snapshot
-`InboundQueueMetrics`: текущую и пиковую глубину, числа полученных, поставленных
-в очередь, объединённых, приостановленных backpressure, доставленных и
-отброшенных событий, а также ошибок и timeout-ов callback-ов. По умолчанию
-`inbound_shutdown_timeout=5.0` ограничивает дренирование; `None` нужно передать
-явно, если действительно требуется неограниченное ожидание. При timeout
-оставшиеся в очереди события отбрасываются, а каждый продолжающий выполняться
-callback логируется вместе с именем события и context. Метрика
-`callback_timeouts` считает такие callback-и отдельно от их ошибок.
+`application.metrics()` возвращает immutable snapshots очередей, pumps,
+scheduler-а, routing, actions, session и transport. Этапы shutdown по умолчанию
+ограничены пятью секундами; pending и active work при timeout остаются
+наблюдаемыми в метриках и metadata-only diagnostics.
 
 Python не позволяет безопасно принудительно остановить выполняющийся поток.
 Callback, превысивший timeout, продолжит работу в daemon worker-е до
@@ -504,7 +504,7 @@ Callback, превысивший timeout, продолжит работу в dae
 
 ## Исходящая шина команд
 
-Каждый `WebSocketStreamDockConnection` владеет одним отдельным outbound writer.
+Каждый `StreamDockApplication` владеет одним отдельным outbound writer.
 Вызов `send()` помещает типизированную команду в ограниченную FIFO-очередь;
 только writer валидирует и сериализует команду, записывает protocol log и
 вызывает WebSocket transport. Поэтому конкурентные потоки плагина не могут
@@ -522,17 +522,24 @@ Helpers настроек с rollback-семантикой остаются си�
 
 По умолчанию исходящая очередь вмещает 1024 ожидающие команды. При переполнении
 команды не теряются молча: `send()` и `send_async()` выбрасывают
-`OutboundQueueFullError`. Размер очереди и timeout штатного дренирования
-задаются в соединении:
+`OutboundQueueFullError`. Размер очереди задаётся вместе с остальными boundary
+limits:
 
 ```python
-from mirabox_sdk import WebSocketStreamDockConnection
+from mirabox_sdk import StreamDockQueueConfig, create_stream_dock_application
 
-connection = WebSocketStreamDockConnection(
-    arguments.port,
-    outbound_queue_limit=512,
-    coalesce_outbound_commands=True,
-    outbound_shutdown_timeout=5.0,
+application = create_stream_dock_application(
+    arguments,
+    action_factory=registry,
+    action_dependencies_factory=Dependencies,
+    queue_config=StreamDockQueueConfig(
+        raw_inbound_limit=512,
+        inbound_event_limit=512,
+        outbound_command_limit=512,
+        raw_outbound_limit=512,
+        session_event_limit=16,
+    ),
+    coalesce_commands=True,
 )
 ```
 
@@ -543,14 +550,10 @@ Coalescing включается явно. Совместимые соседни�
 были объединены, получают результат итоговой записи; каждый связанный
 `CommandFuture` завершается с тем же результатом.
 
-Свойство `connection.outbound_queue_metrics` возвращает атомарный snapshot
-`OutboundQueueMetrics`: текущую и пиковую глубину, постановку и объединение
-команд, успешную сериализацию и отправку, отказы очереди, сброс при остановке, а
-также ошибки сериализации и транспорта. После начала shutdown новые команды
-получают `OutboundCommandBusClosedError`; уже поставленные команды дренируются
-до закрытия WebSocket, если не истёк `outbound_shutdown_timeout`. Уже начатую
-запись после timeout нельзя отменить: она ещё может завершиться, хотя вызывающий
-код получит ошибку shutdown.
+`application.metrics().boundary` возвращает атомарные snapshots исходящей
+очереди, writer-а, raw transport и connector-а. После начала shutdown новые
+команды получают `OutboundCommandBusClosedError`, а каждая принятая команда —
+ровно один terminal result через канонический `CommandFuture`.
 
 ## Контракт конкурентности
 
@@ -558,12 +561,11 @@ Runtime явно распределяет владение между поток
 
 | Поверхность | Допустимый вызывающий поток или владелец |
 |---|---|
-| `configure_logging()` и `StreamDockPlugin.run()` / `stop()` | Lifecycle-поток приложения; logging настраивается до `run()`, а `stop()` вызывается после его возврата |
-| Разбор WebSocket и `on_stream_dock_connected()` | Поток WebSocket loop/reader |
-| `on_stream_dock_event()` и все callback-и `Action` | Inbound workers соединения; callback-и последовательны внутри context и могут пересекаться между contexts, а lifecycle-, broadcast- и unknown-barriers выполняются эксклюзивно |
+| `configure_logging()` и `StreamDockApplication.run()` / `stop()` | Lifecycle-поток приложения; logging настраивается до `run()`; `stop()` идемпотентен и может вызываться конкурентно |
+| WebSocket frame I/O и typed protocol parsing | Transport/codec workers boundary |
+| Все callback-и `Action` и `PluginHooks` | Keyed workers runtime; callback-и последовательны внутри context и могут пересекаться между contexts, а lifecycle-, broadcast- и unknown-barriers выполняются эксклюзивно |
 | `StreamDockSender.send()` / `send_async()` и helpers исходящих команд `Action` | Любой поток приложения, service или action callback; перекрывающиеся вызовы поддерживаются |
-| `WebSocketStreamDockConnection.close()` | Любой поток приложения или action callback; вызовы идемпотентны и могут перекрываться |
-| `set_listener()` | Lifecycle-поток до запуска `run_forever()` |
+| `StreamDockApplication.stop()` | Любой поток приложения или action callback; вызовы идемпотентны и могут перекрываться |
 
 Исходящая очередь устанавливает FIFO-порядок при принятии команд. Вызовы без
 перекрытия сохраняют порядок вызывающего потока; относительный порядок
@@ -583,12 +585,10 @@ Frozen-команды только со скалярными полями мож
 сериализованных, rollback-safe обновлений из background services используйте
 `update_global_settings()` и не делите живой mutable view между потоками.
 
-Shutdown запрещает новые входящие события, дренирует inbound dispatcher, пока
-исходящие команды ещё принимаются, затем запрещает и дренирует исходящие
-команды и закрывает WebSocket. После этого `StreamDockPlugin.stop()` освобождает
-actions и останавливает services в обратном порядке запуска. Фоновый поток,
-которому нужно прервать `run()`, должен вызвать `connection.close()`, оставив
-финальную очистку плагина lifecycle-потоку.
+Shutdown закрывает typed boundary, дренирует принятую inbound work, пока команды
+callback-ов ещё могут завершиться, останавливает scheduler и pumps, затем
+освобождает все action contexts. Фоновый поток прерывает `run()` вызовом
+`application.stop()`.
 
 ## Логирование
 
@@ -683,14 +683,12 @@ MiraboxStreamDockSDK/
 ├── src/mirabox_sdk/
 │   ├── action.py                      # Базовый класс действия
 │   ├── action_registry.py             # Реестр UUID действий
+│   ├── completion.py                  # Канонический completion contract команд
 │   ├── commands.py                    # Типизированные исходящие команды
 │   ├── events.py                      # Модели входящих событий
-│   ├── inbound.py                     # Ограниченная очередь входящих событий
-│   ├── outbound.py                    # Ограниченная single-writer шина команд
 │   ├── parser.py                      # Строгий разбор сообщений
-│   ├── stores.py                      # Хранилища actions и global settings
-│   ├── plugin.py                      # Среда выполнения и диспетчер жизненного цикла
-│   ├── connection.py                  # WebSocket-транспорт
+│   ├── runtime/                       # Стабильный application/runtime API
+│   ├── _next/                         # Приватная реализация boundary/dispatcher
 │   ├── logging_config.py              # Изолированная настройка логирования SDK
 │   └── property_inspector/            # Ресурс браузерного SDK
 ├── examples/counter_plugin/           # Полный собираемый плагин

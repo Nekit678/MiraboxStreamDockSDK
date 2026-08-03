@@ -1,4 +1,4 @@
-"""Temporary compatibility adapters for the supported legacy runtime."""
+"""Reference-only registry adapter used by legacy parity tests."""
 
 from __future__ import annotations
 

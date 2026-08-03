@@ -21,9 +21,8 @@ GlobalSettingsT = TypeVar("GlobalSettingsT")
 class GlobalSettingsState(Protocol):
     """State backend required by :class:`GlobalSettingsCoordinator`.
 
-    The supported legacy :class:`mirabox_sdk.GlobalSettingsStore` implements
-    this protocol structurally. Keeping the dependency narrow prevents the new
-    runtime package from importing legacy event-routing metadata.
+    Keeping this dependency narrow isolates routing from the concrete
+    runtime-owned state implementation.
     """
 
     @property

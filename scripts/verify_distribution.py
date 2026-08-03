@@ -8,22 +8,32 @@ import tarfile
 import zipfile
 from pathlib import Path, PurePosixPath
 
-from verify_version import verify_version
+try:
+    from .verify_version import verify_version
+except ImportError:  # pragma: no cover - direct script execution
+    from verify_version import verify_version
 
 WHEEL_REQUIRED_SUFFIXES = {
     "mirabox_sdk/__init__.py",
     "mirabox_sdk/_next/boundary/composition.py",
-    "mirabox_sdk/_next/runtime/adapters/legacy_actions.py",
+    "mirabox_sdk/_next/runtime/adapters/action_registry.py",
     "mirabox_sdk/_next/runtime/composition.py",
     "mirabox_sdk/_next/runtime/config.py",
     "mirabox_sdk/_next/runtime/keyed_scheduler.py",
     "mirabox_sdk/_next/runtime/metrics.py",
-    "mirabox_sdk/experimental.py",
-    "mirabox_sdk/inbound.py",
-    "mirabox_sdk/outbound.py",
+    "mirabox_sdk/completion.py",
     "mirabox_sdk/py.typed",
-    "mirabox_sdk/stores.py",
+    "mirabox_sdk/runtime/__init__.py",
+    "mirabox_sdk/runtime/application.py",
+    "mirabox_sdk/runtime/config.py",
+    "mirabox_sdk/runtime/metrics.py",
+    "mirabox_sdk/runtime/ports.py",
     "mirabox_sdk/property_inspector/mirabox-sdk.js",
+}
+WHEEL_FORBIDDEN_SUFFIXES = {
+    "mirabox_sdk/_next/protocol/adapters/legacy.py",
+    "mirabox_sdk/_next/runtime/adapters/legacy_actions.py",
+    "mirabox_sdk/experimental.py",
 }
 SDIST_REQUIRED_SUFFIXES = {
     "CHANGELOG.md",
@@ -33,23 +43,32 @@ SDIST_REQUIRED_SUFFIXES = {
     "README.ru.md",
     "RELEASING.md",
     "docs/PROTOCOL.md",
+    "docs/RUNTIME_MIGRATION.md",
     "docs/RUNTIME_CONTRACT_PARITY.md",
     "docs/assets/logo.svg",
     "examples/counter_plugin/com.example.counter.sdPlugin/manifest.json",
     "examples/counter_plugin/src/counter_plugin/__main__.py",
     "pyproject.toml",
     "src/mirabox_sdk/_next/boundary/composition.py",
-    "src/mirabox_sdk/_next/runtime/adapters/legacy_actions.py",
+    "src/mirabox_sdk/_next/runtime/adapters/action_registry.py",
     "src/mirabox_sdk/_next/runtime/composition.py",
     "src/mirabox_sdk/_next/runtime/config.py",
     "src/mirabox_sdk/_next/runtime/keyed_scheduler.py",
     "src/mirabox_sdk/_next/runtime/metrics.py",
-    "src/mirabox_sdk/experimental.py",
+    "src/mirabox_sdk/completion.py",
     "src/mirabox_sdk/py.typed",
-    "src/mirabox_sdk/inbound.py",
-    "src/mirabox_sdk/outbound.py",
-    "src/mirabox_sdk/stores.py",
+    "src/mirabox_sdk/runtime/__init__.py",
+    "src/mirabox_sdk/runtime/application.py",
+    "src/mirabox_sdk/runtime/config.py",
+    "src/mirabox_sdk/runtime/metrics.py",
+    "src/mirabox_sdk/runtime/ports.py",
     "src/mirabox_sdk/property_inspector/mirabox-sdk.js",
+}
+SDIST_FORBIDDEN_SUFFIXES = {
+    "examples/counter_plugin/src/counter_plugin/plugin.py",
+    "src/mirabox_sdk/_next/protocol/adapters/legacy.py",
+    "src/mirabox_sdk/_next/runtime/adapters/legacy_actions.py",
+    "src/mirabox_sdk/experimental.py",
 }
 
 
@@ -78,6 +97,11 @@ def verify_distribution(directory: Path) -> tuple[Path, Path]:
     )
     if missing_wheel:
         raise ValueError(f"Wheel is missing required files: {', '.join(missing_wheel)}")
+    forbidden_wheel = sorted(
+        suffix for suffix in WHEEL_FORBIDDEN_SUFFIXES if _has_suffix(wheel_names, suffix)
+    )
+    if forbidden_wheel:
+        raise ValueError(f"Wheel contains removed files: {', '.join(forbidden_wheel)}")
 
     with tarfile.open(source, mode="r:gz") as archive:
         source_names = {member.name for member in archive.getmembers() if member.isfile()}
@@ -86,6 +110,11 @@ def verify_distribution(directory: Path) -> tuple[Path, Path]:
     )
     if missing_source:
         raise ValueError(f"Source archive is missing required files: {', '.join(missing_source)}")
+    forbidden_source = sorted(
+        suffix for suffix in SDIST_FORBIDDEN_SUFFIXES if _has_suffix(source_names, suffix)
+    )
+    if forbidden_source:
+        raise ValueError(f"Source archive contains removed files: {', '.join(forbidden_source)}")
 
     return wheel, source
 
