@@ -43,8 +43,6 @@ SDIST_REQUIRED_SUFFIXES = {
     "README.ru.md",
     "RELEASING.md",
     "docs/PROTOCOL.md",
-    "docs/RUNTIME_MIGRATION.md",
-    "docs/RUNTIME_CONTRACT_PARITY.md",
     "docs/assets/logo.svg",
     "examples/counter_plugin/com.example.counter.sdPlugin/manifest.json",
     "examples/counter_plugin/src/counter_plugin/__main__.py",
