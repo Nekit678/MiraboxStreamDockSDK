@@ -6,7 +6,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Final
+from typing import Any, Final
 
 from ...events import (
     ActionEvent,
@@ -113,7 +113,7 @@ class RuntimeEventRegistry(Mapping[type[StreamDockEvent], RuntimeEventRoute]):
         self,
         routes: Sequence[RuntimeEventRoute],
         *,
-        action_api: type[RuntimeActionCallbacks] = RuntimeActionCallbacks,
+        action_api: type[Any] = RuntimeActionCallbacks,
     ) -> None:
         if not isinstance(action_api, type):
             raise TypeError("action_api must be a class")
@@ -154,7 +154,7 @@ class RuntimeEventRegistry(Mapping[type[StreamDockEvent], RuntimeEventRoute]):
     def _validate_route(
         route: RuntimeEventRoute,
         *,
-        action_api: type[RuntimeActionCallbacks],
+        action_api: type[Any],
     ) -> None:
         if not isinstance(route, RuntimeEventRoute):
             raise TypeError("routes must contain RuntimeEventRoute instances")

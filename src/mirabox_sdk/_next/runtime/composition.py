@@ -6,7 +6,7 @@ import logging
 from collections.abc import Callable
 from inspect import Signature, signature
 from threading import Condition, Event, Lock, Thread, current_thread
-from typing import Protocol, runtime_checkable
+from typing import Protocol, cast, runtime_checkable
 
 from ...protocols import StreamDockActionDependencies
 from ...registration import PluginLaunchArguments
@@ -451,14 +451,11 @@ def create_stream_dock_runtime(
                 "action_dependencies can only be bound to a four-argument action registry"
             )
         resolved_action_factory: ActionFactory = LegacyActionFactoryAdapter(
-            action_factory,
+            cast(LegacyActionRegistry, action_factory),
             action_dependencies,
         )
-    elif isinstance(action_factory, ActionFactory) and _accepts_positional_arguments(
-        create_action,
-        3,
-    ):
-        resolved_action_factory = action_factory
+    elif _accepts_positional_arguments(create_action, 3):
+        resolved_action_factory = cast(ActionFactory, action_factory)
     elif _accepts_positional_arguments(create_action, 4):
         raise TypeError("action_dependencies are required for the action registry")
     else:
