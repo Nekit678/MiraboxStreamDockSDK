@@ -13,6 +13,8 @@ from verify_version import verify_version
 WHEEL_REQUIRED_SUFFIXES = {
     "mirabox_sdk/__init__.py",
     "mirabox_sdk/_next/boundary/composition.py",
+    "mirabox_sdk/_next/runtime/adapters/legacy_actions.py",
+    "mirabox_sdk/_next/runtime/composition.py",
     "mirabox_sdk/experimental.py",
     "mirabox_sdk/inbound.py",
     "mirabox_sdk/outbound.py",
@@ -33,6 +35,8 @@ SDIST_REQUIRED_SUFFIXES = {
     "examples/counter_plugin/src/counter_plugin/__main__.py",
     "pyproject.toml",
     "src/mirabox_sdk/_next/boundary/composition.py",
+    "src/mirabox_sdk/_next/runtime/adapters/legacy_actions.py",
+    "src/mirabox_sdk/_next/runtime/composition.py",
     "src/mirabox_sdk/experimental.py",
     "src/mirabox_sdk/py.typed",
     "src/mirabox_sdk/inbound.py",

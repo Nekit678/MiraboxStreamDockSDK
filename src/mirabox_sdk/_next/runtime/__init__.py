@@ -12,7 +12,18 @@ from .actions import (
     RuntimeActionIdentityError,
     RuntimeEventDispatchError,
 )
-from .global_settings import GlobalSettingsCoordinator, GlobalSettingsState
+from .composition import (
+    ComposedStreamDockRuntime,
+    HandlerSchedulerFactory,
+    StreamDockRuntime,
+    StreamDockRuntimeLifecycleError,
+    create_stream_dock_runtime,
+)
+from .global_settings import (
+    DefaultGlobalSettingsState,
+    GlobalSettingsCoordinator,
+    GlobalSettingsState,
+)
 from .ports import (
     RuntimeEventDispatcher,
     RuntimeEventPumpWorker,
@@ -43,11 +54,14 @@ from .session import SessionCoordinator, SessionReadinessGate, SessionReadinessS
 __all__ = [
     "ActionEventDispatcher",
     "BroadcastDispatcher",
+    "ComposedStreamDockRuntime",
     "DefaultActionContextManager",
+    "DefaultGlobalSettingsState",
     "DispatchOrdering",
     "GlobalSettingsCoordinator",
     "GlobalSettingsState",
     "HandlerSchedulerLifecycleError",
+    "HandlerSchedulerFactory",
     "NullPluginHooks",
     "RUNTIME_EVENT_REGISTRY",
     "RuntimeActionIdentityError",
@@ -72,4 +86,7 @@ __all__ = [
     "SessionReadinessGate",
     "SessionReadinessStateError",
     "SequentialHandlerScheduler",
+    "StreamDockRuntime",
+    "StreamDockRuntimeLifecycleError",
+    "create_stream_dock_runtime",
 ]

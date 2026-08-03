@@ -183,6 +183,33 @@ class SequentialHandlerSchedulerTests(unittest.TestCase):
         self.assertEqual(scheduler.metrics().admission_backpressure, 1)
         self.assertEqual(scheduler.metrics().peak_pending, 0)
 
+    def test_active_callback_timeout_is_counted_once_per_callback(self) -> None:
+        started = Event()
+        release = Event()
+
+        def dispatch(_event: StreamDockEvent) -> DispatchResult:
+            started.set()
+            self.assertTrue(release.wait(1))
+            return DispatchResult(DispatchOutcome.HANDLED)
+
+        scheduler = _scheduler(dispatch)
+        scheduler.start()
+        worker = Thread(target=lambda: scheduler.submit(key_down_event()))
+        worker.start()
+        self.assertTrue(started.wait(1))
+
+        with self.assertLogs("mirabox_sdk._next.runtime.scheduler", level="WARNING") as logs:
+            self.assertFalse(scheduler.drain(timeout=0))
+            self.assertFalse(scheduler.drain(timeout=0))
+        self.assertEqual(scheduler.metrics().callback_timeouts, 1)
+        self.assertEqual(len(logs.output), 1)
+        self.assertIn("event_name=keyDown", logs.output[0])
+        self.assertIn("context=button", logs.output[0])
+
+        release.set()
+        worker.join(1)
+        self.assertFalse(worker.is_alive())
+
     def test_barrier_metrics_follow_runtime_route_ordering(self) -> None:
         scheduler = _scheduler(lambda _event: DispatchResult(DispatchOutcome.HANDLED))
         scheduler.start()

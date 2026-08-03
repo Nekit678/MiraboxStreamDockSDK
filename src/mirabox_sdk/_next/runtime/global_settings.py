@@ -4,11 +4,14 @@ from __future__ import annotations
 
 from abc import abstractmethod
 from collections.abc import Callable
+from threading import RLock
 from typing import Protocol, TypeVar, runtime_checkable
 
 from ...codecs import JsonCodec
+from ...commands import SetGlobalSettingsCommand
 from ...events import DidReceiveGlobalSettingsEvent
-from ...json_types import JsonObject, ValidatedJsonObject
+from ...json_types import JsonObject, ValidatedJsonObject, clone_json_object
+from ..messaging.ports import OutboundCommandSink
 from .metrics import ActionContextMetrics, _ActionContextMetricRecorder
 
 GlobalSettingsT = TypeVar("GlobalSettingsT")
@@ -132,3 +135,71 @@ class GlobalSettingsCoordinator:
         """Return the shared immutable action/runtime metric snapshot."""
 
         return self._metrics.snapshot()
+
+
+class DefaultGlobalSettingsState(GlobalSettingsState):
+    """Runtime-owned global settings state over the typed command sink."""
+
+    def __init__(self, context: str, sender: OutboundCommandSink) -> None:
+        if not isinstance(context, str) or not context.strip():
+            raise ValueError("context must be a non-empty string")
+        if not isinstance(sender, OutboundCommandSink):
+            raise TypeError("sender must implement OutboundCommandSink")
+        self._context = context
+        self._sender = sender
+        self._lock = RLock()
+        self._settings: JsonObject = {}
+        self._loaded = False
+
+    @property
+    def settings(self) -> JsonObject:
+        with self._lock:
+            return self._settings
+
+    @property
+    def loaded(self) -> bool:
+        with self._lock:
+            return self._loaded
+
+    def receive(self, settings: JsonObject) -> ValidatedJsonObject:
+        source = ValidatedJsonObject(settings)
+        with self._lock:
+            self._replace_locked(source)
+        return source
+
+    def new_event(
+        self,
+        source: ValidatedJsonObject | None = None,
+    ) -> DidReceiveGlobalSettingsEvent:
+        with self._lock:
+            resolved_source = source or ValidatedJsonObject(self._settings)
+            return DidReceiveGlobalSettingsEvent(settings=resolved_source.isolated_copy())
+
+    def update(self, update: Callable[[JsonObject], None]) -> None:
+        if not callable(update):
+            raise TypeError("update must be callable")
+        with self._lock:
+            draft = clone_json_object(self._settings)
+            update(draft)
+            self._send_and_replace_locked(SetGlobalSettingsCommand(self._context, draft))
+
+    def set(self, settings: JsonObject) -> None:
+        with self._lock:
+            self._send_and_replace_locked(SetGlobalSettingsCommand(self._context, settings))
+
+    def set_typed(
+        self,
+        settings: GlobalSettingsT,
+        codec: JsonCodec[GlobalSettingsT],
+    ) -> None:
+        with self._lock:
+            command = SetGlobalSettingsCommand.from_settings(self._context, settings, codec)
+            self._send_and_replace_locked(command)
+
+    def _send_and_replace_locked(self, command: SetGlobalSettingsCommand) -> None:
+        self._sender.send(command)
+        self._replace_locked(ValidatedJsonObject(command.settings))
+
+    def _replace_locked(self, source: ValidatedJsonObject) -> None:
+        self._settings = source.isolated_copy()
+        self._loaded = True

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from concurrent.futures import Future
 from math import isfinite
@@ -12,6 +13,8 @@ from .metrics import HandlerSchedulerMetrics
 from .models import DispatchOutcome, DispatchResult
 from .ports import DispatchCompletion, HandlerScheduler, RuntimeEventDispatcher
 from .routes import RUNTIME_EVENT_REGISTRY, DispatchOrdering
+
+logger = logging.getLogger(__name__)
 
 
 class HandlerSchedulerLifecycleError(RuntimeError):
@@ -77,6 +80,8 @@ class SequentialHandlerScheduler(HandlerScheduler):
         self._accepting = True
         self._stopped = False
         self._active_thread: Thread | None = None
+        self._active_event_name: str | None = None
+        self._active_context: str | None = None
 
         self._accepted = 0
         self._completed = 0
@@ -85,8 +90,11 @@ class SequentialHandlerScheduler(HandlerScheduler):
         self._active_contexts = 0
         self._barriers_processed = 0
         self._callback_failures = 0
+        self._callback_timeouts = 0
         self._discarded_during_shutdown = 0
         self._admission_backpressure = 0
+        self._active_token = 0
+        self._timed_out_token = 0
 
     def start(self) -> None:
         """Enter the running state; no worker thread is created."""
@@ -124,9 +132,12 @@ class SequentialHandlerScheduler(HandlerScheduler):
                 is_barrier = _is_global_barrier(event)
                 self._accepted += 1
                 self._current_active_callbacks = 1
+                self._active_token += 1
                 self._peak_active_callbacks = max(self._peak_active_callbacks, 1)
                 self._active_contexts = int(not is_barrier and isinstance(event, ActionEvent))
                 self._active_thread = current_thread()
+                self._active_event_name = event.event_name
+                self._active_context = getattr(event, "context", None)
 
             result: DispatchResult | None = None
             error: Exception | None = None
@@ -152,6 +163,8 @@ class SequentialHandlerScheduler(HandlerScheduler):
                 self._current_active_callbacks = 0
                 self._active_contexts = 0
                 self._active_thread = None
+                self._active_event_name = None
+                self._active_context = None
                 if not self._accepting:
                     self._stopped = True
                 self._condition.notify_all()
@@ -173,10 +186,20 @@ class SequentialHandlerScheduler(HandlerScheduler):
 
         timeout = _validate_timeout(timeout)
         with self._condition:
-            return self._condition.wait_for(
+            drained = self._condition.wait_for(
                 lambda: self._current_active_callbacks == 0,
                 timeout=timeout,
             )
+            if not drained and self._timed_out_token != self._active_token:
+                self._callback_timeouts += 1
+                self._timed_out_token = self._active_token
+                logger.warning(
+                    "Runtime callback did not finish before shutdown timeout; "
+                    "event_name=%s context=%s",
+                    self._active_event_name,
+                    self._active_context,
+                )
+            return drained
 
     def stop(self, *, timeout: float | None = None) -> bool:
         """Stop admission and wait unless called by the active callback."""
@@ -209,7 +232,7 @@ class SequentialHandlerScheduler(HandlerScheduler):
                 active_contexts=self._active_contexts,
                 barriers_processed=self._barriers_processed,
                 callback_failures=self._callback_failures,
-                callback_timeouts=0,
+                callback_timeouts=self._callback_timeouts,
                 discarded_during_shutdown=self._discarded_during_shutdown,
                 admission_backpressure=self._admission_backpressure,
             )
