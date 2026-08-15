@@ -11,6 +11,8 @@ from time import monotonic, sleep
 from mirabox_sdk import (
     KeyDownEvent,
     LogMessageCommand,
+    OutboundCommandBusClosedError,
+    OutboundCommandBusNotReadyError,
     StreamDockCommand,
     StreamDockEvent,
     UnknownStreamDockEvent,
@@ -81,12 +83,14 @@ class _FakeConnector(WebSocketConnector):
         *,
         consume_outbound: bool,
         startup_error: Exception | None,
+        startup_gate: Event | None = None,
     ) -> None:
         self._raw_inbound = raw_inbound
         self._raw_outbound = raw_outbound
         self._session_events = session_events
         self._consume_outbound = consume_outbound
         self._startup_error = startup_error
+        self._startup_gate = startup_gate
         self._stop_requested = Event()
         self.started = Event()
         self._lock = Lock()
@@ -99,6 +103,8 @@ class _FakeConnector(WebSocketConnector):
 
     def run_forever(self) -> None:
         self.started.set()
+        if self._startup_gate is not None and not self._startup_gate.wait(1):
+            raise TimeoutError("fake connector startup gate was not released")
         if self._startup_error is not None:
             raise self._startup_error
 
@@ -171,9 +177,11 @@ class _FakeConnectorFactory:
         *,
         consume_outbound: bool = True,
         startup_error: Exception | None = None,
+        startup_gate: Event | None = None,
     ) -> None:
         self._consume_outbound = consume_outbound
         self._startup_error = startup_error
+        self._startup_gate = startup_gate
         self.connector: _FakeConnector | None = None
 
     def __call__(
@@ -188,6 +196,7 @@ class _FakeConnectorFactory:
             session_event_sink,
             consume_outbound=self._consume_outbound,
             startup_error=self._startup_error,
+            startup_gate=self._startup_gate,
         )
         return self.connector
 
@@ -226,10 +235,12 @@ class _BoundaryHarness:
         encoder: StreamDockCommandEncoder | None = None,
         consume_outbound: bool = True,
         startup_error: Exception | None = None,
+        startup_gate: Event | None = None,
     ) -> None:
         self.factory = _FakeConnectorFactory(
             consume_outbound=consume_outbound,
             startup_error=startup_error,
+            startup_gate=startup_gate,
         )
         self.boundary = create_stream_dock_boundary(
             12345,
@@ -262,6 +273,21 @@ class _BoundaryHarness:
 
 
 class StreamDockBoundaryPipelineTests(unittest.TestCase):
+    def test_commands_fail_fast_before_writer_start_and_after_close(self) -> None:
+        harness = _BoundaryHarness()
+
+        for send in (
+            lambda: harness.boundary.commands.send(LogMessageCommand("before run")),
+            lambda: harness.boundary.commands.send_async(LogMessageCommand("before run")),
+        ):
+            with self.assertRaises(OutboundCommandBusNotReadyError):
+                send()
+        self.assertEqual(harness.boundary.metrics().outbound_commands.submitted, 0)
+
+        harness.boundary.close()
+        with self.assertRaises(OutboundCommandBusClosedError):
+            harness.boundary.commands.send_async(LogMessageCommand("after close"))
+
     def test_uses_injected_decoder_and_encoder_even_when_they_are_falsey(self) -> None:
         decoder = _FalseyDecoder()
         encoder = _FalseyEncoder()
@@ -346,6 +372,24 @@ class StreamDockBoundaryPipelineTests(unittest.TestCase):
 
 
 class StreamDockBoundaryLifecycleTests(unittest.TestCase):
+    def test_command_after_writer_start_finishes_when_connector_startup_fails(self) -> None:
+        startup_error = RuntimeError("fake connector startup failed")
+        release_startup = Event()
+        harness = _BoundaryHarness(
+            shutdown_config=_shutdown_config(0),
+            startup_error=startup_error,
+            startup_gate=release_startup,
+        )
+        harness.start()
+
+        completion = harness.boundary.commands.send_async(LogMessageCommand("queued"))
+        release_startup.set()
+        harness.join()
+
+        self.assertEqual(harness.errors, [startup_error])
+        self.assertTrue(completion.done())
+        self.assertIsNotNone(completion.exception(timeout=0))
+
     def test_close_waits_for_in_flight_handler_before_closing_outbound(self) -> None:
         harness = _BoundaryHarness(shutdown_config=_shutdown_config(1))
         harness.start()

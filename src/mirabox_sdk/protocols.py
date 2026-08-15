@@ -19,6 +19,9 @@ class StreamDockSender(Protocol):
 
         Calls from application threads may overlap. The relative FIFO order of
         overlapping calls is whichever order the command bus accepts them.
+        Before the application starts its outbound writer, this raises
+        :class:`OutboundCommandBusNotReadyError` instead of waiting for a
+        consumer that does not exist.
 
         Args:
             command: Typed command to transmit.
@@ -30,9 +33,10 @@ class StreamDockSender(Protocol):
     def send_async(self, command: StreamDockCommand) -> CommandFuture:
         """Submit one command without waiting for serialization or transport.
 
-        Queue-capacity and shutdown rejections are raised before this method
-        returns. Writer-side failures are available through the returned
-        completion handle.
+        Queue-capacity, lifecycle, and shutdown rejections are raised before
+        this method returns. Writer-side failures are available through the
+        returned completion handle. Submission before the outbound writer has
+        started raises :class:`OutboundCommandBusNotReadyError`.
 
         Args:
             command: Typed command to transmit.

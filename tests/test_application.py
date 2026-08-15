@@ -13,11 +13,20 @@ import mirabox_sdk.runtime as runtime
 from mirabox_sdk import (
     ApplicationService,
     CommandFuture,
+    LogMessageCommand,
     OutboundCommandBusClosedError,
+    OutboundCommandBusNotReadyError,
     OutboundQueueFullError,
+    PluginLaunchArguments,
+    RegistrationApplicationInfo,
+    RegistrationColors,
+    RegistrationInfo,
+    RegistrationPluginInfo,
     RuntimeDispatcherConfig,
     RuntimeSchedulerKind,
     StreamDockApplication,
+    StreamDockShutdownConfig,
+    create_stream_dock_application,
 )
 from mirabox_sdk._next.messaging.models import CommandFuture as BoundaryCommandFuture
 from mirabox_sdk._next.messaging.outbound import (
@@ -93,6 +102,70 @@ class _RecordingService:
             raise self.stop_error
 
 
+class _UnstartedConnector:
+    def __init__(self) -> None:
+        self.closed = False
+
+    def run_forever(self) -> None:
+        raise AssertionError("runtime should not reach the connector")
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _NoopActionFactory:
+    def create(self, _action: str, _context: str, _settings: object) -> None:
+        return None
+
+
+class _SenderCapturingActionRegistry:
+    def create(
+        self,
+        _action: str,
+        _context: str,
+        _settings: object,
+        _dependencies: object,
+    ) -> None:
+        return None
+
+
+class _SenderDependencies:
+    def __init__(self, stream_dock: object) -> None:
+        self.stream_dock = stream_dock
+
+
+def _launch_arguments() -> PluginLaunchArguments:
+    return PluginLaunchArguments(
+        port=12345,
+        plugin_uuid="plugin-uuid",
+        register_event="registerPlugin",
+        info=RegistrationInfo(
+            application=RegistrationApplicationInfo(
+                language="en",
+                platform="windows",
+                platform_version="11",
+                version="2.10",
+            ),
+            colors=RegistrationColors(),
+            device_pixel_ratio=1.0,
+            devices=(),
+            plugin=RegistrationPluginInfo(uuid="plugin-uuid", version="0.1.0"),
+        ),
+    )
+
+
+def _shutdown_config() -> StreamDockShutdownConfig:
+    return StreamDockShutdownConfig(
+        raw_inbound_drain_timeout=0,
+        inbound_event_drain_timeout=0,
+        outbound_command_drain_timeout=0,
+        raw_outbound_drain_timeout=0,
+        session_event_drain_timeout=0,
+        worker_stop_timeout=0,
+        connector_stop_timeout=0,
+    )
+
+
 class StableRuntimeApiTests(unittest.TestCase):
     def test_runtime_package_exports_only_stable_application_capabilities(self) -> None:
         expected = {
@@ -154,6 +227,79 @@ class StableRuntimeApiTests(unittest.TestCase):
 
 
 class ApplicationServiceLifecycleTests(unittest.TestCase):
+    def test_sender_in_service_start_fails_before_runtime_without_external_stop(self) -> None:
+        connector = _UnstartedConnector()
+        sender_holder: dict[str, object] = {}
+        start_finished = Event()
+
+        class SenderUsingService:
+            error: Exception | None = None
+
+            def start(self) -> None:
+                try:
+                    sender = sender_holder["sender"]
+                    sender.send(LogMessageCommand("before runtime"))  # type: ignore[attr-defined]
+                except Exception as exc:
+                    self.error = exc
+                    raise
+                finally:
+                    start_finished.set()
+
+            def stop(self) -> None:
+                return None
+
+        service = SenderUsingService()
+
+        def capture_sender(sender: object) -> _SenderDependencies:
+            sender_holder["sender"] = sender
+            return _SenderDependencies(sender)
+
+        application = create_stream_dock_application(
+            _launch_arguments(),
+            action_factory=_SenderCapturingActionRegistry(),
+            action_dependencies_factory=capture_sender,
+            services=(service,),
+            shutdown_config=_shutdown_config(),
+            connector_factory=lambda *_: connector,
+        )
+        errors: list[BaseException] = []
+
+        def run() -> None:
+            try:
+                application.run()
+            except BaseException as exc:
+                errors.append(exc)
+
+        thread = Thread(target=run)
+        thread.start()
+        completed_before_stop = start_finished.wait(1)
+        if not completed_before_stop:
+            application.stop()
+        thread.join(1)
+
+        self.assertTrue(completed_before_stop)
+        self.assertFalse(thread.is_alive())
+        self.assertIsInstance(service.error, OutboundCommandBusNotReadyError)
+        self.assertEqual(errors, [service.error])
+        application.stop()
+        self.assertTrue(connector.closed)
+
+    def test_global_settings_setter_fails_before_runtime_starts(self) -> None:
+        connector = _UnstartedConnector()
+        application = create_stream_dock_application(
+            _launch_arguments(),
+            action_factory=_NoopActionFactory(),
+            shutdown_config=_shutdown_config(),
+            connector_factory=lambda *_: connector,
+        )
+
+        with self.assertRaises(OutboundCommandBusNotReadyError):
+            application.set_global_settings({"theme": "dark"})
+
+        self.assertEqual(application.global_settings, {})
+        application.stop()
+        self.assertTrue(connector.closed)
+
     def test_accepts_structural_services_and_rejects_invalid_values(self) -> None:
         events: list[str] = []
         runtime_lifecycle = _RecordingRuntime(events)
@@ -340,6 +486,9 @@ class CanonicalCommandFutureTests(unittest.TestCase):
     def test_boundary_submission_errors_are_the_public_errors(self) -> None:
         self.assertIs(BoundaryQueueFullError, OutboundQueueFullError)
         self.assertIs(OutboundCommandQueueClosedError, OutboundCommandBusClosedError)
+        self.assertTrue(
+            issubclass(OutboundCommandBusNotReadyError, mirabox_sdk.OutboundCommandBusError)
+        )
 
 
 if __name__ == "__main__":

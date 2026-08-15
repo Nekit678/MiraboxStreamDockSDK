@@ -462,7 +462,11 @@ def build_application(arguments: PluginLaunchArguments) -> StreamDockApplication
 останавливаются только успешно запущенные сервисы. Cleanup пытается остановить
 каждый запущенный сервис, сохраняя исходную ошибку startup или runtime.
 `stop()` по-прежнему можно вызывать из action callback: сервисы освобождаются
-на lifecycle-потоке приложения до возврата из `run()`.
+на lifecycle-потоке приложения до возврата из `run()`. Во время
+`ApplicationService.start()` outbound writer ещё не работает: сервис не должен
+вызывать `StreamDockSender` или синхронные setters глобальных настроек. Такие
+вызовы немедленно завершаются `OutboundCommandBusNotReadyError`; Stream Dock I/O
+нужно выполнять из action callback либо после начала `run()`.
 
 ## Ошибки и неизвестные события
 
@@ -475,6 +479,7 @@ def build_application(arguments: PluginLaunchArguments) -> StreamDockApplication
 | `JsonCodecDecodeError` | Настройки или сообщения плагина не удалось декодировать. |
 | `JsonCodecEncodeError` | Кодек создал значение, которое нельзя отправить как JSON. |
 | `OutboundQueueFullError` | Ограниченная очередь исходящих команд заполнена. |
+| `OutboundCommandBusNotReadyError` | Команда отправлена до запуска outbound writer. |
 | `OutboundCommandBusClosedError` | Команда отправлена после начала shutdown исходящей шины. |
 
 По умолчанию `parse_stream_dock_event()` сохраняет неизвестный, но структурно
@@ -566,10 +571,12 @@ Callback, превысивший timeout, продолжит работу в dae
 обновления настроек сохраняют rollback-семантику.
 
 `send_async()` выполняет ту же постановку в очередь, но возвращает
-`CommandFuture` до сериализации и WebSocket I/O. Переполнение очереди и начало
-shutdown выбрасываются сразу; `future.result()` нужен только коду, которому
-важен итог отправки или отложенная ошибка writer-а. Для частого обновления
-отображения `Action.set_image_async()`, `set_title_async()` и
+`CommandFuture` до сериализации и WebSocket I/O. Переполнение очереди, попытка
+до старта и начало shutdown выбрасываются сразу; `future.result()` нужен только
+коду, которому важен итог отправки или отложенная ошибка writer-а. До запуска
+writer методом `run()` оба метода, `send()` и `send_async()`, выбрасывают
+`OutboundCommandBusNotReadyError` и не ставят команду в очередь. Для частого
+обновления отображения `Action.set_image_async()`, `set_title_async()` и
 `set_state_async()` не удерживают inbound callback при медленном writer-е.
 Helpers настроек с rollback-семантикой остаются синхронными.
 
@@ -604,9 +611,10 @@ Coalescing включается явно. Совместимые соседни�
 `CommandFuture` завершается с тем же результатом.
 
 `application.metrics().boundary` возвращает атомарные snapshots исходящей
-очереди, writer-а, raw transport и connector-а. После начала shutdown новые
-команды получают `OutboundCommandBusClosedError`, а каждая принятая команда —
-ровно один terminal result через канонический `CommandFuture`.
+очереди, writer-а, raw transport и connector-а. До старта writer новые команды
+получают `OutboundCommandBusNotReadyError`, после начала shutdown исходящей
+шины — `OutboundCommandBusClosedError`; каждая принятая команда получает ровно
+один terminal result через канонический `CommandFuture`.
 
 ## Контракт конкурентности
 
@@ -617,7 +625,7 @@ Runtime явно распределяет владение между поток
 | `configure_logging()` и `StreamDockApplication.run()` / `stop()` | Lifecycle-поток приложения; logging настраивается до `run()`; `stop()` идемпотентен и может вызываться конкурентно |
 | WebSocket frame I/O и typed protocol parsing | Transport/codec workers boundary |
 | Все callback-и `Action` и `PluginHooks` | Keyed workers runtime; callback-и последовательны внутри context и могут пересекаться между contexts, а lifecycle-, broadcast- и unknown-barriers выполняются эксклюзивно |
-| `StreamDockSender.send()` / `send_async()` и helpers исходящих команд `Action` | Любой поток приложения, service или action callback; перекрывающиеся вызовы поддерживаются |
+| `StreamDockSender.send()` / `send_async()` и helpers исходящих команд `Action` | Любой поток приложения, service или action callback после запуска outbound writer; перекрывающиеся вызовы поддерживаются |
 | `StreamDockApplication.stop()` | Любой поток приложения или action callback; вызовы идемпотентны и могут перекрываться |
 
 Исходящая очередь устанавливает FIFO-порядок при принятии команд. Вызовы без

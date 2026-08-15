@@ -460,7 +460,11 @@ stop in reverse order after it finishes. If startup fails, only services that
 started successfully are stopped. Cleanup always attempts every started
 service; a primary startup or runtime failure is preserved. `stop()` may still
 be called from an action callback: service cleanup runs on the application
-lifecycle thread before `run()` returns.
+lifecycle thread before `run()` returns. The outbound writer is not running
+during `ApplicationService.start()`: services must not call `StreamDockSender`
+or the synchronous global-settings setters there. Such calls fail immediately
+with `OutboundCommandBusNotReadyError`; perform Stream Dock I/O from action
+callbacks or another point after `run()` has started.
 
 ## Errors and unknown events
 
@@ -473,6 +477,7 @@ lifecycle thread before `run()` returns.
 | `JsonCodecDecodeError` | Plugin-owned settings or messages could not be decoded. |
 | `JsonCodecEncodeError` | A codec produced a value that cannot be sent as JSON. |
 | `OutboundQueueFullError` | The bounded outbound command queue is full. |
+| `OutboundCommandBusNotReadyError` | A command was submitted before the outbound writer started. |
 | `OutboundCommandBusClosedError` | A command was submitted after outbound shutdown began. |
 
 By default, `parse_stream_dock_event()` preserves an unknown but structurally
@@ -561,12 +566,15 @@ errors still reach the caller and state-update helpers retain their rollback
 behavior.
 
 `send_async()` performs the same queue acceptance but returns a
-`CommandFuture` before serialization or WebSocket I/O. Queue-full and
-shutdown rejections are raised immediately; call `future.result()` only when
-the eventual writer-side error or completion matters. For high-frequency
-display rendering, `Action.set_image_async()`, `set_title_async()`, and
-`set_state_async()` avoid holding an inbound callback while the writer is slow.
-Rollback-sensitive settings helpers remain synchronous.
+`CommandFuture` before serialization or WebSocket I/O. Queue-full, pre-start,
+and shutdown rejections are raised immediately; call `future.result()` only
+when the eventual writer-side error or completion matters. Before `run()` has
+started the command writer, both `send()` and `send_async()` raise
+`OutboundCommandBusNotReadyError` and do not enqueue a command. For
+high-frequency display rendering, `Action.set_image_async()`,
+`set_title_async()`, and `set_state_async()` avoid holding an inbound callback
+while the writer is slow. Rollback-sensitive settings helpers remain
+synchronous.
 
 The outbound queue holds 1,024 waiting commands by default. It never silently
 drops a command when full: `send()` and `send_async()` raise
@@ -600,9 +608,10 @@ completion state, and therefore observe the same final write result. The queue
 retains at most one completion state per physical entry.
 
 Read `application.metrics().boundary` for atomic outbound queue, writer, raw
-transport, and connector snapshots. Once shutdown starts, new submissions raise
-`OutboundCommandBusClosedError`; accepted commands receive exactly one terminal
-result through the canonical `CommandFuture`.
+transport, and connector snapshots. Before writer startup, submissions raise
+`OutboundCommandBusNotReadyError`; once outbound command shutdown starts, they
+raise `OutboundCommandBusClosedError`. Accepted commands receive exactly one
+terminal result through the canonical `CommandFuture`.
 
 ## Concurrency contract
 
@@ -613,7 +622,7 @@ The runtime uses explicit thread ownership:
 | `configure_logging()` and `StreamDockApplication.run()` / `stop()` | Application lifecycle thread; configure logging before `run()`; `stop()` is idempotent and may also be called concurrently |
 | WebSocket frame I/O and typed protocol parsing | Boundary-owned transport/codec workers |
 | Every `Action` callback and `PluginHooks` callback | Runtime-owned keyed workers; callbacks are serial per context and may overlap across contexts, while lifecycle, broadcast, and unknown barriers run exclusively |
-| `StreamDockSender.send()` / `send_async()` and action command helpers | Any application, service, or action-callback thread; overlapping calls are supported |
+| `StreamDockSender.send()` / `send_async()` and action command helpers | Any application, service, or action-callback thread after the outbound writer starts; overlapping calls are supported |
 | `StreamDockApplication.stop()` | Any application or action-callback thread; calls are idempotent and may overlap |
 
 The outbound queue establishes FIFO order when it accepts commands. Calls that

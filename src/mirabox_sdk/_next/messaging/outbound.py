@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
+from enum import Enum
 from math import isfinite
-from threading import Condition
+from threading import Condition, Lock
 from time import monotonic
 
 from ...commands import (
@@ -19,6 +20,7 @@ from ...commands import (
 from ...completion import (
     OutboundCommandBusClosedError,
     OutboundCommandBusError,
+    OutboundCommandBusNotReadyError,
     OutboundQueueFullError,
 )
 from .metrics import OutboundCommandQueueMetrics
@@ -27,6 +29,79 @@ from .ports import OutboundCommandQueueControl, OutboundCommandSink, OutboundCom
 
 OutboundCommandQueueError = OutboundCommandBusError
 OutboundCommandQueueClosedError = OutboundCommandBusClosedError
+
+
+class _CommandSinkLifecycleState(Enum):
+    CREATED = "created"
+    STARTING = "starting"
+    READY = "ready"
+    STOPPING = "stopping"
+    CLOSED = "closed"
+
+
+class WriterReadyOutboundCommandSink(OutboundCommandSink):
+    """Expose a command sink only while its writer can consume submissions."""
+
+    def __init__(self, sink: OutboundCommandSink) -> None:
+        if not isinstance(sink, OutboundCommandSink):
+            raise TypeError("sink must implement OutboundCommandSink")
+        self._sink = sink
+        self._lock = Lock()
+        self._state = _CommandSinkLifecycleState.CREATED
+
+    def send(self, command: StreamDockCommand) -> None:
+        """Submit a command and wait for its terminal result when writer-ready."""
+
+        self.send_async(command).result()
+
+    def send_async(self, command: StreamDockCommand) -> CommandFuture:
+        """Submit a command only after the boundary starts its command writer."""
+
+        if not isinstance(command, StreamDockCommand):
+            raise TypeError("command must be StreamDockCommand")
+        with self._lock:
+            state = self._state
+        if state in (
+            _CommandSinkLifecycleState.CREATED,
+            _CommandSinkLifecycleState.STARTING,
+        ):
+            raise OutboundCommandBusNotReadyError(
+                "Outbound command writer is not ready; "
+                "run the application before submitting commands"
+            )
+        if state in (
+            _CommandSinkLifecycleState.STOPPING,
+            _CommandSinkLifecycleState.CLOSED,
+        ):
+            return self._sink.send_async(command)
+        return self._sink.send_async(command)
+
+    def begin_starting(self) -> None:
+        """Mark the boundary startup phase before workers are started."""
+
+        with self._lock:
+            if self._state is _CommandSinkLifecycleState.CREATED:
+                self._state = _CommandSinkLifecycleState.STARTING
+
+    def mark_ready(self) -> None:
+        """Allow submissions after the command writer has successfully started."""
+
+        with self._lock:
+            if self._state is _CommandSinkLifecycleState.STARTING:
+                self._state = _CommandSinkLifecycleState.READY
+
+    def begin_stopping(self) -> None:
+        """Reject new submissions while boundary shutdown is in progress."""
+
+        with self._lock:
+            if self._state is not _CommandSinkLifecycleState.CLOSED:
+                self._state = _CommandSinkLifecycleState.STOPPING
+
+    def mark_closed(self) -> None:
+        """Record terminal closure after every queue has been shut down."""
+
+        with self._lock:
+            self._state = _CommandSinkLifecycleState.CLOSED
 
 
 @dataclass(slots=True)

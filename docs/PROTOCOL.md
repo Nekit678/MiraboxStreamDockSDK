@@ -133,11 +133,15 @@ so intervening commands remain ordering barriers. `send()` waits for the
 writer's result and propagates serialization and transport errors to its caller.
 
 `send()` supports overlapping calls from action callbacks and application
-services. Scalar-only frozen commands may be shared between threads. A mutable
-`OwnedJsonPayload` must have one owner at a time and must not change after any
-thread submits its command. The same single-owner rule applies to mutable COW
-event and settings views; immutable `ValidatedJsonObject` backing snapshots may
-be handed between threads.
+services after the outbound writer starts. Before the writer starts, both
+`send()` and `send_async()` fail immediately with
+`OutboundCommandBusNotReadyError` and do not queue a command. In particular,
+services must not send commands from `ApplicationService.start()`. Scalar-only
+frozen commands may be shared between threads. A mutable `OwnedJsonPayload`
+must have one owner at a time and must not change after any thread submits its
+command. The same single-owner rule applies to mutable COW event and settings
+views; immutable `ValidatedJsonObject` backing snapshots may be handed between
+threads.
 
 Per-message protocol logs are emitted only at DEBUG and contain routing metadata
 such as the event and context. Message payloads are redacted by default because

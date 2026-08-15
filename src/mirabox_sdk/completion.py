@@ -17,6 +17,10 @@ class OutboundCommandBusClosedError(OutboundCommandBusError):
     """Raised when a command is submitted after outbound shutdown begins."""
 
 
+class OutboundCommandBusNotReadyError(OutboundCommandBusError):
+    """Raised when a command is submitted before the outbound writer starts."""
+
+
 class CommandFuture:
     """Read-only completion handle for one accepted outbound command."""
 
@@ -75,5 +79,6 @@ __all__ = [
     "CommandFuture",
     "OutboundCommandBusClosedError",
     "OutboundCommandBusError",
+    "OutboundCommandBusNotReadyError",
     "OutboundQueueFullError",
 ]

@@ -92,6 +92,8 @@ change public APIs between minor versions.
 
 ### Fixed
 
+- Fail fast with `OutboundCommandBusNotReadyError` when commands or synchronous
+  global-settings setters are called before the outbound writer starts.
 - Prevent inbound overflow from discarding lifecycle, settings, broadcast,
   unknown, and other stateful events; only explicitly coalescable rotations are
   eligible for dropping, while a full lossless queue applies bounded

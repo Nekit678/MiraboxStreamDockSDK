@@ -48,6 +48,7 @@ from .completion import (
     CommandFuture,
     OutboundCommandBusClosedError,
     OutboundCommandBusError,
+    OutboundCommandBusNotReadyError,
     OutboundQueueFullError,
 )
 from .errors import (
@@ -193,6 +194,7 @@ __all__ = [
     "OpenUrlCommand",
     "OutboundCommandBusClosedError",
     "OutboundCommandBusError",
+    "OutboundCommandBusNotReadyError",
     "OutboundQueueFullError",
     "OwnedJsonPayload",
     "PropertyInspectorDidAppearEvent",

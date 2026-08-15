@@ -7,7 +7,7 @@ from collections.abc import Callable
 from threading import Event, Lock, Thread, current_thread
 
 from ..messaging.inbound import InboundEventQueue, InboundOverflowPolicy
-from ..messaging.outbound import OutboundCommandQueue
+from ..messaging.outbound import OutboundCommandQueue, WriterReadyOutboundCommandSink
 from ..messaging.ports import (
     CommandWriterWorker,
     EventReaderWorker,
@@ -60,7 +60,7 @@ class ComposedStreamDockBoundary(StreamDockBoundary):
         self,
         *,
         events: InboundEventSource,
-        commands: OutboundCommandSink,
+        commands: WriterReadyOutboundCommandSink,
         session_events: SessionEventSource,
         connector: WebSocketConnector,
         event_reader: EventReaderWorker,
@@ -132,10 +132,12 @@ class ComposedStreamDockBoundary(StreamDockBoundary):
                 self._run_started = True
                 self._lifecycle_thread = current_thread()
                 lifecycle_started = True
+                self._commands.begin_starting()
                 self._event_reader.start()
                 self._reader_started = True
                 self._command_writer.start()
                 self._writer_started = True
+                self._commands.mark_ready()
 
             self._connector.run_forever()
         finally:
@@ -174,6 +176,7 @@ class ComposedStreamDockBoundary(StreamDockBoundary):
             with self._state_lock:
                 self._closed = True
                 self._close_owner = None
+            self._commands.mark_closed()
             self._close_completed.set()
 
     def metrics(self) -> StreamDockBoundaryMetrics:
@@ -219,6 +222,7 @@ class ComposedStreamDockBoundary(StreamDockBoundary):
             config.inbound_event_drain_timeout,
         )
 
+        self._commands.begin_stopping()
         self._safe_stop_accepting(self._outbound_command_queue, "Outbound command queue")
         self._safe_drain(
             self._outbound_command_queue,
@@ -370,9 +374,10 @@ def create_stream_dock_boundary(
     else:
         connector = connector_factory(raw_inbound, raw_outbound, session_events)
 
+    commands = WriterReadyOutboundCommandSink(outbound_commands)
     return ComposedStreamDockBoundary(
         events=inbound_events,
-        commands=outbound_commands,
+        commands=commands,
         session_events=session_events,
         connector=connector,
         event_reader=event_reader,
