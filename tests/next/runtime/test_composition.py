@@ -35,6 +35,7 @@ from mirabox_sdk._next.runtime.models import (
     RuntimeSchedulerKind,
 )
 from mirabox_sdk._next.runtime.ports import RuntimeLifecycle
+from mirabox_sdk._next.runtime.session import SessionReadinessGate
 from mirabox_sdk._next.transport.session import Connected, Disconnected
 
 from .fakes import (
@@ -464,6 +465,28 @@ class RuntimeFactoryIntegrationTests(unittest.TestCase):
         self.assertIs(snapshot.boundary, boundary.metrics_snapshot)
         for hidden_capability in ("events", "commands", "session_events", "boundary"):
             self.assertFalse(hasattr(runtime, hidden_capability))
+
+    def test_factory_opens_the_supplied_session_readiness_gate(self) -> None:
+        session_events = FakeSessionEventSource((Connected(), Disconnected(1000, None)))
+        session_events.close()
+        boundary = _FakeBoundary(session_events=session_events)
+        readiness = SessionReadinessGate()
+        runtime = create_stream_dock_runtime(
+            _launch_arguments(),
+            boundary=boundary,
+            action_factory=RecordingActionFactory(boundary.commands),
+            session_readiness=readiness,
+            config=RuntimeDispatcherConfig(
+                event_poll_interval=0.005,
+                session_poll_interval=0.005,
+            ),
+        )
+
+        runtime.run_forever()
+
+        self.assertTrue(readiness.ready)
+        self.assertTrue(readiness.terminal)
+        self.assertTrue(readiness.wait(timeout=0))
 
     def test_action_registry_is_bound_to_application_dependencies(self) -> None:
         registry: ActionRegistry[FakeDependencies] = ActionRegistry()

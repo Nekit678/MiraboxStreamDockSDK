@@ -33,7 +33,7 @@ from .ports import (
 from .pumps import RuntimeEventPump, SessionEventPump
 from .router import RuntimeEventRouter
 from .scheduler import SequentialHandlerScheduler
-from .session import SessionCoordinator
+from .session import SessionCoordinator, SessionReadinessGate
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +101,7 @@ class ComposedStreamDockRuntime(RuntimeLifecycle):
         session_pump: SessionEventPumpWorker,
         router: _RuntimeRouterState,
         config: RuntimeDispatcherConfig | None = None,
+        session_readiness: SessionReadinessGate | None = None,
     ) -> None:
         if not isinstance(boundary, StreamDockBoundary):
             raise TypeError("boundary must implement StreamDockBoundary")
@@ -115,6 +116,10 @@ class ComposedStreamDockRuntime(RuntimeLifecycle):
         resolved_config = config or RuntimeDispatcherConfig()
         if not isinstance(resolved_config, RuntimeDispatcherConfig):
             raise TypeError("config must be RuntimeDispatcherConfig or None")
+        if session_readiness is not None and not isinstance(
+            session_readiness, SessionReadinessGate
+        ):
+            raise TypeError("session_readiness must be a SessionReadinessGate or None")
 
         self._boundary = boundary
         self._scheduler = scheduler
@@ -122,6 +127,7 @@ class ComposedStreamDockRuntime(RuntimeLifecycle):
         self._session_pump = session_pump
         self._router = router
         self._config = resolved_config
+        self._session_readiness = session_readiness
 
         self._condition = Condition()
         self._state = RuntimeLifecycleState.NEW
@@ -250,6 +256,7 @@ class ComposedStreamDockRuntime(RuntimeLifecycle):
 
         if close_before_run:
             self._boundary_close_complete.wait()
+            self._close_session_readiness()
             with self._condition:
                 if self._state is RuntimeLifecycleState.NEW:
                     self._state = transition_runtime_state(
@@ -358,6 +365,8 @@ class ComposedStreamDockRuntime(RuntimeLifecycle):
         session_pump_started: bool,
     ) -> None:
         self._ensure_boundary_closed(nonblocking=False)
+        if not session_pump_started:
+            self._close_session_readiness()
 
         event_drained = True
         if event_pump_started:
@@ -414,6 +423,10 @@ class ComposedStreamDockRuntime(RuntimeLifecycle):
 
         self._release_actions()
 
+    def _close_session_readiness(self) -> None:
+        if self._session_readiness is not None:
+            self._session_readiness.close()
+
     def _release_actions(self) -> None:
         try:
             actions = self._router.contexts.clear()
@@ -464,6 +477,7 @@ def create_stream_dock_runtime(
     action_factory: ActionFactory | DependencyAwareActionRegistry,
     action_dependencies: StreamDockActionDependencies | None = None,
     global_settings: GlobalSettingsCoordinator | None = None,
+    session_readiness: SessionReadinessGate | None = None,
     plugin_hooks: PluginHooks | None = None,
     config: RuntimeDispatcherConfig | None = None,
     scheduler_factory: HandlerSchedulerFactory | None = None,
@@ -538,6 +552,7 @@ def create_stream_dock_runtime(
         boundary.commands,
         register_event=launch_arguments.register_event,
         plugin_uuid=launch_arguments.plugin_uuid,
+        readiness=session_readiness,
     )
     fatal_errors = _FatalErrorRelay()
     event_pump = RuntimeEventPump(
@@ -560,6 +575,7 @@ def create_stream_dock_runtime(
         session_pump=session_pump,
         router=router,
         config=resolved_config,
+        session_readiness=coordinator.readiness,
     )
     fatal_errors.bind(runtime._on_fatal_error)
     return runtime

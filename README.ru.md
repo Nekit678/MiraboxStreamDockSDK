@@ -398,7 +398,7 @@ wire-событие и команду с Python-моделью или вспом
 
 | Область | Публичный API |
 |---|---|
-| Среда выполнения | `StreamDockApplication`, `StreamDockRuntime`, `ApplicationService`, `create_stream_dock_application`, `RuntimeDispatcherConfig`, runtime metrics и ports |
+| Среда выполнения | `StreamDockApplication`, `StreamDockRuntime`, `ApplicationContext`, `ApplicationService`, `SessionReadiness`, `create_stream_dock_application`, `RuntimeDispatcherConfig`, runtime metrics и ports |
 | Actions | `Action`, `ActionRegistry`, `StreamDockSender` |
 | Запуск и регистрация | `PluginLaunchArguments`, модели регистрации, `parse_plugin_cli_arguments`, `run_plugin_cli` |
 | Входящие события | Типизированные immutable-модели и `InboundOverflowPolicy` |
@@ -422,6 +422,9 @@ action callbacks:
 from dataclasses import dataclass
 
 from mirabox_sdk import (
+    ApplicationContext,
+    GlobalSettings,
+    LogMessageCommand,
     PluginLaunchArguments,
     StreamDockApplication,
     StreamDockSender,
@@ -440,34 +443,62 @@ class Repository:
 @dataclass(frozen=True, slots=True)
 class Dependencies:
     stream_dock: StreamDockSender
-    repository: Repository
+    global_settings: GlobalSettings
 
 
-repository = Repository()
+def build_dependencies(context: ApplicationContext) -> Dependencies:
+    return Dependencies(
+        stream_dock=context.stream_dock,
+        global_settings=context.global_settings,
+    )
+
+
+def build_repository(_context: ApplicationContext) -> Repository:
+    return Repository()
 
 
 def build_application(arguments: PluginLaunchArguments) -> StreamDockApplication:
     return create_stream_dock_application(
         arguments,
         action_factory=registry,
-        action_dependencies_factory=lambda stream_dock: Dependencies(
-            stream_dock=stream_dock,
-            repository=repository,
-        ),
-        services=(repository,),
+        action_dependencies_factory=build_dependencies,
+        service_factories=(build_repository,),
     )
 ```
+
+`ApplicationContext` immutable и является общим для всех dependency- и
+service-factory. Он передаёт каждому участнику одни и те же объекты
+`stream_dock`, `global_settings` и `session_readiness` без mutable wiring и
+импортов внутренних модулей.
 
 Сервисы запускаются в порядке объявления до подключения WebSocket runtime и
 останавливаются в обратном порядке после его завершения. При ошибке startup
 останавливаются только успешно запущенные сервисы. Cleanup пытается остановить
 каждый запущенный сервис, сохраняя исходную ошибку startup или runtime.
 `stop()` по-прежнему можно вызывать из action callback: сервисы освобождаются
-на lifecycle-потоке приложения до возврата из `run()`. Во время
-`ApplicationService.start()` outbound writer ещё не работает: сервис не должен
-вызывать `StreamDockSender` или синхронные setters глобальных настроек. Такие
-вызовы немедленно завершаются `OutboundCommandBusNotReadyError`; Stream Dock I/O
-нужно выполнять из action callback либо после начала `run()`.
+на lifecycle-потоке приложения до возврата из `run()`.
+
+`ApplicationService.start()` — только фаза запуска процесса. В ней outbound
+writer ещё не работает, поэтому сервис не должен вызывать `StreamDockSender`,
+синхронные setters глобальных настроек или блокироваться на
+`context.session_readiness.wait()`. Вызовы команд немедленно завершаются
+`OutboundCommandBusNotReadyError`. Сервису, которому нужен Stream Dock I/O,
+следует запустить собственный worker, дождаться в нём
+`context.session_readiness` и отправлять команды только если `wait()` вернул
+`True`:
+
+```python
+def run_session_work(context: ApplicationContext) -> None:
+    if context.session_readiness.wait():
+        context.stream_dock.send(LogMessageCommand("session is ready"))
+```
+
+Сигнал readiness открывается после подключения транспорта и завершения команд
+регистрации и первоначального запроса глобальных настроек. Он не ждёт первого
+ответа с настройками: для этого отдельного состояния используйте
+`context.global_settings.loaded`. Если инициализация сессии завершается ошибкой
+или сессия закрывается до readiness, `wait()` вернёт `False`; свойство `failure`
+отличает ошибку инициализации от штатного закрытия.
 
 ## Ошибки и неизвестные события
 

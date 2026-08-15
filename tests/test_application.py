@@ -7,6 +7,7 @@ import unittest
 from concurrent.futures import InvalidStateError
 from threading import Event, Thread
 from threading import enumerate as enumerate_threads
+from typing import get_type_hints
 
 import mirabox_sdk
 import mirabox_sdk.runtime as runtime
@@ -26,6 +27,7 @@ from mirabox_sdk import (
     RegistrationPluginInfo,
     RuntimeDispatcherConfig,
     RuntimeSchedulerKind,
+    SessionReadiness,
     StreamDockApplication,
     StreamDockShutdownConfig,
     create_stream_dock_application,
@@ -137,9 +139,15 @@ class _SenderDependencies:
 
 
 class _ContextDependencies:
-    def __init__(self, stream_dock: object, global_settings: GlobalSettings) -> None:
+    def __init__(
+        self,
+        stream_dock: object,
+        global_settings: GlobalSettings,
+        session_readiness: SessionReadiness,
+    ) -> None:
         self.stream_dock = stream_dock
         self.global_settings = global_settings
+        self.session_readiness = session_readiness
 
 
 def _launch_arguments() -> PluginLaunchArguments:
@@ -192,6 +200,7 @@ class StableRuntimeApiTests(unittest.TestCase):
             "RuntimeRouterMetrics",
             "RuntimeSchedulerKind",
             "SessionCoordinatorMetrics",
+            "SessionReadiness",
             "StreamDockApplication",
             "StreamDockBoundaryMetrics",
             "StreamDockQueueConfig",
@@ -206,6 +215,10 @@ class StableRuntimeApiTests(unittest.TestCase):
         self.assertEqual(set(runtime.__all__), expected)
         self.assertTrue(all(hasattr(runtime, name) for name in expected))
         self.assertTrue(expected.issubset(mirabox_sdk.__all__))
+        self.assertIs(
+            get_type_hints(ApplicationContext)["session_readiness"],
+            SessionReadiness,
+        )
 
     def test_legacy_and_experimental_runtime_surfaces_are_not_public(self) -> None:
         removed = {
@@ -312,7 +325,7 @@ class ApplicationServiceLifecycleTests(unittest.TestCase):
         application.stop()
         self.assertTrue(connector.closed)
 
-    def test_context_factories_receive_the_runtime_owned_global_settings_facade(self) -> None:
+    def test_context_factories_receive_shared_runtime_dependencies(self) -> None:
         connector = _UnstartedConnector()
         dependencies_holder: dict[str, _ContextDependencies] = {}
         service_contexts: list[ApplicationContext] = []
@@ -322,6 +335,7 @@ class ApplicationServiceLifecycleTests(unittest.TestCase):
             dependencies = _ContextDependencies(
                 context.stream_dock,
                 context.global_settings,
+                context.session_readiness,
             )
             dependencies_holder["value"] = dependencies
             return dependencies
@@ -351,9 +365,17 @@ class ApplicationServiceLifecycleTests(unittest.TestCase):
             dependencies_holder["value"].stream_dock,
             service_contexts[0].stream_dock,
         )
+        self.assertIsInstance(service_contexts[0].session_readiness, SessionReadiness)
+        self.assertIs(
+            service_contexts[0].session_readiness,
+            dependencies_holder["value"].session_readiness,
+        )
+        self.assertFalse(service_contexts[0].session_readiness.ready)
+        self.assertFalse(service_contexts[0].session_readiness.terminal)
         self.assertEqual(global_settings.snapshot(), {})
 
         application.stop()
+        self.assertTrue(service_contexts[0].session_readiness.terminal)
 
     def test_accepts_structural_services_and_rejects_invalid_values(self) -> None:
         events: list[str] = []

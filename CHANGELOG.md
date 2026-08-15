@@ -17,6 +17,8 @@ change public APIs between minor versions.
 - Add the runtime-owned `GlobalSettings` facade, `ApplicationContext`, and
   context-aware dependency/service factories so application collaborators share
   one rollback-safe global settings store.
+- Add `ApplicationContext.session_readiness` so service workers can wait for
+  completed Stream Dock session initialization without blocking process start.
 - Add shared legacy/experimental runtime behavioral contracts and an executable
   scheduler performance gate with throughput, callback-latency, boundedness,
   and boundary-coalescing budgets.

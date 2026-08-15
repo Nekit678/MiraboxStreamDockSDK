@@ -397,7 +397,7 @@ behavior implemented by this SDK.
 
 | Area | Public API |
 |---|---|
-| Runtime | `StreamDockApplication`, `StreamDockRuntime`, `ApplicationService`, `create_stream_dock_application`, `RuntimeDispatcherConfig`, runtime metrics and ports |
+| Runtime | `StreamDockApplication`, `StreamDockRuntime`, `ApplicationContext`, `ApplicationService`, `SessionReadiness`, `create_stream_dock_application`, `RuntimeDispatcherConfig`, runtime metrics and ports |
 | Actions | `Action`, `ActionRegistry`, `StreamDockSender` |
 | Launch and registration | `PluginLaunchArguments`, registration dataclasses, `parse_plugin_cli_arguments`, `run_plugin_cli` |
 | Input events | Typed immutable event models and `InboundOverflowPolicy` |
@@ -421,6 +421,9 @@ by action callbacks:
 from dataclasses import dataclass
 
 from mirabox_sdk import (
+    ApplicationContext,
+    GlobalSettings,
+    LogMessageCommand,
     PluginLaunchArguments,
     StreamDockApplication,
     StreamDockSender,
@@ -439,34 +442,60 @@ class Repository:
 @dataclass(frozen=True, slots=True)
 class Dependencies:
     stream_dock: StreamDockSender
-    repository: Repository
+    global_settings: GlobalSettings
 
 
-repository = Repository()
+def build_dependencies(context: ApplicationContext) -> Dependencies:
+    return Dependencies(
+        stream_dock=context.stream_dock,
+        global_settings=context.global_settings,
+    )
+
+
+def build_repository(_context: ApplicationContext) -> Repository:
+    return Repository()
 
 
 def build_application(arguments: PluginLaunchArguments) -> StreamDockApplication:
     return create_stream_dock_application(
         arguments,
         action_factory=registry,
-        action_dependencies_factory=lambda stream_dock: Dependencies(
-            stream_dock=stream_dock,
-            repository=repository,
-        ),
-        services=(repository,),
+        action_dependencies_factory=build_dependencies,
+        service_factories=(build_repository,),
     )
 ```
+
+`ApplicationContext` is immutable and shared by all dependency and service
+factories. It provides the same `stream_dock`, `global_settings`, and
+`session_readiness` objects to each collaborator, without mutable wiring or
+internal imports.
 
 Services start in declaration order before the WebSocket runtime connects and
 stop in reverse order after it finishes. If startup fails, only services that
 started successfully are stopped. Cleanup always attempts every started
 service; a primary startup or runtime failure is preserved. `stop()` may still
 be called from an action callback: service cleanup runs on the application
-lifecycle thread before `run()` returns. The outbound writer is not running
-during `ApplicationService.start()`: services must not call `StreamDockSender`
-or the synchronous global-settings setters there. Such calls fail immediately
-with `OutboundCommandBusNotReadyError`; perform Stream Dock I/O from action
-callbacks or another point after `run()` has started.
+lifecycle thread before `run()` returns.
+
+`ApplicationService.start()` is a process-start phase only. The outbound writer
+is not running there, so services must not call `StreamDockSender`, synchronous
+global-settings setters, or block on `context.session_readiness.wait()`. Those
+command calls fail immediately with `OutboundCommandBusNotReadyError`. A service
+that needs Stream Dock I/O should start its own worker, have that worker wait on
+`context.session_readiness`, and send only when `wait()` returns `True`:
+
+```python
+def run_session_work(context: ApplicationContext) -> None:
+    if context.session_readiness.wait():
+        context.stream_dock.send(LogMessageCommand("session is ready"))
+```
+
+The readiness signal opens after the transport connects and the registration
+and initial global-settings-request commands complete. It does not wait for the
+first global-settings response; use `context.global_settings.loaded` for that
+separate state. If session initialization fails or ends before readiness,
+`wait()` returns `False`; inspect `failure` to distinguish an initialization
+error from normal closure.
 
 ## Errors and unknown events
 

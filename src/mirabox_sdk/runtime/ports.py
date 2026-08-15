@@ -11,6 +11,45 @@ from ..protocols import StreamDockSender
 
 
 @runtime_checkable
+class SessionReadiness(Protocol):
+    """Read-only signal for the one-time Stream Dock session initialization.
+
+    A session becomes ready after the transport is connected, the registration
+    command and initial global-settings request have completed, and the
+    outbound writer can service commands. ``wait()`` must not be called from
+    :meth:`ApplicationService.start`, because that method runs before the
+    runtime starts the session. Services can wait from work they start there.
+    """
+
+    @property
+    @abstractmethod
+    def ready(self) -> bool:
+        """Return whether mandatory session initialization succeeded."""
+
+        ...
+
+    @property
+    @abstractmethod
+    def terminal(self) -> bool:
+        """Return whether the session can no longer become ready."""
+
+        ...
+
+    @property
+    @abstractmethod
+    def failure(self) -> Exception | None:
+        """Return the fatal initialization failure, when one occurred."""
+
+        ...
+
+    @abstractmethod
+    def wait(self, timeout: float | None = None) -> bool:
+        """Wait for readiness or terminal closure and return readiness state."""
+
+        ...
+
+
+@runtime_checkable
 class ApplicationService(Protocol):
     """Synchronous resource owned by one Stream Dock application.
 
@@ -38,11 +77,13 @@ class ApplicationContext:
 
     The context is created before action-dependency and service factories run.
     Its :attr:`global_settings` object is the same runtime-owned facade exposed
-    by :class:`StreamDockApplication`.
+    by :class:`StreamDockApplication`. ``session_readiness`` is one shared
+    read-only signal for work that requires a connected, initialized session.
     """
 
     stream_dock: StreamDockSender
     global_settings: GlobalSettings
+    session_readiness: SessionReadiness
 
 
 ApplicationServiceFactory: TypeAlias = Callable[[ApplicationContext], ApplicationService]
@@ -56,5 +97,6 @@ __all__ = [
     "GlobalSettings",
     "PluginHooks",
     "RuntimeLifecycle",
+    "SessionReadiness",
     "StreamDockSender",
 ]

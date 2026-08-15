@@ -24,6 +24,7 @@ from .._next.runtime.global_settings import (
 )
 from .._next.runtime.metrics import StreamDockRuntimeMetrics
 from .._next.runtime.ports import ActionFactory, PluginHooks, RuntimeLifecycle
+from .._next.runtime.session import SessionReadinessGate
 from ..codecs import JsonCodec
 from ..global_settings import GlobalSettings
 from ..json_types import JsonObject
@@ -222,9 +223,11 @@ def create_stream_dock_application(
     global_settings = GlobalSettingsCoordinator(
         DefaultGlobalSettingsState(launch_arguments.plugin_uuid, boundary.commands)
     )
+    session_readiness = SessionReadinessGate()
     context = ApplicationContext(
         stream_dock=boundary.commands,
         global_settings=global_settings,
+        session_readiness=session_readiness,
     )
     try:
         action_dependencies = (
@@ -240,6 +243,7 @@ def create_stream_dock_application(
             action_factory=action_factory,
             action_dependencies=action_dependencies,
             global_settings=global_settings,
+            session_readiness=session_readiness,
             plugin_hooks=plugin_hooks,
             config=runtime_config,
             scheduler_factory=scheduler_factory,
