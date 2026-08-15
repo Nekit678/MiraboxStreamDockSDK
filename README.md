@@ -497,6 +497,28 @@ separate state. If session initialization fails or ends before readiness,
 `wait()` returns `False`; inspect `failure` to distinguish an initialization
 error from normal closure.
 
+## Plugin callbacks
+
+Subclass `Plugin` to observe plugin-wide broadcast events independently of
+active actions. Pass the instance as `plugin=` to
+`create_stream_dock_application()`:
+
+```python
+from mirabox_sdk import Plugin, SystemDidWakeUpEvent
+
+
+class MyPlugin(Plugin):
+    def on_system_did_wake_up(self, event: SystemDidWakeUpEvent) -> None:
+        refresh_shared_state()
+```
+
+The runtime invokes the plugin callback first, then the stable snapshot of
+active action callbacks. Global-settings state is updated before either
+callback and each recipient receives an isolated settings event. A plugin
+callback failure is logged and reported in runtime metrics/result policy, but
+does not prevent active actions from receiving the event. `PluginHooks` remains
+supported for its legacy `on_unhandled_event()`-only contract.
+
 ## Errors and unknown events
 
 | Exception | Meaning |
@@ -514,9 +536,9 @@ error from normal closure.
 By default, `parse_stream_dock_event()` preserves an unknown but structurally
 valid envelope as `UnknownStreamDockEvent`. This lets the SDK tolerate protocol
 extensions while known events remain strictly validated. The runtime delivers
-each preserved event once to the `PluginHooks` object passed to
-`create_stream_dock_application()`. Unknown envelopes are not broadcast to
-actions because their routing semantics are not known yet.
+each preserved event once to the configured `Plugin` or legacy `PluginHooks`
+object. Unknown envelopes are not broadcast to actions because their routing
+semantics are not known yet.
 
 Protocol parsing metadata and runtime routing metadata are maintained in
 separate validated internal registries. The public API exposes typed event
@@ -652,7 +674,7 @@ The runtime uses explicit thread ownership:
 |---|---|
 | `configure_logging()` and `StreamDockApplication.run()` / `stop()` | Application lifecycle thread; configure logging before `run()`; `stop()` is idempotent and may also be called concurrently |
 | WebSocket frame I/O and typed protocol parsing | Boundary-owned transport/codec workers |
-| Every `Action` callback and `PluginHooks` callback | Runtime-owned keyed workers; callbacks are serial per context and may overlap across contexts, while lifecycle, broadcast, and unknown barriers run exclusively |
+| Every `Action`, `Plugin`, and `PluginHooks` callback | Runtime-owned keyed workers; callbacks are serial per context and may overlap across contexts, while lifecycle, broadcast, and unknown barriers run exclusively |
 | `StreamDockSender.send()` / `send_async()` and action command helpers | Any application, service, or action-callback thread after the outbound writer starts; overlapping calls are supported |
 | `StreamDockApplication.stop()` | Any application or action-callback thread; calls are idempotent and may overlap |
 

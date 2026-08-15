@@ -166,7 +166,12 @@ class ActionFactory(Protocol):
 
 @runtime_checkable
 class PluginHooks(Protocol):
-    """Plugin-scope callbacks that are not action routes."""
+    """Legacy plugin hook contract for forward-compatible unknown events.
+
+    Prefer the concrete :class:`Plugin` base class for known plugin-level
+    broadcast callbacks. This protocol remains supported so existing
+    unknown-event-only hook objects stay compatible.
+    """
 
     @abstractmethod
     def on_unhandled_event(self, event: UnknownStreamDockEvent) -> None:

@@ -6,6 +6,7 @@ from threading import Event, Lock, Thread, current_thread
 
 from mirabox_sdk import (
     ActionRegistry,
+    Plugin,
     PluginLaunchArguments,
     RegisterPluginCommand,
     RegistrationApplicationInfo,
@@ -13,6 +14,7 @@ from mirabox_sdk import (
     RegistrationInfo,
     RegistrationPluginInfo,
     StreamDockEvent,
+    SystemDidWakeUpEvent,
 )
 from mirabox_sdk._next.runtime.composition import (
     ComposedStreamDockRuntime,
@@ -465,6 +467,37 @@ class RuntimeFactoryIntegrationTests(unittest.TestCase):
         self.assertIs(snapshot.boundary, boundary.metrics_snapshot)
         for hidden_capability in ("events", "commands", "session_events", "boundary"):
             self.assertFalse(hasattr(runtime, hidden_capability))
+
+    def test_factory_delivers_known_broadcast_to_plugin_without_actions(self) -> None:
+        class RecordingPlugin(Plugin):
+            def __init__(self) -> None:
+                self.events: list[SystemDidWakeUpEvent] = []
+
+            def on_system_did_wake_up(self, event: SystemDidWakeUpEvent) -> None:
+                self.events.append(event)
+
+        event = SystemDidWakeUpEvent()
+        events = FakeInboundEventSource((event,))
+        events.close()
+        session_events = FakeSessionEventSource((Connected(), Disconnected(1000, None)))
+        session_events.close()
+        boundary = _FakeBoundary(events=events, session_events=session_events)
+        plugin = RecordingPlugin()
+        runtime = create_stream_dock_runtime(
+            _launch_arguments(),
+            boundary=boundary,
+            action_factory=RecordingActionFactory(boundary.commands),
+            plugin=plugin,
+            config=RuntimeDispatcherConfig(
+                event_poll_interval=0.005,
+                session_poll_interval=0.005,
+            ),
+        )
+
+        runtime.run_forever()
+
+        self.assertEqual(plugin.events, [event])
+        self.assertEqual(runtime.metrics().routing.plugin_callbacks_delivered, 1)
 
     def test_factory_opens_the_supplied_session_readiness_gate(self) -> None:
         session_events = FakeSessionEventSource((Connected(), Disconnected(1000, None)))

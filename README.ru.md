@@ -500,6 +500,28 @@ def run_session_work(context: ApplicationContext) -> None:
 или сессия закрывается до readiness, `wait()` вернёт `False`; свойство `failure`
 отличает ошибку инициализации от штатного закрытия.
 
+## Plugin callbacks
+
+Наследуйте `Plugin`, чтобы обрабатывать plugin-wide broadcast-события независимо
+от активных actions. Экземпляр передаётся как `plugin=` в
+`create_stream_dock_application()`:
+
+```python
+from mirabox_sdk import Plugin, SystemDidWakeUpEvent
+
+
+class MyPlugin(Plugin):
+    def on_system_did_wake_up(self, event: SystemDidWakeUpEvent) -> None:
+        refresh_shared_state()
+```
+
+Runtime сначала вызывает callback плагина, затем callbacks стабильного snapshot
+активных actions. Состояние глобальных настроек обновляется до обоих callbacks,
+а каждый получатель получает изолированное событие с настройками. Ошибка callback
+плагина записывается в log и отражается в metrics/result policy, но не мешает
+доставить событие активным actions. `PluginHooks` остаётся поддержанным для
+устаревшего контракта только с `on_unhandled_event()`.
+
 ## Ошибки и неизвестные события
 
 | Исключение | Значение |
@@ -517,8 +539,8 @@ def run_session_work(context: ApplicationContext) -> None:
 По умолчанию `parse_stream_dock_event()` сохраняет неизвестный, но структурно
 корректный конверт как `UnknownStreamDockEvent`. Это позволяет SDK переживать
 расширения протокола, сохраняя строгую проверку известных событий. Runtime один
-раз передаёт каждое такое событие объекту `PluginHooks`, указанному в
-`create_stream_dock_application()`.
+раз передаёт каждое такое событие настроенному объекту `Plugin` или legacy
+`PluginHooks`.
 Неизвестные конверты не рассылаются action-объектам, потому что их правила
 маршрутизации ещё неизвестны.
 
@@ -656,7 +678,7 @@ Runtime явно распределяет владение между поток
 |---|---|
 | `configure_logging()` и `StreamDockApplication.run()` / `stop()` | Lifecycle-поток приложения; logging настраивается до `run()`; `stop()` идемпотентен и может вызываться конкурентно |
 | WebSocket frame I/O и typed protocol parsing | Transport/codec workers boundary |
-| Все callback-и `Action` и `PluginHooks` | Keyed workers runtime; callback-и последовательны внутри context и могут пересекаться между contexts, а lifecycle-, broadcast- и unknown-barriers выполняются эксклюзивно |
+| Все callback-и `Action`, `Plugin` и `PluginHooks` | Keyed workers runtime; callback-и последовательны внутри context и могут пересекаться между contexts, а lifecycle-, broadcast- и unknown-barriers выполняются эксклюзивно |
 | `StreamDockSender.send()` / `send_async()` и helpers исходящих команд `Action` | Любой поток приложения, service или action callback после запуска outbound writer; перекрывающиеся вызовы поддерживаются |
 | `StreamDockApplication.stop()` | Любой поток приложения или action callback; вызовы идемпотентны и могут перекрываться |
 

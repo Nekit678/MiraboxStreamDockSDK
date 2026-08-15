@@ -5,6 +5,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol, TypeAlias, runtime_checkable
 
+from .._next.runtime.plugin import Plugin
 from .._next.runtime.ports import ActionFactory, PluginHooks, RuntimeLifecycle
 from ..global_settings import GlobalSettings
 from ..protocols import StreamDockSender
@@ -95,6 +96,7 @@ __all__ = [
     "ApplicationService",
     "ApplicationServiceFactory",
     "GlobalSettings",
+    "Plugin",
     "PluginHooks",
     "RuntimeLifecycle",
     "SessionReadiness",

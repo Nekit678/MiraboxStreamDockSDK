@@ -33,11 +33,16 @@ from ...events import (
     WillAppearEvent,
     WillDisappearEvent,
 )
+from .plugin import Plugin
 from .ports import RuntimeActionCallbacks
 
 
 class RuntimeEventScope(StrEnum):
-    """Application destination selected for one typed event."""
+    """Primary delivery shape selected for one typed event.
+
+    Broadcast routes may additionally select ``plugin_callback`` to deliver
+    the same event to the plugin before active actions.
+    """
 
     ACTION = "action"
     BROADCAST = "broadcast"
@@ -64,13 +69,19 @@ class RuntimeTransition(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class RuntimeEventRoute:
-    """Runtime behavior for one already-decoded event class."""
+    """Runtime behavior for one already-decoded event class.
+
+    ``callback`` targets an action for ``ACTION`` and ``BROADCAST`` scopes or
+    the plugin for ``PLUGIN`` scope. A broadcast ``plugin_callback`` adds a
+    plugin recipient without changing its action-broadcast behavior.
+    """
 
     event_class: type[StreamDockEvent]
     scope: RuntimeEventScope
     ordering: DispatchOrdering
     callback: str
     transition: RuntimeTransition = RuntimeTransition.NONE
+    plugin_callback: str | None = None
 
     @property
     def wire_name(self) -> str:
@@ -114,16 +125,19 @@ class RuntimeEventRegistry(Mapping[type[StreamDockEvent], RuntimeEventRoute]):
         routes: Sequence[RuntimeEventRoute],
         *,
         action_api: type[Any] = RuntimeActionCallbacks,
+        plugin_api: type[Any] = Plugin,
     ) -> None:
         if not isinstance(action_api, type):
             raise TypeError("action_api must be a class")
+        if not isinstance(plugin_api, type):
+            raise TypeError("plugin_api must be a class")
 
         by_event_class: dict[type[StreamDockEvent], RuntimeEventRoute] = {}
         by_wire_name: dict[str, RuntimeEventRoute] = {}
         ordered_routes: list[RuntimeEventRoute] = []
 
         for route in routes:
-            self._validate_route(route, action_api=action_api)
+            self._validate_route(route, action_api=action_api, plugin_api=plugin_api)
             if route.event_class in by_event_class:
                 raise RuntimeEventRegistryError(
                     f"duplicate runtime route for event class {route.event_class.__name__}"
@@ -155,6 +169,7 @@ class RuntimeEventRegistry(Mapping[type[StreamDockEvent], RuntimeEventRoute]):
         route: RuntimeEventRoute,
         *,
         action_api: type[Any],
+        plugin_api: type[Any],
     ) -> None:
         if not isinstance(route, RuntimeEventRoute):
             raise TypeError("routes must contain RuntimeEventRoute instances")
@@ -177,17 +192,35 @@ class RuntimeEventRegistry(Mapping[type[StreamDockEvent], RuntimeEventRoute]):
             raise RuntimeEventRegistryError("route transition must be a RuntimeTransition")
 
         is_action_event = issubclass(route.event_class, ActionEvent)
-        if (route.scope is RuntimeEventScope.ACTION) != is_action_event:
+        if route.scope is RuntimeEventScope.ACTION and not is_action_event:
+            raise RuntimeEventRegistryError(
+                f"runtime route {route.wire_name!r} has invalid scope {route.scope.value!r}"
+            )
+        if route.scope is not RuntimeEventScope.ACTION and is_action_event:
             raise RuntimeEventRegistryError(
                 f"runtime route {route.wire_name!r} has invalid scope {route.scope.value!r}"
             )
         if not isinstance(route.callback, str) or not route.callback:
             raise RuntimeEventRegistryError("route callback must be a non-empty string")
-        if not callable(getattr(action_api, route.callback, None)):
+        callback_api = plugin_api if route.scope is RuntimeEventScope.PLUGIN else action_api
+        callback_target = "Plugin" if route.scope is RuntimeEventScope.PLUGIN else "Action"
+        if not callable(getattr(callback_api, route.callback, None)):
             raise RuntimeEventRegistryError(
-                f"runtime route {route.wire_name!r} selects missing Action callback "
+                f"runtime route {route.wire_name!r} selects missing {callback_target} callback "
                 f"{route.callback!r}"
             )
+        if route.scope is not RuntimeEventScope.BROADCAST and route.plugin_callback is not None:
+            raise RuntimeEventRegistryError(
+                f"runtime route {route.wire_name!r} has plugin callback outside broadcast scope"
+            )
+        if route.plugin_callback is not None:
+            if not isinstance(route.plugin_callback, str) or not route.plugin_callback:
+                raise RuntimeEventRegistryError("route plugin_callback must be a non-empty string")
+            if not callable(getattr(plugin_api, route.plugin_callback, None)):
+                raise RuntimeEventRegistryError(
+                    f"runtime route {route.wire_name!r} selects missing Plugin callback "
+                    f"{route.plugin_callback!r}"
+                )
 
     @property
     def routes(self) -> tuple[RuntimeEventRoute, ...]:
@@ -320,36 +353,42 @@ _DEFAULT_RUNTIME_EVENT_ROUTES: Final = (
         DispatchOrdering.GLOBAL_BARRIER,
         "on_did_receive_global_settings",
         RuntimeTransition.UPDATE_GLOBAL_SETTINGS,
+        "on_did_receive_global_settings",
     ),
     RuntimeEventRoute(
         DeviceDidConnectEvent,
         RuntimeEventScope.BROADCAST,
         DispatchOrdering.GLOBAL_BARRIER,
         "on_device_did_connect",
+        plugin_callback="on_device_did_connect",
     ),
     RuntimeEventRoute(
         DeviceDidDisconnectEvent,
         RuntimeEventScope.BROADCAST,
         DispatchOrdering.GLOBAL_BARRIER,
         "on_device_did_disconnect",
+        plugin_callback="on_device_did_disconnect",
     ),
     RuntimeEventRoute(
         ApplicationDidLaunchEvent,
         RuntimeEventScope.BROADCAST,
         DispatchOrdering.GLOBAL_BARRIER,
         "on_application_did_launch",
+        plugin_callback="on_application_did_launch",
     ),
     RuntimeEventRoute(
         ApplicationDidTerminateEvent,
         RuntimeEventScope.BROADCAST,
         DispatchOrdering.GLOBAL_BARRIER,
         "on_application_did_terminate",
+        plugin_callback="on_application_did_terminate",
     ),
     RuntimeEventRoute(
         SystemDidWakeUpEvent,
         RuntimeEventScope.BROADCAST,
         DispatchOrdering.GLOBAL_BARRIER,
         "on_system_did_wake_up",
+        plugin_callback="on_system_did_wake_up",
     ),
 )
 

@@ -193,6 +193,7 @@ class StableRuntimeApiTests(unittest.TestCase):
             "GlobalSettings",
             "HandlerSchedulerMetrics",
             "InboundOverflowPolicy",
+            "Plugin",
             "PluginHooks",
             "RuntimeDispatcherConfig",
             "RuntimeEventPumpMetrics",

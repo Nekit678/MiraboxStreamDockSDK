@@ -23,6 +23,7 @@ from .._next.runtime.global_settings import (
     GlobalSettingsCoordinator,
 )
 from .._next.runtime.metrics import StreamDockRuntimeMetrics
+from .._next.runtime.plugin import Plugin
 from .._next.runtime.ports import ActionFactory, PluginHooks, RuntimeLifecycle
 from .._next.runtime.session import SessionReadinessGate
 from ..codecs import JsonCodec
@@ -171,6 +172,7 @@ def create_stream_dock_application(
         | Callable[[StreamDockSender], StreamDockActionDependencies]
         | None
     ) = None,
+    plugin: Plugin | None = None,
     plugin_hooks: PluginHooks | None = None,
     queue_config: BoundaryQueueConfig | None = None,
     shutdown_config: BoundaryShutdownConfig | None = None,
@@ -191,14 +193,19 @@ def create_stream_dock_application(
     supported. ``service_factories`` likewise receive that context; objects in
     ``services`` remain supported for already-constructed services. Services
     start before the runtime connects and stop in reverse order after it ends.
-    Native three-argument :class:`ActionFactory` implementations leave the
-    dependency factory unset.
+    ``plugin`` receives known plugin-wide broadcast callbacks; ``plugin_hooks``
+    remains the legacy unknown-event-only adapter. Native three-argument
+    :class:`ActionFactory` implementations leave the dependency factory unset.
     """
 
     if not isinstance(launch_arguments, PluginLaunchArguments):
         raise TypeError("launch_arguments must be PluginLaunchArguments")
     if action_dependencies_factory is not None and not callable(action_dependencies_factory):
         raise TypeError("action_dependencies_factory must be callable or None")
+    if plugin is not None and not isinstance(plugin, Plugin):
+        raise TypeError("plugin must extend Plugin or be None")
+    if plugin is not None and plugin_hooks is not None:
+        raise TypeError("plugin and plugin_hooks are mutually exclusive")
     resolved_services = _resolve_services(services)
     resolved_service_factories = _resolve_service_factories(service_factories)
 
@@ -244,6 +251,7 @@ def create_stream_dock_application(
             action_dependencies=action_dependencies,
             global_settings=global_settings,
             session_readiness=session_readiness,
+            plugin=plugin,
             plugin_hooks=plugin_hooks,
             config=runtime_config,
             scheduler_factory=scheduler_factory,

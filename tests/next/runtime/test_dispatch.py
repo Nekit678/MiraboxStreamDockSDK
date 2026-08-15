@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from dataclasses import replace
 from typing import ClassVar
 from unittest.mock import Mock
 
@@ -9,6 +10,7 @@ from mirabox_sdk import (
     FunctionalJsonCodec,
     JsonCodecDecodeError,
     JsonObject,
+    Plugin,
     SystemDidWakeUpEvent,
     UnknownStreamDockEvent,
     WillAppearEvent,
@@ -17,6 +19,11 @@ from mirabox_sdk import (
 from mirabox_sdk._next.runtime.models import DispatchOutcome
 from mirabox_sdk._next.runtime.ports import RuntimeEventDispatcher
 from mirabox_sdk._next.runtime.router import RuntimeEventRouter
+from mirabox_sdk._next.runtime.routes import (
+    RUNTIME_EVENT_REGISTRY,
+    RuntimeEventRegistry,
+    RuntimeEventScope,
+)
 from mirabox_sdk.stores import GlobalSettingsStore
 
 from .fakes import (
@@ -36,11 +43,19 @@ def build_router(
     action_type: type[RecordingAction] = RecordingAction,
     *,
     hooks: RecordingPluginHooks | None = None,
+    plugin: Plugin | None = None,
+    registry: RuntimeEventRegistry = RUNTIME_EVENT_REGISTRY,
 ) -> tuple[RuntimeEventRouter, RecordingActionFactory, GlobalSettingsStore, Mock]:
     sender = Mock()
     factory = RecordingActionFactory(sender, action_type)
     state = GlobalSettingsStore("plugin.uuid", sender)
-    router = RuntimeEventRouter(factory, state, plugin_hooks=hooks)
+    router = RuntimeEventRouter(
+        factory,
+        state,
+        plugin=plugin,
+        plugin_hooks=hooks,
+        registry=registry,
+    )
     return router, factory, state, sender
 
 
@@ -74,6 +89,32 @@ class MutatingGlobalSettingsAction(RecordingAction):
         self.events.append(event)
         if self.context != "mutating":
             return
+        nested = event.settings["nested"]
+        assert isinstance(nested, dict)
+        nested["value"] = 99
+
+
+class RecordingPlugin(Plugin):
+    def __init__(self) -> None:
+        self.events: list[object] = []
+        self.error: Exception | None = None
+
+    def on_system_did_wake_up(self, event: SystemDidWakeUpEvent) -> None:
+        self.events.append(event)
+        if self.error is not None:
+            raise self.error
+
+
+class MutatingGlobalSettingsPlugin(Plugin):
+    def __init__(self) -> None:
+        self.events: list[DidReceiveGlobalSettingsEvent] = []
+        self.settings_before_callback: JsonObject | None = None
+        self.router: RuntimeEventRouter | None = None
+
+    def on_did_receive_global_settings(self, event: DidReceiveGlobalSettingsEvent) -> None:
+        assert self.router is not None
+        self.settings_before_callback = self.router.global_settings.snapshot()
+        self.events.append(event)
         nested = event.settings["nested"]
         assert isinstance(nested, dict)
         nested["value"] = 99
@@ -231,6 +272,108 @@ class RuntimeEventDispatchTests(unittest.TestCase):
         self.assertEqual(metrics.broadcasts, 1)
         self.assertEqual(metrics.broadcast_targets, 2)
         self.assertEqual(metrics.broadcast_failures, 1)
+
+    def test_known_broadcast_reaches_plugin_before_actions_without_actions_required(self) -> None:
+        order: list[tuple[str, str]] = []
+
+        class OrderedPlugin(Plugin):
+            def on_system_did_wake_up(self, event: SystemDidWakeUpEvent) -> None:
+                order.append(("plugin", event.event_name))
+
+        class OrderedAction(RecordingAction):
+            def on_system_did_wake_up(self, event: SystemDidWakeUpEvent) -> None:
+                order.append(("action", self.context))
+                self.events.append(event)
+
+        router, factory, _state, _sender = build_router(OrderedAction, plugin=OrderedPlugin())
+        event = SystemDidWakeUpEvent()
+
+        no_actions_result = router.dispatch(event)
+        router.dispatch(will_appear_event(context="first"))
+        router.dispatch(will_appear_event(context="second"))
+        with_actions_result = router.dispatch(event)
+
+        self.assertIs(no_actions_result.outcome, DispatchOutcome.HANDLED)
+        self.assertIs(with_actions_result.outcome, DispatchOutcome.HANDLED)
+        self.assertEqual(
+            order,
+            [
+                ("plugin", "systemDidWakeUp"),
+                ("plugin", "systemDidWakeUp"),
+                ("action", "first"),
+                ("action", "second"),
+            ],
+        )
+        self.assertEqual(factory.instances[0].events[-1], event)
+        self.assertEqual(factory.instances[1].events[-1], event)
+        metrics = router.routing_metrics()
+        self.assertEqual(metrics.plugin_callbacks_delivered, 2)
+        self.assertEqual(metrics.plugin_callback_failures, 0)
+
+    def test_plugin_callback_failure_isolated_from_actions_and_reported(self) -> None:
+        plugin = RecordingPlugin()
+        plugin.error = RuntimeError("plugin failed")
+        router, factory, _state, _sender = build_router(plugin=plugin)
+        router.dispatch(will_appear_event())
+        event = SystemDidWakeUpEvent()
+
+        with self.assertLogs("mirabox_sdk._next.runtime.router", level="ERROR") as logs:
+            result = router.dispatch(event)
+
+        self.assertIs(result.outcome, DispatchOutcome.CALLBACK_FAILED)
+        self.assertIs(result.error, plugin.error)
+        self.assertEqual(plugin.events, [event])
+        self.assertEqual(factory.instances[0].events[-1], event)
+        self.assertIn("event systemDidWakeUp", "\n".join(logs.output))
+        metrics = router.routing_metrics()
+        self.assertEqual(metrics.plugin_callbacks_delivered, 1)
+        self.assertEqual(metrics.plugin_callback_failures, 1)
+
+    def test_plugin_global_settings_callback_sees_new_state_and_isolated_event(self) -> None:
+        plugin = MutatingGlobalSettingsPlugin()
+        router, factory, state, _sender = build_router(
+            MutatingGlobalSettingsAction,
+            plugin=plugin,
+        )
+        plugin.router = router
+        router.dispatch(will_appear_event(context="mutating"))
+        router.dispatch(will_appear_event(context="healthy"))
+
+        result = router.dispatch(DidReceiveGlobalSettingsEvent(settings={"nested": {"value": 1}}))
+
+        self.assertIs(result.outcome, DispatchOutcome.HANDLED)
+        self.assertEqual(plugin.settings_before_callback, {"nested": {"value": 1}})
+        self.assertEqual(plugin.events[0].settings, {"nested": {"value": 99}})
+        healthy_event = factory.instances[1].events[-1]
+        assert isinstance(healthy_event, DidReceiveGlobalSettingsEvent)
+        self.assertEqual(healthy_event.settings, {"nested": {"value": 1}})
+        self.assertEqual(state.settings, {"nested": {"value": 1}})
+
+    def test_plugin_only_route_is_executed_without_broadcasting_actions(self) -> None:
+        plugin = RecordingPlugin()
+        broadcast_route = RUNTIME_EVENT_REGISTRY.get_by_wire_name("systemDidWakeUp")
+        assert broadcast_route is not None
+        plugin_only_route = replace(
+            broadcast_route,
+            scope=RuntimeEventScope.PLUGIN,
+            callback="on_system_did_wake_up",
+            plugin_callback=None,
+        )
+        registry = RuntimeEventRegistry(
+            tuple(
+                plugin_only_route if route is broadcast_route else route
+                for route in RUNTIME_EVENT_REGISTRY.routes
+            )
+        )
+        router, factory, _state, _sender = build_router(plugin=plugin, registry=registry)
+        router.dispatch(will_appear_event())
+        event = SystemDidWakeUpEvent()
+
+        result = router.dispatch(event)
+
+        self.assertIs(result.outcome, DispatchOutcome.HANDLED)
+        self.assertEqual(plugin.events, [event])
+        self.assertNotIn(event, factory.instances[0].events)
 
     def test_broadcast_uses_one_snapshot_when_callback_creates_an_action(self) -> None:
         class CreatingAction(RecordingAction):

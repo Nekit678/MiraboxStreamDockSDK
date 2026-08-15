@@ -19,6 +19,7 @@ from .metrics import (
     _ActionContextMetricRecorder,
 )
 from .models import DispatchOutcome, DispatchResult
+from .plugin import LegacyPluginHooksAdapter, Plugin
 from .ports import ActionFactory, PluginHooks, RuntimeEventDispatcher
 from .routes import (
     RUNTIME_EVENT_REGISTRY,
@@ -30,11 +31,8 @@ from .routes import (
 logger = logging.getLogger(__name__)
 
 
-class NullPluginHooks(PluginHooks):
-    """Default plugin hook implementation with no application side effects."""
-
-    def on_unhandled_event(self, event: UnknownStreamDockEvent) -> None:
-        """Intentionally ignore one forward-compatible event."""
+class NullPluginHooks(Plugin):
+    """Default plugin implementation with no application side effects."""
 
 
 class RuntimeEventRouter(RuntimeEventDispatcher):
@@ -45,11 +43,16 @@ class RuntimeEventRouter(RuntimeEventDispatcher):
         action_factory: ActionFactory,
         global_settings_state: GlobalSettingsState | GlobalSettingsCoordinator,
         *,
+        plugin: Plugin | None = None,
         plugin_hooks: PluginHooks | None = None,
         registry: RuntimeEventRegistry = RUNTIME_EVENT_REGISTRY,
     ) -> None:
+        if plugin is not None and not isinstance(plugin, Plugin):
+            raise TypeError("plugin must extend Plugin or be None")
         if plugin_hooks is not None and not isinstance(plugin_hooks, PluginHooks):
             raise TypeError("plugin_hooks must implement PluginHooks")
+        if plugin is not None and plugin_hooks is not None:
+            raise TypeError("plugin and plugin_hooks are mutually exclusive")
         if not isinstance(registry, RuntimeEventRegistry):
             raise TypeError("registry must be a RuntimeEventRegistry")
 
@@ -67,16 +70,29 @@ class RuntimeEventRouter(RuntimeEventDispatcher):
         global_settings_route = registry.get_by_wire_name(DidReceiveGlobalSettingsEvent.event.value)
         if global_settings_route is None:  # pragma: no cover - registry invariant
             raise RuntimeEventDispatchError("global settings route is missing")
+        action_global_settings_route = (
+            global_settings_route
+            if global_settings_route.scope is RuntimeEventScope.BROADCAST
+            else None
+        )
         actions = ActionEventDispatcher(
             contexts,
             broadcasts,
             global_settings,
-            global_settings_route=global_settings_route,
+            global_settings_route=action_global_settings_route,
             metrics=action_metrics,
         )
 
         self._registry = registry
-        self._plugin_hooks = plugin_hooks or NullPluginHooks()
+        if plugin is not None:
+            resolved_plugin = plugin
+        elif isinstance(plugin_hooks, Plugin):
+            resolved_plugin = plugin_hooks
+        elif plugin_hooks is not None:
+            resolved_plugin = LegacyPluginHooksAdapter(plugin_hooks)
+        else:
+            resolved_plugin = NullPluginHooks()
+        self._plugin = resolved_plugin
         self._action_metrics = action_metrics
         self._contexts = contexts
         self._global_settings = global_settings
@@ -85,6 +101,8 @@ class RuntimeEventRouter(RuntimeEventDispatcher):
         self._routing_lock = RLock()
         self._known_events_routed = 0
         self._unknown_events_delivered = 0
+        self._plugin_callbacks_delivered = 0
+        self._plugin_callback_failures = 0
 
     @property
     def contexts(self) -> DefaultActionContextManager:
@@ -110,7 +128,7 @@ class RuntimeEventRouter(RuntimeEventDispatcher):
             with self._routing_lock:
                 self._unknown_events_delivered += 1
             try:
-                self._plugin_hooks.on_unhandled_event(event)
+                self._plugin.on_unhandled_event(event)
             except Exception as exc:
                 logger.error(
                     "Failed to process unknown event %s; exception_type=%s",
@@ -131,17 +149,74 @@ class RuntimeEventRouter(RuntimeEventDispatcher):
                         "UPDATE_GLOBAL_SETTINGS requires DidReceiveGlobalSettingsEvent"
                     )
                 source = self._global_settings.receive(event)
-                return self._broadcasts.dispatch(
+                plugin_result = self._dispatch_plugin(
+                    self._global_settings.new_event(source),
+                    route.plugin_callback,
+                )
+                action_result = self._broadcasts.dispatch(
                     event,
                     route,
                     event_factory=lambda: self._global_settings.new_event(source),
                 )
+                return self._aggregate_results(plugin_result, action_result)
             if route.transition is not RuntimeTransition.NONE:
                 raise RuntimeEventDispatchError(
                     f"unsupported broadcast transition {route.transition.value!r}"
                 )
-            return self._broadcasts.dispatch(event, route)
+            plugin_result = self._dispatch_plugin(event, route.plugin_callback)
+            action_result = self._broadcasts.dispatch(event, route)
+            return self._aggregate_results(plugin_result, action_result)
+        if route.scope is RuntimeEventScope.PLUGIN:
+            if route.transition is RuntimeTransition.UPDATE_GLOBAL_SETTINGS:
+                if not isinstance(event, DidReceiveGlobalSettingsEvent):
+                    raise RuntimeEventDispatchError(
+                        "UPDATE_GLOBAL_SETTINGS requires DidReceiveGlobalSettingsEvent"
+                    )
+                source = self._global_settings.receive(event)
+                return self._dispatch_plugin(
+                    self._global_settings.new_event(source),
+                    route.callback,
+                )
+            if route.transition is not RuntimeTransition.NONE:
+                raise RuntimeEventDispatchError(
+                    f"unsupported plugin transition {route.transition.value!r}"
+                )
+            return self._dispatch_plugin(event, route.callback)
         raise RuntimeEventDispatchError(f"unsupported runtime scope {route.scope.value!r}")
+
+    def _dispatch_plugin(
+        self,
+        event: StreamDockEvent,
+        callback: str | None,
+    ) -> DispatchResult:
+        """Invoke an optional known-event plugin callback without blocking actions."""
+
+        if callback is None:
+            return DispatchResult(DispatchOutcome.HANDLED)
+        with self._routing_lock:
+            self._plugin_callbacks_delivered += 1
+        try:
+            getattr(self._plugin, callback)(event)
+        except Exception as exc:
+            with self._routing_lock:
+                self._plugin_callback_failures += 1
+            logger.error(
+                "Failed to process plugin event %s; callback=%s exception_type=%s",
+                event.event_name,
+                callback,
+                type(exc).__name__,
+            )
+            return DispatchResult(DispatchOutcome.CALLBACK_FAILED, exc)
+        return DispatchResult(DispatchOutcome.HANDLED)
+
+    @staticmethod
+    def _aggregate_results(*results: DispatchResult) -> DispatchResult:
+        """Return the first failure in deterministic target-delivery order."""
+
+        for result in results:
+            if result.outcome is DispatchOutcome.CALLBACK_FAILED:
+                return result
+        return DispatchResult(DispatchOutcome.HANDLED)
 
     def routing_metrics(self) -> RuntimeRouterMetrics:
         """Return immutable known/unknown routing counters."""
@@ -150,6 +225,8 @@ class RuntimeEventRouter(RuntimeEventDispatcher):
             return RuntimeRouterMetrics(
                 known_events_routed=self._known_events_routed,
                 unknown_events_delivered=self._unknown_events_delivered,
+                plugin_callbacks_delivered=self._plugin_callbacks_delivered,
+                plugin_callback_failures=self._plugin_callback_failures,
             )
 
     def action_metrics(self) -> ActionContextMetrics:

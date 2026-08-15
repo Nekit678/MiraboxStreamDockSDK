@@ -66,6 +66,8 @@ class RuntimeRouterMetrics:
 
     known_events_routed: int = 0
     unknown_events_delivered: int = 0
+    plugin_callbacks_delivered: int = 0
+    plugin_callback_failures: int = 0
 
 
 @dataclass(frozen=True, slots=True)

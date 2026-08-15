@@ -4,7 +4,7 @@ import unittest
 from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
 
-from mirabox_sdk import Action, StreamDockEvent, StreamDockEventType, UnknownStreamDockEvent
+from mirabox_sdk import Action, Plugin, StreamDockEvent, StreamDockEventType, UnknownStreamDockEvent
 from mirabox_sdk._next.runtime.routes import (
     RUNTIME_EVENT_REGISTRY,
     DispatchOrdering,
@@ -150,6 +150,14 @@ class RuntimeEventRouteTests(unittest.TestCase):
 
         self.assertEqual(set(expected), {event.value for event in StreamDockEventType})
         self.assertEqual(len(RUNTIME_EVENT_REGISTRY), len(expected))
+        plugin_callbacks = {
+            "didReceiveGlobalSettings": "on_did_receive_global_settings",
+            "deviceDidConnect": "on_device_did_connect",
+            "deviceDidDisconnect": "on_device_did_disconnect",
+            "applicationDidLaunch": "on_application_did_launch",
+            "applicationDidTerminate": "on_application_did_terminate",
+            "systemDidWakeUp": "on_system_did_wake_up",
+        }
         for route in RUNTIME_EVENT_REGISTRY.routes:
             with self.subTest(event=route.wire_name):
                 self.assertEqual(
@@ -159,6 +167,9 @@ class RuntimeEventRouteTests(unittest.TestCase):
                 self.assertIs(RUNTIME_EVENT_REGISTRY[route.event_class], route)
                 self.assertIs(RUNTIME_EVENT_REGISTRY.get_by_wire_name(route.wire_name), route)
                 self.assertTrue(callable(getattr(Action, route.callback)))
+                self.assertEqual(route.plugin_callback, plugin_callbacks.get(route.wire_name))
+                if route.plugin_callback is not None:
+                    self.assertTrue(callable(getattr(Plugin, route.plugin_callback)))
                 self.assertEqual(
                     route.scope is RuntimeEventScope.ACTION,
                     issubclass(route.event_class, ActionEvent),
@@ -197,7 +208,7 @@ class RuntimeEventRouteTests(unittest.TestCase):
         ):
             RuntimeEventRegistry(RUNTIME_EVENT_REGISTRY.routes[:-1])
 
-    def test_registry_validates_action_scope_and_callback_existence(self) -> None:
+    def test_registry_validates_targets_and_callback_existence(self) -> None:
         action_route = next(
             route
             for route in RUNTIME_EVENT_REGISTRY.routes
@@ -218,6 +229,43 @@ class RuntimeEventRouteTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(RuntimeEventRegistryError, "missing Action callback"):
             RuntimeEventRegistry(routes)
+
+        broadcast_route = next(
+            route
+            for route in RUNTIME_EVENT_REGISTRY.routes
+            if route.scope is RuntimeEventScope.BROADCAST
+        )
+        missing_plugin_callback = replace(broadcast_route, plugin_callback="on_missing_callback")
+        routes = tuple(
+            missing_plugin_callback if route is broadcast_route else route
+            for route in RUNTIME_EVENT_REGISTRY.routes
+        )
+        with self.assertRaisesRegex(RuntimeEventRegistryError, "missing Plugin callback"):
+            RuntimeEventRegistry(routes)
+
+    def test_registry_supports_plugin_only_and_plugin_plus_actions_routes(self) -> None:
+        broadcast_route = next(
+            route
+            for route in RUNTIME_EVENT_REGISTRY.routes
+            if route.wire_name == StreamDockEventType.SYSTEM_DID_WAKE_UP.value
+        )
+        plugin_only_route = replace(
+            broadcast_route,
+            scope=RuntimeEventScope.PLUGIN,
+            callback="on_system_did_wake_up",
+            plugin_callback=None,
+        )
+        registry = RuntimeEventRegistry(
+            tuple(
+                plugin_only_route if route is broadcast_route else route
+                for route in RUNTIME_EVENT_REGISTRY.routes
+            )
+        )
+
+        self.assertIs(
+            registry.get_by_wire_name(StreamDockEventType.SYSTEM_DID_WAKE_UP.value),
+            plugin_only_route,
+        )
 
     def test_unknown_event_bypasses_registry_and_wrong_known_dto_is_rejected(self) -> None:
         unknown = UnknownStreamDockEvent(event="futureEvent", data={"event": "futureEvent"})

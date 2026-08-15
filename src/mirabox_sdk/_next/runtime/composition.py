@@ -20,6 +20,7 @@ from .global_settings import DefaultGlobalSettingsState, GlobalSettingsCoordinat
 from .keyed_scheduler import KeyedSerialHandlerScheduler
 from .metrics import ActionContextMetrics, RuntimeRouterMetrics, StreamDockRuntimeMetrics
 from .models import RuntimeLifecycleState, RuntimeSchedulerKind, transition_runtime_state
+from .plugin import Plugin
 from .ports import (
     ActionContextManager,
     ActionFactory,
@@ -478,6 +479,7 @@ def create_stream_dock_runtime(
     action_dependencies: StreamDockActionDependencies | None = None,
     global_settings: GlobalSettingsCoordinator | None = None,
     session_readiness: SessionReadinessGate | None = None,
+    plugin: Plugin | None = None,
     plugin_hooks: PluginHooks | None = None,
     config: RuntimeDispatcherConfig | None = None,
     scheduler_factory: HandlerSchedulerFactory | None = None,
@@ -493,6 +495,10 @@ def create_stream_dock_runtime(
         raise TypeError("config must be RuntimeDispatcherConfig or None")
     if plugin_hooks is not None and not isinstance(plugin_hooks, PluginHooks):
         raise TypeError("plugin_hooks must implement PluginHooks or be None")
+    if plugin is not None and not isinstance(plugin, Plugin):
+        raise TypeError("plugin must extend Plugin or be None")
+    if plugin is not None and plugin_hooks is not None:
+        raise TypeError("plugin and plugin_hooks are mutually exclusive")
 
     create_action = getattr(action_factory, "create", None)
     if not callable(create_action):
@@ -529,6 +535,7 @@ def create_stream_dock_runtime(
     router = RuntimeEventRouter(
         resolved_action_factory,
         resolved_global_settings,
+        plugin=plugin,
         plugin_hooks=plugin_hooks,
     )
 

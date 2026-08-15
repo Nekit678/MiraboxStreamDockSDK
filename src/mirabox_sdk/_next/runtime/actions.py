@@ -9,7 +9,6 @@ from threading import RLock
 from ...errors import JsonCodecDecodeError
 from ...events import (
     ActionEvent,
-    DidReceiveGlobalSettingsEvent,
     DidReceiveSettingsEvent,
     StreamDockEvent,
     TitleParametersDidChangeEvent,
@@ -22,7 +21,6 @@ from .metrics import ActionContextMetrics, _ActionContextMetricRecorder
 from .models import DispatchOutcome, DispatchResult
 from .ports import ActionContextManager, ActionFactory, RuntimeActionCallbacks
 from .routes import (
-    RUNTIME_EVENT_REGISTRY,
     RuntimeEventRoute,
     RuntimeEventScope,
     RuntimeTransition,
@@ -225,7 +223,7 @@ class ActionEventDispatcher:
         broadcasts: BroadcastDispatcher,
         global_settings: GlobalSettingsCoordinator,
         *,
-        global_settings_route: RuntimeEventRoute | None = None,
+        global_settings_route: RuntimeEventRoute | None,
         metrics: _ActionContextMetricRecorder | None = None,
     ) -> None:
         if not isinstance(contexts, ActionContextManager):
@@ -237,9 +235,14 @@ class ActionEventDispatcher:
         self._contexts = contexts
         self._broadcasts = broadcasts
         self._global_settings = global_settings
-        self._global_settings_route = (
-            global_settings_route or RUNTIME_EVENT_REGISTRY[DidReceiveGlobalSettingsEvent]
-        )
+        self._global_settings_route = global_settings_route
+        if (
+            self._global_settings_route is not None
+            and self._global_settings_route.scope is not RuntimeEventScope.BROADCAST
+        ):
+            raise RuntimeEventDispatchError(
+                "global_settings_route must be broadcast-scoped or None"
+            )
         self._metrics = metrics or _ActionContextMetricRecorder()
 
     def dispatch(self, event: StreamDockEvent, route: RuntimeEventRoute) -> DispatchResult:
@@ -301,7 +304,7 @@ class ActionEventDispatcher:
             return result
 
         replay = self._global_settings.new_replay_event()
-        if replay is None:
+        if replay is None or self._global_settings_route is None:
             return result
         return self._broadcasts.dispatch_one(action, replay, self._global_settings_route)
 
