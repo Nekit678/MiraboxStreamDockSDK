@@ -340,9 +340,9 @@ class CounterRuntimeIntegrationTests(unittest.TestCase):
         self.assertEqual(metrics.actions.global_settings_updates, 1)
         self.assertEqual(metrics.actions.global_settings_replays, 1)
         self.assertEqual(metrics.boundary.connector.outbound_frames_sent, 7)
-        settings = application.global_settings
+        settings = application.global_settings.snapshot()
         settings["profile"] = "mutated"
-        self.assertEqual(application.global_settings, {"profile": "integration"})
+        self.assertEqual(application.global_settings.snapshot(), {"profile": "integration"})
 
 
 class CounterBundleTests(unittest.TestCase):

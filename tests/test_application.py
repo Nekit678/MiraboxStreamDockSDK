@@ -11,8 +11,10 @@ from threading import enumerate as enumerate_threads
 import mirabox_sdk
 import mirabox_sdk.runtime as runtime
 from mirabox_sdk import (
+    ApplicationContext,
     ApplicationService,
     CommandFuture,
+    GlobalSettings,
     LogMessageCommand,
     OutboundCommandBusClosedError,
     OutboundCommandBusNotReadyError,
@@ -134,6 +136,12 @@ class _SenderDependencies:
         self.stream_dock = stream_dock
 
 
+class _ContextDependencies:
+    def __init__(self, stream_dock: object, global_settings: GlobalSettings) -> None:
+        self.stream_dock = stream_dock
+        self.global_settings = global_settings
+
+
 def _launch_arguments() -> PluginLaunchArguments:
     return PluginLaunchArguments(
         port=12345,
@@ -171,7 +179,10 @@ class StableRuntimeApiTests(unittest.TestCase):
         expected = {
             "ActionContextMetrics",
             "ActionFactory",
+            "ApplicationContext",
             "ApplicationService",
+            "ApplicationServiceFactory",
+            "GlobalSettings",
             "HandlerSchedulerMetrics",
             "InboundOverflowPolicy",
             "PluginHooks",
@@ -293,12 +304,56 @@ class ApplicationServiceLifecycleTests(unittest.TestCase):
             connector_factory=lambda *_: connector,
         )
 
+        global_settings = application.global_settings
         with self.assertRaises(OutboundCommandBusNotReadyError):
-            application.set_global_settings({"theme": "dark"})
+            global_settings.set({"theme": "dark"})
 
-        self.assertEqual(application.global_settings, {})
+        self.assertEqual(global_settings.snapshot(), {})
         application.stop()
         self.assertTrue(connector.closed)
+
+    def test_context_factories_receive_the_runtime_owned_global_settings_facade(self) -> None:
+        connector = _UnstartedConnector()
+        dependencies_holder: dict[str, _ContextDependencies] = {}
+        service_contexts: list[ApplicationContext] = []
+        service_events: list[str] = []
+
+        def build_dependencies(context: ApplicationContext) -> _ContextDependencies:
+            dependencies = _ContextDependencies(
+                context.stream_dock,
+                context.global_settings,
+            )
+            dependencies_holder["value"] = dependencies
+            return dependencies
+
+        def build_service(context: ApplicationContext) -> _RecordingService:
+            service_contexts.append(context)
+            return _RecordingService("factory", service_events)
+
+        application = create_stream_dock_application(
+            _launch_arguments(),
+            action_factory=_SenderCapturingActionRegistry(),
+            action_dependencies_factory=build_dependencies,
+            service_factories=(build_service,),
+            shutdown_config=_shutdown_config(),
+            connector_factory=lambda *_: connector,
+        )
+
+        global_settings = application.global_settings
+        snapshot = global_settings.snapshot()
+        snapshot["nested"] = {"value": 1}
+
+        self.assertIsInstance(global_settings, GlobalSettings)
+        self.assertIs(global_settings, application.runtime.global_settings)
+        self.assertIs(global_settings, dependencies_holder["value"].global_settings)
+        self.assertIs(global_settings, service_contexts[0].global_settings)
+        self.assertIs(
+            dependencies_holder["value"].stream_dock,
+            service_contexts[0].stream_dock,
+        )
+        self.assertEqual(global_settings.snapshot(), {})
+
+        application.stop()
 
     def test_accepts_structural_services_and_rejects_invalid_values(self) -> None:
         events: list[str] = []

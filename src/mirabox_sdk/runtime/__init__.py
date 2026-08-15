@@ -28,7 +28,10 @@ from .metrics import (
 )
 from .ports import (
     ActionFactory,
+    ApplicationContext,
     ApplicationService,
+    ApplicationServiceFactory,
+    GlobalSettings,
     PluginHooks,
     RuntimeLifecycle,
     StreamDockSender,
@@ -37,7 +40,10 @@ from .ports import (
 __all__ = [
     "ActionContextMetrics",
     "ActionFactory",
+    "ApplicationContext",
     "ApplicationService",
+    "ApplicationServiceFactory",
+    "GlobalSettings",
     "HandlerSchedulerMetrics",
     "InboundOverflowPolicy",
     "PluginHooks",

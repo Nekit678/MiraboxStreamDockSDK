@@ -10,6 +10,7 @@ from typing import Protocol, TypeVar, runtime_checkable
 from ...codecs import JsonCodec
 from ...commands import SetGlobalSettingsCommand
 from ...events import DidReceiveGlobalSettingsEvent
+from ...global_settings import GlobalSettings
 from ...json_types import JsonObject, ValidatedJsonObject, clone_json_object
 from ..messaging.ports import OutboundCommandSink
 from .metrics import ActionContextMetrics, _ActionContextMetricRecorder
@@ -56,8 +57,8 @@ class GlobalSettingsState(Protocol):
     ) -> None: ...
 
 
-class GlobalSettingsCoordinator:
-    """Own global-settings transitions and produce isolated callback events."""
+class GlobalSettingsCoordinator(GlobalSettings):
+    """Own one public settings facade and its internal callback transitions."""
 
     def __init__(
         self,
@@ -68,11 +69,20 @@ class GlobalSettingsCoordinator:
         if not isinstance(state, GlobalSettingsState):
             raise TypeError("state must implement GlobalSettingsState")
         self._state = state
-        self._metrics = metrics or _ActionContextMetricRecorder()
+        self._metrics = metrics
+
+    def bind_metrics(self, metrics: _ActionContextMetricRecorder) -> None:
+        """Attach the router's shared metric recorder during composition."""
+
+        if not isinstance(metrics, _ActionContextMetricRecorder):
+            raise TypeError("metrics must be an _ActionContextMetricRecorder")
+        if self._metrics is not None and self._metrics is not metrics:
+            raise RuntimeError("global settings metrics are already bound")
+        self._metrics = metrics
 
     @property
     def settings(self) -> JsonObject:
-        """Return the backend's current application-facing settings view."""
+        """Return the backend's internal current settings view."""
 
         return self._state.settings
 
@@ -82,13 +92,18 @@ class GlobalSettingsCoordinator:
 
         return self._state.loaded
 
+    def snapshot(self) -> JsonObject:
+        """Return an isolated snapshot of the current plugin-wide settings."""
+
+        return clone_json_object(self._state.settings)
+
     def receive(self, event: DidReceiveGlobalSettingsEvent) -> ValidatedJsonObject:
         """Replace state before callbacks and return the immutable replay source."""
 
         if not isinstance(event, DidReceiveGlobalSettingsEvent):
             raise TypeError("event must be a DidReceiveGlobalSettingsEvent")
         source = self._state.receive(event.settings)
-        self._metrics.increment("global_settings_updates")
+        self._increment_metric("global_settings_updates")
         return source
 
     def new_event(
@@ -105,20 +120,20 @@ class GlobalSettingsCoordinator:
         if not self.loaded:
             return None
         event = self.new_event()
-        self._metrics.increment("global_settings_replays")
+        self._increment_metric("global_settings_replays")
         return event
 
     def update(self, update: Callable[[JsonObject], None]) -> None:
         """Persist and commit one rollback-safe raw settings transaction."""
 
         self._state.update(update)
-        self._metrics.increment("global_settings_updates")
+        self._increment_metric("global_settings_updates")
 
     def set(self, settings: JsonObject) -> None:
         """Persist raw settings and commit them only after send succeeds."""
 
         self._state.set(settings)
-        self._metrics.increment("global_settings_updates")
+        self._increment_metric("global_settings_updates")
 
     def set_typed(
         self,
@@ -128,12 +143,18 @@ class GlobalSettingsCoordinator:
         """Persist typed settings and commit their encoded representation."""
 
         self._state.set_typed(settings, codec)
-        self._metrics.increment("global_settings_updates")
+        self._increment_metric("global_settings_updates")
 
     def metrics(self) -> ActionContextMetrics:
         """Return the shared immutable action/runtime metric snapshot."""
 
+        if self._metrics is None:
+            return ActionContextMetrics()
         return self._metrics.snapshot()
+
+    def _increment_metric(self, field_name: str) -> None:
+        if self._metrics is not None:
+            self._metrics.increment(field_name)
 
 
 class DefaultGlobalSettingsState(GlobalSettingsState):

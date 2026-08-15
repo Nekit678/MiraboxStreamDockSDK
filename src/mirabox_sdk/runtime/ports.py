@@ -1,9 +1,12 @@
 """Stable application-facing ports for the runtime dispatcher."""
 
 from abc import abstractmethod
-from typing import Protocol, runtime_checkable
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Protocol, TypeAlias, runtime_checkable
 
 from .._next.runtime.ports import ActionFactory, PluginHooks, RuntimeLifecycle
+from ..global_settings import GlobalSettings
 from ..protocols import StreamDockSender
 
 
@@ -29,9 +32,28 @@ class ApplicationService(Protocol):
         ...
 
 
+@dataclass(frozen=True, slots=True)
+class ApplicationContext:
+    """Canonical dependencies shared by one Stream Dock application.
+
+    The context is created before action-dependency and service factories run.
+    Its :attr:`global_settings` object is the same runtime-owned facade exposed
+    by :class:`StreamDockApplication`.
+    """
+
+    stream_dock: StreamDockSender
+    global_settings: GlobalSettings
+
+
+ApplicationServiceFactory: TypeAlias = Callable[[ApplicationContext], ApplicationService]
+
+
 __all__ = [
     "ActionFactory",
+    "ApplicationContext",
     "ApplicationService",
+    "ApplicationServiceFactory",
+    "GlobalSettings",
     "PluginHooks",
     "RuntimeLifecycle",
     "StreamDockSender",

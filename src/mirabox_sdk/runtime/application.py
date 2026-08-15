@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Iterable
+from inspect import Parameter, signature
 from threading import Lock
 from typing import TypeVar
 
@@ -17,13 +18,18 @@ from .._next.runtime.composition import (
     create_stream_dock_runtime,
 )
 from .._next.runtime.config import RuntimeDispatcherConfig
+from .._next.runtime.global_settings import (
+    DefaultGlobalSettingsState,
+    GlobalSettingsCoordinator,
+)
 from .._next.runtime.metrics import StreamDockRuntimeMetrics
 from .._next.runtime.ports import ActionFactory, PluginHooks, RuntimeLifecycle
 from ..codecs import JsonCodec
+from ..global_settings import GlobalSettings
 from ..json_types import JsonObject
 from ..protocols import StreamDockActionDependencies, StreamDockSender
 from ..registration import PluginLaunchArguments
-from .ports import ApplicationService
+from .ports import ApplicationContext, ApplicationService, ApplicationServiceFactory
 
 _DEFAULT_QUEUE_LIMIT = 1024
 _DEFAULT_SESSION_QUEUE_LIMIT = 16
@@ -112,8 +118,8 @@ class StreamDockApplication:
         return self._runtime.metrics()
 
     @property
-    def global_settings(self) -> JsonObject:
-        """Return an isolated snapshot of current plugin-wide settings."""
+    def global_settings(self) -> GlobalSettings:
+        """Return the canonical runtime-owned plugin-wide settings facade."""
 
         return self._runtime.global_settings
 
@@ -160,7 +166,9 @@ def create_stream_dock_application(
     *,
     action_factory: ActionFactory | DependencyAwareActionRegistry,
     action_dependencies_factory: (
-        Callable[[StreamDockSender], StreamDockActionDependencies] | None
+        Callable[[ApplicationContext], StreamDockActionDependencies]
+        | Callable[[StreamDockSender], StreamDockActionDependencies]
+        | None
     ) = None,
     plugin_hooks: PluginHooks | None = None,
     queue_config: BoundaryQueueConfig | None = None,
@@ -168,6 +176,7 @@ def create_stream_dock_application(
     runtime_config: RuntimeDispatcherConfig | None = None,
     scheduler_factory: HandlerSchedulerFactory | None = None,
     services: Iterable[ApplicationService] = (),
+    service_factories: Iterable[ApplicationServiceFactory] = (),
     inbound_overflow_policy: InboundOverflowPolicy = InboundOverflowPolicy.DROP_NEWEST,
     coalesce_dial_rotations: bool = False,
     coalesce_commands: bool = False,
@@ -175,8 +184,11 @@ def create_stream_dock_application(
 ) -> StreamDockApplication:
     """Build one unstarted application over the production runtime stack.
 
-    ``ActionRegistry`` users provide ``action_dependencies_factory``; it is
-    called once with the canonical :class:`StreamDockSender`. ``services``
+    ``ActionRegistry`` users may provide ``action_dependencies_factory``. New
+    factories receive one :class:`ApplicationContext`, exposing the canonical
+    sender and global-settings facade. Existing sender-only factories remain
+    supported. ``service_factories`` likewise receive that context; objects in
+    ``services`` remain supported for already-constructed services. Services
     start before the runtime connects and stop in reverse order after it ends.
     Native three-argument :class:`ActionFactory` implementations leave the
     dependency factory unset.
@@ -187,6 +199,7 @@ def create_stream_dock_application(
     if action_dependencies_factory is not None and not callable(action_dependencies_factory):
         raise TypeError("action_dependencies_factory must be callable or None")
     resolved_services = _resolve_services(services)
+    resolved_service_factories = _resolve_service_factories(service_factories)
 
     from .._next.boundary.composition import create_stream_dock_boundary
 
@@ -206,21 +219,35 @@ def create_stream_dock_application(
         coalesce_dial_rotations=coalesce_dial_rotations,
         coalesce_commands=coalesce_commands,
     )
-    action_dependencies = (
-        action_dependencies_factory(boundary.commands)
-        if action_dependencies_factory is not None
-        else None
+    global_settings = GlobalSettingsCoordinator(
+        DefaultGlobalSettingsState(launch_arguments.plugin_uuid, boundary.commands)
     )
-    runtime = create_stream_dock_runtime(
-        launch_arguments,
-        boundary=boundary,
-        action_factory=action_factory,
-        action_dependencies=action_dependencies,
-        plugin_hooks=plugin_hooks,
-        config=runtime_config,
-        scheduler_factory=scheduler_factory,
+    context = ApplicationContext(
+        stream_dock=boundary.commands,
+        global_settings=global_settings,
     )
-    return StreamDockApplication(runtime, services=resolved_services)
+    try:
+        action_dependencies = (
+            _create_action_dependencies(action_dependencies_factory, context)
+            if action_dependencies_factory is not None
+            else None
+        )
+        factory_services = tuple(factory(context) for factory in resolved_service_factories)
+        all_services = _resolve_services((*resolved_services, *factory_services))
+        runtime = create_stream_dock_runtime(
+            launch_arguments,
+            boundary=boundary,
+            action_factory=action_factory,
+            action_dependencies=action_dependencies,
+            global_settings=global_settings,
+            plugin_hooks=plugin_hooks,
+            config=runtime_config,
+            scheduler_factory=scheduler_factory,
+        )
+    except BaseException:
+        boundary.close()
+        raise
+    return StreamDockApplication(runtime, services=all_services)
 
 
 def _resolve_services(
@@ -238,6 +265,51 @@ def _resolve_services(
         ):
             raise TypeError(f"services[{index}] must implement ApplicationService")
     return resolved
+
+
+def _resolve_service_factories(
+    service_factories: Iterable[ApplicationServiceFactory],
+) -> tuple[ApplicationServiceFactory, ...]:
+    try:
+        resolved = tuple(service_factories)
+    except TypeError as exc:
+        raise TypeError("service_factories must be an iterable of callables") from exc
+    for index, factory in enumerate(resolved):
+        if not callable(factory):
+            raise TypeError(f"service_factories[{index}] must be callable")
+    return resolved
+
+
+def _create_action_dependencies(
+    factory: (
+        Callable[[ApplicationContext], StreamDockActionDependencies]
+        | Callable[[StreamDockSender], StreamDockActionDependencies]
+    ),
+    context: ApplicationContext,
+) -> StreamDockActionDependencies:
+    if _accepts_application_context(factory):
+        return factory(context)  # type: ignore[arg-type]
+    return factory(context.stream_dock)  # type: ignore[arg-type]
+
+
+def _accepts_application_context(factory: Callable[..., object]) -> bool:
+    try:
+        parameters = tuple(signature(factory).parameters.values())
+    except (TypeError, ValueError):
+        return False
+    positional = tuple(
+        parameter
+        for parameter in parameters
+        if parameter.kind in (Parameter.POSITIONAL_ONLY, Parameter.POSITIONAL_OR_KEYWORD)
+    )
+    if not positional:
+        return False
+    parameter = positional[0]
+    if parameter.annotation is ApplicationContext:
+        return True
+    if parameter.annotation == "ApplicationContext":
+        return True
+    return parameter.name in {"application_context", "context"}
 
 
 __all__ = [

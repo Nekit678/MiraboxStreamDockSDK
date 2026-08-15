@@ -9,13 +9,14 @@ from threading import Condition, Event, Lock, Thread, current_thread
 from typing import Protocol, TypeVar, cast, runtime_checkable
 
 from ...codecs import JsonCodec
-from ...json_types import JsonObject, clone_json_object
+from ...global_settings import GlobalSettings
+from ...json_types import JsonObject
 from ...protocols import StreamDockActionDependencies
 from ...registration import PluginLaunchArguments
 from ..boundary.ports import StreamDockBoundary
 from .adapters import ActionRegistryFactoryAdapter, DependencyAwareActionRegistry
 from .config import RuntimeDispatcherConfig
-from .global_settings import DefaultGlobalSettingsState
+from .global_settings import DefaultGlobalSettingsState, GlobalSettingsCoordinator
 from .keyed_scheduler import KeyedSerialHandlerScheduler
 from .metrics import ActionContextMetrics, RuntimeRouterMetrics, StreamDockRuntimeMetrics
 from .models import RuntimeLifecycleState, RuntimeSchedulerKind, transition_runtime_state
@@ -274,30 +275,30 @@ class ComposedStreamDockRuntime(RuntimeLifecycle):
         )
 
     @property
-    def global_settings(self) -> JsonObject:
-        """Return an isolated snapshot of the current plugin-wide settings."""
+    def global_settings(self) -> GlobalSettings:
+        """Return the canonical public plugin-wide settings facade."""
 
         router = cast(RuntimeEventRouter, self._router)
-        return clone_json_object(router.global_settings.settings)
+        return router.global_settings
 
     def update_global_settings(self, update: Callable[[JsonObject], None]) -> None:
-        """Persist and commit one rollback-safe global-settings transaction."""
+        """Persist one rollback-safe transaction through :attr:`global_settings`."""
 
-        cast(RuntimeEventRouter, self._router).global_settings.update(update)
+        self.global_settings.update(update)
 
     def set_global_settings(self, settings: JsonObject) -> None:
-        """Persist raw global settings and commit after command completion."""
+        """Persist raw settings through :attr:`global_settings`."""
 
-        cast(RuntimeEventRouter, self._router).global_settings.set(settings)
+        self.global_settings.set(settings)
 
     def set_typed_global_settings(
         self,
         settings: GlobalSettingsT,
         codec: JsonCodec[GlobalSettingsT],
     ) -> None:
-        """Encode, persist, and commit typed plugin-wide settings."""
+        """Encode and persist typed settings through :attr:`global_settings`."""
 
-        cast(RuntimeEventRouter, self._router).global_settings.set_typed(settings, codec)
+        self.global_settings.set_typed(settings, codec)
 
     def _shutdown_is_requested(self) -> bool:
         with self._condition:
@@ -462,6 +463,7 @@ def create_stream_dock_runtime(
     boundary: StreamDockBoundary,
     action_factory: ActionFactory | DependencyAwareActionRegistry,
     action_dependencies: StreamDockActionDependencies | None = None,
+    global_settings: GlobalSettingsCoordinator | None = None,
     plugin_hooks: PluginHooks | None = None,
     config: RuntimeDispatcherConfig | None = None,
     scheduler_factory: HandlerSchedulerFactory | None = None,
@@ -499,13 +501,20 @@ def create_stream_dock_runtime(
             "action_factory must implement ActionFactory or have bound action_dependencies"
         )
 
-    global_settings_state = DefaultGlobalSettingsState(
-        launch_arguments.plugin_uuid,
-        boundary.commands,
-    )
+    if global_settings is None:
+        resolved_global_settings = GlobalSettingsCoordinator(
+            DefaultGlobalSettingsState(
+                launch_arguments.plugin_uuid,
+                boundary.commands,
+            )
+        )
+    elif not isinstance(global_settings, GlobalSettingsCoordinator):
+        raise TypeError("global_settings must be a GlobalSettingsCoordinator or None")
+    else:
+        resolved_global_settings = global_settings
     router = RuntimeEventRouter(
         resolved_action_factory,
-        global_settings_state,
+        resolved_global_settings,
         plugin_hooks=plugin_hooks,
     )
 

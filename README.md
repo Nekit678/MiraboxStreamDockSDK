@@ -277,9 +277,11 @@ are wrapped with the relevant event name and settings path.
 
 ### Global settings
 
-Use `update_global_settings()` when several in-memory changes belong to one
-logical operation. The callback works on an isolated draft; an exception or
-invalid JSON result rolls back the complete update:
+`application.global_settings` is the one runtime-owned facade shared by the
+application and context-aware action-dependency and service factories. Use
+`update()` when several in-memory changes belong to one logical operation. The
+callback works on an isolated draft; an exception or invalid JSON result rolls
+back the complete update:
 
 ```python
 def append_items(settings: JsonObject) -> None:
@@ -289,14 +291,14 @@ def append_items(settings: JsonObject) -> None:
     items.extend(values)
 
 
-runtime.update_global_settings(append_items)
+application.global_settings.update(append_items)
 ```
 
 After the callback succeeds, the transaction validates the complete draft and
 persists it with one `setGlobalSettings` command. Callback, validation, and send
-failures leave the previous local state unchanged. Direct mutations of
-`runtime.global_settings` remain supported for local replay state, but the
-transactional method is preferred for a batch of related persisted changes.
+failures leave the previous local state unchanged. `snapshot()` returns an
+isolated copy, so changing it never changes the runtime state. Use `set()` or
+`set_typed()` for complete replacements.
 
 ## Property Inspector client
 
@@ -636,11 +638,11 @@ Scalar-only frozen command objects may be shared between threads.
 Payload-bearing commands own mutable `OwnedJsonPayload` data: do not mutate a
 command or its payload once any thread begins `send()` or `send_async()`.
 `ValidatedJsonObject` backing snapshots are safe to hand between threads after
-construction, but every mutable COW view—event settings, `Action.settings`,
-`runtime.global_settings`, and `OwnedJsonPayload`—allows only one accessing or
-mutating thread at a time. Use `update_global_settings()` for serialized,
-rollback-safe updates from background services; do not share a live mutable
-view between threads.
+construction, but every mutable COW view—event settings, `Action.settings`, and
+`OwnedJsonPayload`—allows only one accessing or mutating thread at a time.
+`application.global_settings.snapshot()` is isolated, and its `update()` method
+serializes rollback-safe changes from background services; do not share a live
+mutable view between threads.
 
 Shutdown closes the typed boundary, drains owned inbound work while callback
 commands can still finish, stops the scheduler and pumps, and finally releases

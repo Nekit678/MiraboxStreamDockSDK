@@ -278,9 +278,11 @@ class CounterAction(Action[CounterSettings, Dependencies]):
 
 ### Глобальные настройки
 
-Используйте `update_global_settings()`, когда несколько изменений в памяти
-образуют одну логическую операцию. Callback работает с изолированным черновиком;
-исключение или некорректный итоговый JSON откатывает всё обновление:
+`application.global_settings` — один runtime-owned фасад, общий для
+application и context-aware фабрик зависимостей actions и services.
+Используйте `update()`, когда несколько изменений в памяти образуют одну
+логическую операцию. Callback работает с изолированным черновиком; исключение
+или некорректный итоговый JSON откатывает всё обновление:
 
 ```python
 def append_items(settings: JsonObject) -> None:
@@ -290,15 +292,14 @@ def append_items(settings: JsonObject) -> None:
     items.extend(values)
 
 
-runtime.update_global_settings(append_items)
+application.global_settings.update(append_items)
 ```
 
 После успешного callback транзакция валидирует весь черновик и сохраняет его
 одной командой `setGlobalSettings`. Ошибка callback, валидации или отправки
-оставляет прежнее локальное состояние без изменений. Прямые мутации
-`runtime.global_settings` остаются совместимыми для локального replay-состояния,
-но для группы связанных сохраняемых изменений предпочтителен транзакционный
-метод.
+оставляет прежнее локальное состояние без изменений. `snapshot()` возвращает
+изолированную копию, поэтому её мутация не меняет runtime state. Для полной
+замены используйте `set()` или `set_typed()`.
 
 ## Клиент Property Inspector
 
@@ -641,10 +642,10 @@ Frozen-команды только со скалярными полями мож
 или `send_async()` в любом потоке нельзя изменять ни команду, ни её payload.
 Неизменяемые backing snapshots `ValidatedJsonObject` можно последовательно
 передавать между потоками, но каждый изменяемый COW view — settings события,
-`Action.settings`, `runtime.global_settings` и `OwnedJsonPayload` — допускает
-только один обращающийся или изменяющий поток одновременно. Для
-сериализованных, rollback-safe обновлений из background services используйте
-`update_global_settings()` и не делите живой mutable view между потоками.
+`Action.settings` и `OwnedJsonPayload` — допускает только один обращающийся
+или изменяющий поток одновременно. `application.global_settings.snapshot()`
+изолирован, а его `update()` сериализует rollback-safe обновления из background
+services; не делите живой mutable view между потоками.
 
 Shutdown закрывает typed boundary, дренирует принятую inbound work, пока команды
 callback-ов ещё могут завершиться, останавливает scheduler и pumps, затем

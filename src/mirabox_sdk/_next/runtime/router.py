@@ -43,7 +43,7 @@ class RuntimeEventRouter(RuntimeEventDispatcher):
     def __init__(
         self,
         action_factory: ActionFactory,
-        global_settings_state: GlobalSettingsState,
+        global_settings_state: GlobalSettingsState | GlobalSettingsCoordinator,
         *,
         plugin_hooks: PluginHooks | None = None,
         registry: RuntimeEventRegistry = RUNTIME_EVENT_REGISTRY,
@@ -55,10 +55,14 @@ class RuntimeEventRouter(RuntimeEventDispatcher):
 
         action_metrics = _ActionContextMetricRecorder()
         contexts = DefaultActionContextManager(action_factory, metrics=action_metrics)
-        global_settings = GlobalSettingsCoordinator(
-            global_settings_state,
-            metrics=action_metrics,
-        )
+        if isinstance(global_settings_state, GlobalSettingsCoordinator):
+            global_settings = global_settings_state
+            global_settings.bind_metrics(action_metrics)
+        else:
+            global_settings = GlobalSettingsCoordinator(
+                global_settings_state,
+                metrics=action_metrics,
+            )
         broadcasts = BroadcastDispatcher(contexts, metrics=action_metrics)
         global_settings_route = registry.get_by_wire_name(DidReceiveGlobalSettingsEvent.event.value)
         if global_settings_route is None:  # pragma: no cover - registry invariant
