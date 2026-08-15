@@ -15,12 +15,12 @@ except ImportError:  # pragma: no cover - direct script execution
 
 WHEEL_REQUIRED_SUFFIXES = {
     "mirabox_sdk/__init__.py",
-    "mirabox_sdk/_next/boundary/composition.py",
-    "mirabox_sdk/_next/runtime/adapters/action_registry.py",
-    "mirabox_sdk/_next/runtime/composition.py",
-    "mirabox_sdk/_next/runtime/config.py",
-    "mirabox_sdk/_next/runtime/keyed_scheduler.py",
-    "mirabox_sdk/_next/runtime/metrics.py",
+    "mirabox_sdk/_internal/boundary/composition.py",
+    "mirabox_sdk/_internal/runtime/adapters/action_registry.py",
+    "mirabox_sdk/_internal/runtime/composition.py",
+    "mirabox_sdk/_internal/runtime/config.py",
+    "mirabox_sdk/_internal/runtime/keyed_scheduler.py",
+    "mirabox_sdk/_internal/runtime/metrics.py",
     "mirabox_sdk/completion.py",
     "mirabox_sdk/py.typed",
     "mirabox_sdk/runtime/__init__.py",
@@ -31,10 +31,17 @@ WHEEL_REQUIRED_SUFFIXES = {
     "mirabox_sdk/property_inspector/mirabox-sdk.js",
 }
 WHEEL_FORBIDDEN_SUFFIXES = {
-    "mirabox_sdk/_next/protocol/adapters/legacy.py",
-    "mirabox_sdk/_next/runtime/adapters/legacy_actions.py",
+    "mirabox_sdk/connection.py",
+    "mirabox_sdk/inbound.py",
+    "mirabox_sdk/outbound.py",
+    "mirabox_sdk/plugin.py",
+    "mirabox_sdk/stores.py",
+    "mirabox_sdk/_internal/protocol/adapters/legacy.py",
+    "mirabox_sdk/_internal/runtime/_legacy.py",
+    "mirabox_sdk/_internal/runtime/adapters/legacy_actions.py",
     "mirabox_sdk/experimental.py",
 }
+WHEEL_FORBIDDEN_PREFIXES = {"mirabox_sdk/_next/"}
 SDIST_REQUIRED_SUFFIXES = {
     "CHANGELOG.md",
     "CONTRIBUTING.md",
@@ -47,12 +54,12 @@ SDIST_REQUIRED_SUFFIXES = {
     "examples/counter_plugin/com.example.counter.sdPlugin/manifest.json",
     "examples/counter_plugin/src/counter_plugin/__main__.py",
     "pyproject.toml",
-    "src/mirabox_sdk/_next/boundary/composition.py",
-    "src/mirabox_sdk/_next/runtime/adapters/action_registry.py",
-    "src/mirabox_sdk/_next/runtime/composition.py",
-    "src/mirabox_sdk/_next/runtime/config.py",
-    "src/mirabox_sdk/_next/runtime/keyed_scheduler.py",
-    "src/mirabox_sdk/_next/runtime/metrics.py",
+    "src/mirabox_sdk/_internal/boundary/composition.py",
+    "src/mirabox_sdk/_internal/runtime/adapters/action_registry.py",
+    "src/mirabox_sdk/_internal/runtime/composition.py",
+    "src/mirabox_sdk/_internal/runtime/config.py",
+    "src/mirabox_sdk/_internal/runtime/keyed_scheduler.py",
+    "src/mirabox_sdk/_internal/runtime/metrics.py",
     "src/mirabox_sdk/completion.py",
     "src/mirabox_sdk/py.typed",
     "src/mirabox_sdk/runtime/__init__.py",
@@ -64,10 +71,17 @@ SDIST_REQUIRED_SUFFIXES = {
 }
 SDIST_FORBIDDEN_SUFFIXES = {
     "examples/counter_plugin/src/counter_plugin/plugin.py",
-    "src/mirabox_sdk/_next/protocol/adapters/legacy.py",
-    "src/mirabox_sdk/_next/runtime/adapters/legacy_actions.py",
+    "src/mirabox_sdk/connection.py",
+    "src/mirabox_sdk/inbound.py",
+    "src/mirabox_sdk/outbound.py",
+    "src/mirabox_sdk/plugin.py",
+    "src/mirabox_sdk/stores.py",
+    "src/mirabox_sdk/_internal/protocol/adapters/legacy.py",
+    "src/mirabox_sdk/_internal/runtime/_legacy.py",
+    "src/mirabox_sdk/_internal/runtime/adapters/legacy_actions.py",
     "src/mirabox_sdk/experimental.py",
 }
+SDIST_FORBIDDEN_PREFIXES = {"src/mirabox_sdk/_next/"}
 
 
 def _single_match(directory: Path, pattern: str) -> Path:
@@ -80,6 +94,27 @@ def _single_match(directory: Path, pattern: str) -> Path:
 def _has_suffix(names: set[str], suffix: str) -> bool:
     suffix_parts = PurePosixPath(suffix).parts
     return any(PurePosixPath(name).parts[-len(suffix_parts) :] == suffix_parts for name in names)
+
+
+def _has_path_prefix(name: str, prefix: str) -> bool:
+    name_parts = PurePosixPath(name).parts
+    prefix_parts = PurePosixPath(prefix).parts
+    return any(
+        name_parts[index : index + len(prefix_parts)] == prefix_parts
+        for index in range(len(name_parts) - len(prefix_parts) + 1)
+    )
+
+
+def _forbidden_names(
+    names: set[str],
+    suffixes: set[str],
+    prefixes: set[str],
+) -> list[str]:
+    forbidden = {suffix for suffix in suffixes if _has_suffix(names, suffix)}
+    forbidden.update(
+        name for name in names if any(_has_path_prefix(name, prefix) for prefix in prefixes)
+    )
+    return sorted(forbidden)
 
 
 def verify_distribution(directory: Path) -> tuple[Path, Path]:
@@ -95,8 +130,10 @@ def verify_distribution(directory: Path) -> tuple[Path, Path]:
     )
     if missing_wheel:
         raise ValueError(f"Wheel is missing required files: {', '.join(missing_wheel)}")
-    forbidden_wheel = sorted(
-        suffix for suffix in WHEEL_FORBIDDEN_SUFFIXES if _has_suffix(wheel_names, suffix)
+    forbidden_wheel = _forbidden_names(
+        wheel_names,
+        WHEEL_FORBIDDEN_SUFFIXES,
+        WHEEL_FORBIDDEN_PREFIXES,
     )
     if forbidden_wheel:
         raise ValueError(f"Wheel contains removed files: {', '.join(forbidden_wheel)}")
@@ -108,8 +145,10 @@ def verify_distribution(directory: Path) -> tuple[Path, Path]:
     )
     if missing_source:
         raise ValueError(f"Source archive is missing required files: {', '.join(missing_source)}")
-    forbidden_source = sorted(
-        suffix for suffix in SDIST_FORBIDDEN_SUFFIXES if _has_suffix(source_names, suffix)
+    forbidden_source = _forbidden_names(
+        source_names,
+        SDIST_FORBIDDEN_SUFFIXES,
+        SDIST_FORBIDDEN_PREFIXES,
     )
     if forbidden_source:
         raise ValueError(f"Source archive contains removed files: {', '.join(forbidden_source)}")

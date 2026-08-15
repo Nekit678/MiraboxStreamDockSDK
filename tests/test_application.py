@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 import unittest
 from concurrent.futures import InvalidStateError
+from importlib import import_module
 from threading import Event, Thread
 from threading import enumerate as enumerate_threads
 from typing import get_args, get_origin, get_type_hints
@@ -38,11 +39,11 @@ from mirabox_sdk import (
     WebSocketConnectorFactory,
     create_stream_dock_application,
 )
-from mirabox_sdk._next.messaging.models import CommandFuture as BoundaryCommandFuture
-from mirabox_sdk._next.messaging.outbound import (
+from mirabox_sdk._internal.messaging.models import CommandFuture as BoundaryCommandFuture
+from mirabox_sdk._internal.messaging.outbound import (
     OutboundCommandQueueClosedError,
 )
-from mirabox_sdk._next.messaging.outbound import (
+from mirabox_sdk._internal.messaging.outbound import (
     OutboundQueueFullError as BoundaryQueueFullError,
 )
 
@@ -295,6 +296,18 @@ class StableRuntimeApiTests(unittest.TestCase):
         self.assertFalse(removed.intersection(mirabox_sdk.__all__))
         self.assertTrue(all(not hasattr(mirabox_sdk, name) for name in removed))
         self.assertNotIn("mirabox_sdk.experimental", sys.modules)
+
+    def test_removed_legacy_runtime_modules_cannot_be_imported(self) -> None:
+        for module_name in (
+            "mirabox_sdk._next",
+            "mirabox_sdk.connection",
+            "mirabox_sdk.inbound",
+            "mirabox_sdk.outbound",
+            "mirabox_sdk.plugin",
+            "mirabox_sdk.stores",
+        ):
+            with self.subTest(module=module_name), self.assertRaises(ModuleNotFoundError):
+                import_module(module_name)
 
     def test_importing_runtime_does_not_start_workers(self) -> None:
         before = {thread.ident for thread in enumerate_threads()}

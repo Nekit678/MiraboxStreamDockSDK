@@ -118,13 +118,6 @@ class StreamDockEvent:
         return str(object.__getattribute__(self, "event"))
 
 
-class EventScope(StrEnum):
-    """Runtime destination for a recognized Stream Dock event."""
-
-    ACTION = "action"
-    BROADCAST = "broadcast"
-
-
 EventParser = Callable[[JsonObject, str], StreamDockEvent]
 
 
@@ -141,27 +134,6 @@ class EventCodecDescriptor:
     wire_name: str
     event_class: type[StreamDockEvent]
     parser: EventParser
-
-
-@dataclass(frozen=True, slots=True)
-class EventDescriptor(EventCodecDescriptor):
-    """Legacy compatibility view combining codec and runtime metadata.
-
-    New protocol parsing uses :class:`EventCodecDescriptor`, while the
-    experimental dispatcher owns its routing policy in ``_next.runtime``.
-    This combined descriptor remains available until the legacy runtime is
-    retired so the supported public API does not change during migration.
-
-    Attributes:
-        scope: Whether the event targets one action or all active actions.
-        callback: :class:`Action` callback selected by the runtime.
-        runtime_handler: Optional runtime method for events that update state or
-            create/remove action instances before invoking ``callback``.
-    """
-
-    scope: EventScope
-    callback: str
-    runtime_handler: str | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

@@ -5,8 +5,8 @@ Importing this package does not start threads or connect to Stream Dock.
 by ``run_plugin_cli()``.
 """
 
-from .._next.messaging.inbound import InboundOverflowPolicy
-from .._next.runtime.composition import (
+from .._internal.messaging.inbound import InboundOverflowPolicy
+from .._internal.runtime.composition import (
     StreamDockRuntime,
     StreamDockRuntimeLifecycleError,
 )

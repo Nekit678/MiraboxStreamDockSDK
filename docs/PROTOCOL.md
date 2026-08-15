@@ -5,10 +5,14 @@ API implemented by `mirabox-stream-dock-sdk`. It is a compatibility map, not a
 replacement for the upstream protocol specification.
 
 The supported application model starts with `StreamDockApplication`. Import
-public names only from `mirabox_sdk`; `mirabox_sdk._next` is an implementation
+public names only from `mirabox_sdk`; `mirabox_sdk._internal` is an implementation
 namespace and not an application extension point. The complete, tested plugin
 in [`examples/counter_plugin`](../examples/counter_plugin) is the executable
 companion to this map.
+
+The supported import paths are `mirabox_sdk` and `mirabox_sdk.runtime`. Version
+`0.5.0` removes the unsupported direct legacy runtime modules and the temporary
+`mirabox_sdk._next` namespace from distributions.
 
 ## Sources
 

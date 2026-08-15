@@ -1,7 +1,7 @@
 """Public immutable metrics snapshots for the runtime stack."""
 
-from .._next.boundary.metrics import StreamDockBoundaryMetrics
-from .._next.runtime.metrics import (
+from .._internal.boundary.metrics import StreamDockBoundaryMetrics
+from .._internal.runtime.metrics import (
     ActionContextMetrics,
     HandlerSchedulerMetrics,
     RuntimeEventPumpMetrics,

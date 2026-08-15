@@ -29,16 +29,16 @@ from mirabox_sdk import (
     StreamDockShutdownConfig,
     create_stream_dock_application,
 )
-from mirabox_sdk._next.transport.frames import OutboundFrame
-from mirabox_sdk._next.transport.metrics import WebSocketConnectorMetrics
-from mirabox_sdk._next.transport.ports import (
+from mirabox_sdk._internal.transport.frames import OutboundFrame
+from mirabox_sdk._internal.transport.metrics import WebSocketConnectorMetrics
+from mirabox_sdk._internal.transport.ports import (
     RawInboundSink,
     RawOutboundSource,
     SessionEventSink,
     WebSocketConnector,
 )
-from mirabox_sdk._next.transport.queues import TransportQueueClosedError
-from mirabox_sdk._next.transport.session import Connected, Disconnected
+from mirabox_sdk._internal.transport.queues import TransportQueueClosedError
+from mirabox_sdk._internal.transport.session import Connected, Disconnected
 
 EXAMPLE_ROOT = Path(__file__).resolve().parents[1]
 

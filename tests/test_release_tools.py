@@ -11,8 +11,10 @@ import zipfile
 from pathlib import Path
 
 from scripts.verify_distribution import (
+    SDIST_FORBIDDEN_PREFIXES,
     SDIST_FORBIDDEN_SUFFIXES,
     SDIST_REQUIRED_SUFFIXES,
+    WHEEL_FORBIDDEN_PREFIXES,
     WHEEL_FORBIDDEN_SUFFIXES,
     WHEEL_REQUIRED_SUFFIXES,
     verify_distribution,
@@ -25,9 +27,9 @@ SUPPORTED_PYTHON_VERSIONS = {"3.11", "3.12", "3.13", "3.14"}
 
 class VersionVerificationTests(unittest.TestCase):
     def test_current_project_version_is_consistent(self) -> None:
-        version = verify_version(tag="v0.4.0")
+        version = verify_version(tag="v0.5.0")
 
-        self.assertEqual(version, "0.4.0")
+        self.assertEqual(version, "0.5.0")
 
     def test_rejects_mismatched_release_tag(self) -> None:
         with self.assertRaisesRegex(ValueError, "must match"):
@@ -72,15 +74,15 @@ class VersionVerificationTests(unittest.TestCase):
 
 class DistributionVerificationTests(unittest.TestCase):
     def _write_distribution(self, directory: Path) -> tuple[Path, Path]:
-        wheel = directory / "mirabox_stream_dock_sdk-0.4.0-py3-none-any.whl"
+        wheel = directory / "mirabox_stream_dock_sdk-0.5.0-py3-none-any.whl"
         with zipfile.ZipFile(wheel, mode="w") as archive:
             for name in WHEEL_REQUIRED_SUFFIXES:
                 archive.writestr(name, b"")
 
-        source = directory / "mirabox_stream_dock_sdk-0.4.0.tar.gz"
+        source = directory / "mirabox_stream_dock_sdk-0.5.0.tar.gz"
         with tarfile.open(source, mode="w:gz") as archive:
             for name in SDIST_REQUIRED_SUFFIXES:
-                archive.addfile(tarfile.TarInfo(f"mirabox_stream_dock_sdk-0.4.0/{name}"))
+                archive.addfile(tarfile.TarInfo(f"mirabox_stream_dock_sdk-0.5.0/{name}"))
         return wheel, source
 
     def test_accepts_distribution_without_removed_runtime_files(self) -> None:
@@ -102,7 +104,30 @@ class DistributionVerificationTests(unittest.TestCase):
             self._write_distribution(directory)
             with tarfile.open(source, mode="w:gz") as archive:
                 for name in SDIST_REQUIRED_SUFFIXES | {next(iter(SDIST_FORBIDDEN_SUFFIXES))}:
-                    archive.addfile(tarfile.TarInfo(f"mirabox_stream_dock_sdk-0.4.0/{name}"))
+                    archive.addfile(tarfile.TarInfo(f"mirabox_stream_dock_sdk-0.5.0/{name}"))
+            with self.assertRaisesRegex(ValueError, "Source archive contains removed files"):
+                verify_distribution(directory)
+
+    def test_rejects_the_removed_internal_namespace_in_wheel_or_source(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            wheel, source = self._write_distribution(directory)
+            with zipfile.ZipFile(wheel, mode="a") as archive:
+                archive.writestr(next(iter(WHEEL_FORBIDDEN_PREFIXES)) + "runtime/routes.py", b"")
+            with self.assertRaisesRegex(ValueError, "Wheel contains removed files"):
+                verify_distribution(directory)
+
+            self._write_distribution(directory)
+            with tarfile.open(source, mode="w:gz") as archive:
+                for name in SDIST_REQUIRED_SUFFIXES:
+                    archive.addfile(tarfile.TarInfo(f"mirabox_stream_dock_sdk-0.5.0/{name}"))
+                archive.addfile(
+                    tarfile.TarInfo(
+                        "mirabox_stream_dock_sdk-0.5.0/"
+                        + next(iter(SDIST_FORBIDDEN_PREFIXES))
+                        + "runtime/routes.py"
+                    )
+                )
             with self.assertRaisesRegex(ValueError, "Source archive contains removed files"):
                 verify_distribution(directory)
 

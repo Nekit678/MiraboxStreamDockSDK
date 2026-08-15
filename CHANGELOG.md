@@ -4,7 +4,7 @@ All notable changes to this project are documented in this file. The project
 uses [Semantic Versioning](https://semver.org/); releases before `1.0.0` may
 change public APIs between minor versions.
 
-## [Unreleased]
+## [0.5.0] - 2026-08-15
 
 ### Added
 
@@ -19,17 +19,16 @@ change public APIs between minor versions.
   one rollback-safe global settings store.
 - Add `ApplicationContext.session_readiness` so service workers can wait for
   completed Stream Dock session initialization without blocking process start.
-- Add shared legacy/experimental runtime behavioral contracts and an executable
-  scheduler performance gate with throughput, callback-latency, boundedness,
-  and boundary-coalescing budgets.
+- Add executable scheduler performance checks with throughput,
+  callback-latency, boundedness, and prefetch-coalescing budgets.
 - Add release gates that keep supported Python metadata aligned with CI and
   verify the stable runtime, completion, typing, wheel, and sdist surface.
 
 ### Changed
 
-- Redact callback exception messages and disconnect reasons from legacy,
-  experimental-adapter, and new-runtime diagnostics while retaining event,
-  context, status, and exception-type metadata.
+- Redact callback exception messages and disconnect reasons from runtime
+  diagnostics while retaining event, context, status, and exception-type
+  metadata.
 - Make the bounded keyed-serial scheduler the default with four workers and a
   pending limit of 64; sequential dispatch remains explicitly selectable.
 - Unify action and boundary command completion and submission errors around one
@@ -44,6 +43,13 @@ change public APIs between minor versions.
   store/queue metrics from the package-level API.
 - Remove `mirabox_sdk.experimental`, its environment switches, the transitional
   boundary application adapter, and the future/sender compatibility adapters.
+- Remove the legacy direct-module runtime (`connection`, `inbound`, `outbound`,
+  `plugin`, and `stores`), its `EVENT_REGISTRY` compatibility adapter, and the
+  obsolete connection/listener protocols. These imports were unsupported after
+  0.4.0 and are removed in this 0.5.0 breaking pre-1.0 release.
+- Replace the temporary `mirabox_sdk._next` namespace with the private
+  `mirabox_sdk._internal` implementation namespace. Neither is a supported
+  application import path.
 
 ## [0.4.0] - 2026-07-28
 
@@ -198,7 +204,8 @@ change public APIs between minor versions.
 - Added the WebSocket transport and common CLI lifecycle runner.
 - Added the shared Property Inspector JavaScript client.
 
-[Unreleased]: https://github.com/Nekit678/MiraboxStreamDockSDK/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/Nekit678/MiraboxStreamDockSDK/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/Nekit678/MiraboxStreamDockSDK/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/Nekit678/MiraboxStreamDockSDK/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/Nekit678/MiraboxStreamDockSDK/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/Nekit678/MiraboxStreamDockSDK/compare/v0.2.0...v0.3.0

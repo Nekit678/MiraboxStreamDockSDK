@@ -314,8 +314,8 @@ def parse_plugin_launch_arguments(
         info: Decoded JSON value from ``-info``.
 
     Returns:
-        Immutable launch arguments ready for constructing a connection and
-        :class:`StreamDockPlugin`.
+        Immutable launch arguments ready for constructing a Stream Dock
+        application.
 
     Raises:
         InvalidPluginLaunchArgumentsError: If the port or string arguments are

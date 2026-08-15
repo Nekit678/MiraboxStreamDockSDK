@@ -5,11 +5,11 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Protocol, TypeAlias, TypeVar, runtime_checkable
 
-from .._next.boundary.ports import WebSocketConnectorFactory
-from .._next.messaging.inbound import InboundOverflowPolicy
-from .._next.runtime.composition import HandlerSchedulerFactory
-from .._next.runtime.plugin import Plugin
-from .._next.runtime.ports import ActionFactory, PluginHooks, RuntimeLifecycle
+from .._internal.boundary.ports import WebSocketConnectorFactory
+from .._internal.messaging.inbound import InboundOverflowPolicy
+from .._internal.runtime.composition import HandlerSchedulerFactory
+from .._internal.runtime.plugin import Plugin
+from .._internal.runtime.ports import ActionFactory, PluginHooks, RuntimeLifecycle
 from ..action import Action
 from ..codecs import JsonCodec
 from ..global_settings import GlobalSettings

@@ -8,14 +8,14 @@ from inspect import Parameter, signature
 from threading import Lock
 from typing import TypeVar, cast
 
-from .._next.runtime.composition import (
+from .._internal.runtime.composition import (
     create_stream_dock_runtime,
 )
-from .._next.runtime.global_settings import (
+from .._internal.runtime.global_settings import (
     DefaultGlobalSettingsState,
     GlobalSettingsCoordinator,
 )
-from .._next.runtime.session import SessionReadinessGate
+from .._internal.runtime.session import SessionReadinessGate
 from ..codecs import JsonCodec
 from ..global_settings import GlobalSettings
 from ..json_types import JsonObject
@@ -214,7 +214,7 @@ def create_stream_dock_application(
     resolved_services = _resolve_services(services)
     resolved_service_factories = _resolve_service_factories(service_factories)
 
-    from .._next.boundary.composition import create_stream_dock_boundary
+    from .._internal.boundary.composition import create_stream_dock_boundary
 
     resolved_queue_config = queue_config or StreamDockQueueConfig(
         raw_inbound_limit=_DEFAULT_QUEUE_LIMIT,

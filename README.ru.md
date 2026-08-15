@@ -412,13 +412,18 @@ wire-событие и команду с Python-моделью или вспом
 отдельных модулей считаются деталями реализации, если они дополнительно не
 экспортированы на верхнем уровне.
 
+Поддерживаемые import paths: `mirabox_sdk` и, для документированного runtime
+namespace, `mirabox_sdk.runtime`. В несовместимом pre-1.0 релизе `0.5.0` из
+дистрибутивов удалены неподдерживаемые legacy-модули (`connection`, `inbound`,
+`outbound`, `plugin`, `stores`) и временный namespace `mirabox_sdk._next`.
+
 `ApplicationRuntime` — полный контракт, используемый
 `StreamDockApplication.runtime`; более узкий `RuntimeLifecycle` намеренно не
 подходит для передачи в `StreamDockApplication`. Advanced composition points,
 принимаемые `create_stream_dock_application()` — `ActionFactory`,
 `DependencyAwareActionRegistry`, `HandlerSchedulerFactory` и
 `WebSocketConnectorFactory` — поддерживаются как top-level imports. Не
-импортируйте объекты из `mirabox_sdk._next`: это внутренний namespace.
+импортируйте объекты из `mirabox_sdk._internal`: это внутренний namespace.
 
 ## Сервисы приложения
 
@@ -811,7 +816,7 @@ MiraboxStreamDockSDK/
 │   ├── events.py                      # Модели входящих событий
 │   ├── parser.py                      # Строгий разбор сообщений
 │   ├── runtime/                       # Стабильный application/runtime API
-│   ├── _next/                         # Приватная реализация boundary/dispatcher
+│   ├── _internal/                     # Приватная реализация boundary/dispatcher
 │   ├── logging_config.py              # Изолированная настройка логирования SDK
 │   └── property_inspector/            # Ресурс браузерного SDK
 ├── examples/counter_plugin/           # Полный собираемый плагин

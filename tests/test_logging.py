@@ -27,11 +27,11 @@ class _BlockingStream(StringIO):
         super().__init__()
         self.write_started = Event()
         self.release_write = Event()
-        self._block_next_write = True
+        self._block_internal_write = True
 
     def write(self, value: str) -> int:
-        if self._block_next_write:
-            self._block_next_write = False
+        if self._block_internal_write:
+            self._block_internal_write = False
             self.write_started.set()
             self.release_write.wait(5)
         return super().write(value)

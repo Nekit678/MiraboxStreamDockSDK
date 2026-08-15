@@ -411,13 +411,18 @@ The supported public surface is exported from `mirabox_sdk`. Objects from
 individual modules should be treated as implementation details unless they are
 also exported there.
 
+Supported imports are `mirabox_sdk` and, for the documented runtime namespace,
+`mirabox_sdk.runtime`. In the breaking `0.5.0` release, the unsupported direct
+legacy modules (`connection`, `inbound`, `outbound`, `plugin`, and `stores`) and
+the temporary `mirabox_sdk._next` namespace were removed from distributions.
+
 `ApplicationRuntime` is the complete contract used by
 `StreamDockApplication.runtime`; `RuntimeLifecycle` is deliberately narrower
 and cannot be passed to `StreamDockApplication`. Advanced composition points
 accepted by `create_stream_dock_application()`—`ActionFactory`,
 `DependencyAwareActionRegistry`, `HandlerSchedulerFactory`, and
 `WebSocketConnectorFactory`—are supported top-level imports. Do not import
-from `mirabox_sdk._next`; that namespace is internal.
+from `mirabox_sdk._internal`; that namespace is internal.
 
 ## Application services
 
@@ -804,7 +809,7 @@ MiraboxStreamDockSDK/
 │   ├── events.py                      # Typed inbound event models
 │   ├── parser.py                      # Strict wire-message parser
 │   ├── runtime/                       # Stable application/runtime API
-│   ├── _next/                         # Private boundary/dispatcher implementation
+│   ├── _internal/                     # Private boundary/dispatcher implementation
 │   ├── logging_config.py              # Isolated SDK logging configuration
 │   └── property_inspector/            # Browser-side SDK resource
 ├── examples/counter_plugin/           # Complete buildable plugin

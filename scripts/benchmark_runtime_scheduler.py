@@ -23,11 +23,11 @@ from mirabox_sdk import (
     KeyDownEvent,
     StreamDockEvent,
 )
-from mirabox_sdk._next.messaging.inbound import InboundEventQueue
-from mirabox_sdk._next.runtime.keyed_scheduler import KeyedSerialHandlerScheduler
-from mirabox_sdk._next.runtime.models import DispatchOutcome, DispatchResult
-from mirabox_sdk._next.runtime.pumps import RuntimeEventPump
-from mirabox_sdk._next.runtime.scheduler import SequentialHandlerScheduler
+from mirabox_sdk._internal.messaging.inbound import InboundEventQueue
+from mirabox_sdk._internal.runtime.keyed_scheduler import KeyedSerialHandlerScheduler
+from mirabox_sdk._internal.runtime.models import DispatchOutcome, DispatchResult
+from mirabox_sdk._internal.runtime.pumps import RuntimeEventPump
+from mirabox_sdk._internal.runtime.scheduler import SequentialHandlerScheduler
 
 
 @dataclass(frozen=True, slots=True)

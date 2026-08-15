@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from types import MappingProxyType
-from typing import TYPE_CHECKING, NoReturn
+from typing import NoReturn
 
 from .errors import InvalidFieldError, MalformedEventError, UnsupportedEventError
 from .events import (
@@ -40,11 +40,6 @@ from .events import (
     WillDisappearEvent,
 )
 from .json_types import JsonObject, clone_json_object, is_json_value
-
-if TYPE_CHECKING:
-    from .events import EventDescriptor
-
-    EVENT_REGISTRY: Mapping[str, EventDescriptor]
 
 
 def _invalid(
@@ -641,18 +636,6 @@ EVENT_CODEC_REGISTRY: Mapping[str, EventCodecDescriptor] = _build_event_codec_re
         ),
     )
 )
-
-
-def __getattr__(name: str) -> object:
-    """Lazily expose the combined registry required by the legacy runtime."""
-
-    if name == "EVENT_REGISTRY":
-        from ._next.runtime._legacy import build_legacy_event_registry
-
-        registry = build_legacy_event_registry(EVENT_CODEC_REGISTRY)
-        globals()[name] = registry
-        return registry
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def parse_stream_dock_event(
