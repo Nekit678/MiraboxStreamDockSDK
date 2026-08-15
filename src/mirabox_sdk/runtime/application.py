@@ -6,37 +6,42 @@ import logging
 from collections.abc import Callable, Iterable
 from inspect import Parameter, signature
 from threading import Lock
-from typing import TypeVar
+from typing import TypeVar, cast
 
-from .._next.boundary.config import BoundaryQueueConfig, BoundaryShutdownConfig
-from .._next.boundary.ports import WebSocketConnectorFactory
-from .._next.messaging.inbound import InboundOverflowPolicy
-from .._next.runtime.adapters import DependencyAwareActionRegistry
 from .._next.runtime.composition import (
-    HandlerSchedulerFactory,
-    StreamDockRuntime,
     create_stream_dock_runtime,
 )
-from .._next.runtime.config import RuntimeDispatcherConfig
 from .._next.runtime.global_settings import (
     DefaultGlobalSettingsState,
     GlobalSettingsCoordinator,
 )
-from .._next.runtime.metrics import StreamDockRuntimeMetrics
-from .._next.runtime.plugin import Plugin
-from .._next.runtime.ports import ActionFactory, PluginHooks, RuntimeLifecycle
 from .._next.runtime.session import SessionReadinessGate
 from ..codecs import JsonCodec
 from ..global_settings import GlobalSettings
 from ..json_types import JsonObject
 from ..protocols import StreamDockActionDependencies, StreamDockSender
 from ..registration import PluginLaunchArguments
-from .ports import ApplicationContext, ApplicationService, ApplicationServiceFactory
+from .config import RuntimeDispatcherConfig, StreamDockQueueConfig, StreamDockShutdownConfig
+from .metrics import StreamDockRuntimeMetrics
+from .ports import (
+    ActionFactory,
+    ApplicationContext,
+    ApplicationRuntime,
+    ApplicationService,
+    ApplicationServiceFactory,
+    DependencyAwareActionRegistry,
+    HandlerSchedulerFactory,
+    InboundOverflowPolicy,
+    Plugin,
+    PluginHooks,
+    WebSocketConnectorFactory,
+)
 
 _DEFAULT_QUEUE_LIMIT = 1024
 _DEFAULT_SESSION_QUEUE_LIMIT = 16
 
 GlobalSettingsT = TypeVar("GlobalSettingsT")
+ActionDependenciesT = TypeVar("ActionDependenciesT", bound=StreamDockActionDependencies)
 logger = logging.getLogger(__name__)
 
 
@@ -54,12 +59,12 @@ class StreamDockApplication:
 
     def __init__(
         self,
-        runtime: StreamDockRuntime,
+        runtime: ApplicationRuntime,
         *,
         services: Iterable[ApplicationService] = (),
     ) -> None:
-        if not isinstance(runtime, RuntimeLifecycle):
-            raise TypeError("runtime must implement RuntimeLifecycle")
+        if not isinstance(runtime, ApplicationRuntime):
+            raise TypeError("runtime must implement ApplicationRuntime")
         self._runtime = runtime
         self._services = _resolve_services(services)
         self._started_services: list[ApplicationService] = []
@@ -68,8 +73,8 @@ class StreamDockApplication:
         self._stop_requested = False
 
     @property
-    def runtime(self) -> StreamDockRuntime:
-        """Return the runtime facade for state and diagnostic inspection."""
+    def runtime(self) -> ApplicationRuntime:
+        """Return the complete runtime facade used by this application."""
 
         return self._runtime
 
@@ -166,16 +171,16 @@ class StreamDockApplication:
 def create_stream_dock_application(
     launch_arguments: PluginLaunchArguments,
     *,
-    action_factory: ActionFactory | DependencyAwareActionRegistry,
+    action_factory: ActionFactory | DependencyAwareActionRegistry[ActionDependenciesT],
     action_dependencies_factory: (
-        Callable[[ApplicationContext], StreamDockActionDependencies]
-        | Callable[[StreamDockSender], StreamDockActionDependencies]
+        Callable[[ApplicationContext], ActionDependenciesT]
+        | Callable[[StreamDockSender], ActionDependenciesT]
         | None
     ) = None,
     plugin: Plugin | None = None,
     plugin_hooks: PluginHooks | None = None,
-    queue_config: BoundaryQueueConfig | None = None,
-    shutdown_config: BoundaryShutdownConfig | None = None,
+    queue_config: StreamDockQueueConfig | None = None,
+    shutdown_config: StreamDockShutdownConfig | None = None,
     runtime_config: RuntimeDispatcherConfig | None = None,
     scheduler_factory: HandlerSchedulerFactory | None = None,
     services: Iterable[ApplicationService] = (),
@@ -211,7 +216,7 @@ def create_stream_dock_application(
 
     from .._next.boundary.composition import create_stream_dock_boundary
 
-    resolved_queue_config = queue_config or BoundaryQueueConfig(
+    resolved_queue_config = queue_config or StreamDockQueueConfig(
         raw_inbound_limit=_DEFAULT_QUEUE_LIMIT,
         inbound_event_limit=_DEFAULT_QUEUE_LIMIT,
         outbound_command_limit=_DEFAULT_QUEUE_LIMIT,
@@ -300,8 +305,16 @@ def _create_action_dependencies(
     context: ApplicationContext,
 ) -> StreamDockActionDependencies:
     if _accepts_application_context(factory):
-        return factory(context)  # type: ignore[arg-type]
-    return factory(context.stream_dock)  # type: ignore[arg-type]
+        context_factory = cast(
+            Callable[[ApplicationContext], StreamDockActionDependencies],
+            factory,
+        )
+        return context_factory(context)
+    sender_factory = cast(
+        Callable[[StreamDockSender], StreamDockActionDependencies],
+        factory,
+    )
+    return sender_factory(context.stream_dock)
 
 
 def _accepts_application_context(factory: Callable[..., object]) -> bool:

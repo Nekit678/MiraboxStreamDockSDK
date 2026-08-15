@@ -548,7 +548,6 @@ class PackageIsolationTests(unittest.TestCase):
             "TransportQueueControl",
             "TransportQueueMetrics",
             "WebSocketConnector",
-            "WebSocketConnectorFactory",
             "WebSocketConnectorMetrics",
         }
 

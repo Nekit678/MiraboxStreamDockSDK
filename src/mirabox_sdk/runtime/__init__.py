@@ -29,23 +29,30 @@ from .metrics import (
 from .ports import (
     ActionFactory,
     ApplicationContext,
+    ApplicationRuntime,
     ApplicationService,
     ApplicationServiceFactory,
+    DependencyAwareActionRegistry,
     GlobalSettings,
+    HandlerSchedulerFactory,
     Plugin,
     PluginHooks,
     RuntimeLifecycle,
     SessionReadiness,
     StreamDockSender,
+    WebSocketConnectorFactory,
 )
 
 __all__ = [
     "ActionContextMetrics",
     "ActionFactory",
     "ApplicationContext",
+    "ApplicationRuntime",
     "ApplicationService",
     "ApplicationServiceFactory",
+    "DependencyAwareActionRegistry",
     "GlobalSettings",
+    "HandlerSchedulerFactory",
     "HandlerSchedulerMetrics",
     "InboundOverflowPolicy",
     "Plugin",
@@ -65,5 +72,6 @@ __all__ = [
     "StreamDockRuntimeMetrics",
     "StreamDockSender",
     "StreamDockShutdownConfig",
+    "WebSocketConnectorFactory",
     "create_stream_dock_application",
 ]

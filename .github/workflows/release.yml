@@ -35,6 +35,7 @@ jobs:
         run: |
           ruff format --check src tests scripts examples
           ruff check src tests scripts examples
+          python -m mypy
           python -m unittest discover -s tests -v
           PYTHONPATH=examples/counter_plugin/src python -m unittest discover -s examples/counter_plugin/tests -v
           python -m compileall -q src tests scripts examples

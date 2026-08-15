@@ -398,7 +398,7 @@ wire-событие и команду с Python-моделью или вспом
 
 | Область | Публичный API |
 |---|---|
-| Среда выполнения | `StreamDockApplication`, `StreamDockRuntime`, `ApplicationContext`, `ApplicationService`, `SessionReadiness`, `create_stream_dock_application`, `RuntimeDispatcherConfig`, runtime metrics и ports |
+| Среда выполнения | `StreamDockApplication`, `ApplicationRuntime`, `StreamDockRuntime`, `ApplicationContext`, `ApplicationService`, `SessionReadiness`, `create_stream_dock_application`, `RuntimeDispatcherConfig`, runtime metrics и ports |
 | Actions | `Action`, `ActionRegistry`, `StreamDockSender` |
 | Запуск и регистрация | `PluginLaunchArguments`, модели регистрации, `parse_plugin_cli_arguments`, `run_plugin_cli` |
 | Входящие события | Типизированные immutable-модели и `InboundOverflowPolicy` |
@@ -411,6 +411,14 @@ wire-событие и команду с Python-моделью или вспом
 Поддерживаемый публичный интерфейс экспортируется из `mirabox_sdk`. Объекты из
 отдельных модулей считаются деталями реализации, если они дополнительно не
 экспортированы на верхнем уровне.
+
+`ApplicationRuntime` — полный контракт, используемый
+`StreamDockApplication.runtime`; более узкий `RuntimeLifecycle` намеренно не
+подходит для передачи в `StreamDockApplication`. Advanced composition points,
+принимаемые `create_stream_dock_application()` — `ActionFactory`,
+`DependencyAwareActionRegistry`, `HandlerSchedulerFactory` и
+`WebSocketConnectorFactory` — поддерживаются как top-level imports. Не
+импортируйте объекты из `mirabox_sdk._next`: это внутренний namespace.
 
 ## Сервисы приложения
 

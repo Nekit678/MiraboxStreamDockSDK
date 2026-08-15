@@ -3,12 +3,26 @@
 from abc import abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Protocol, TypeAlias, runtime_checkable
+from typing import Any, Protocol, TypeAlias, TypeVar, runtime_checkable
 
+from .._next.boundary.ports import WebSocketConnectorFactory
+from .._next.messaging.inbound import InboundOverflowPolicy
+from .._next.runtime.composition import HandlerSchedulerFactory
 from .._next.runtime.plugin import Plugin
 from .._next.runtime.ports import ActionFactory, PluginHooks, RuntimeLifecycle
+from ..action import Action
+from ..codecs import JsonCodec
 from ..global_settings import GlobalSettings
-from ..protocols import StreamDockSender
+from ..json_types import JsonObject
+from ..protocols import StreamDockActionDependencies, StreamDockSender
+from .metrics import StreamDockRuntimeMetrics
+
+GlobalSettingsT = TypeVar("GlobalSettingsT")
+DependenciesT = TypeVar(
+    "DependenciesT",
+    bound=StreamDockActionDependencies,
+    contravariant=True,
+)
 
 
 @runtime_checkable
@@ -46,6 +60,81 @@ class SessionReadiness(Protocol):
     @abstractmethod
     def wait(self, timeout: float | None = None) -> bool:
         """Wait for readiness or terminal closure and return readiness state."""
+
+        ...
+
+
+@runtime_checkable
+class ApplicationRuntime(Protocol):
+    """Complete runtime contract consumed by :class:`StreamDockApplication`.
+
+    ``RuntimeLifecycle`` intentionally remains a narrower contract for
+    components that only need to run, close, or inspect metrics. It is not
+    sufficient to construct an application because the application also
+    exposes the canonical global-settings facade and its write operations.
+    """
+
+    @property
+    @abstractmethod
+    def global_settings(self) -> GlobalSettings:
+        """Return the canonical runtime-owned plugin-wide settings facade."""
+
+        ...
+
+    @abstractmethod
+    def run_forever(self) -> None:
+        """Run until remote disconnect, close, or a fatal failure."""
+
+        ...
+
+    @abstractmethod
+    def close(self) -> None:
+        """Idempotently request graceful runtime shutdown."""
+
+        ...
+
+    @abstractmethod
+    def metrics(self) -> StreamDockRuntimeMetrics:
+        """Return an immutable aggregate runtime snapshot."""
+
+        ...
+
+    @abstractmethod
+    def update_global_settings(self, update: Callable[[JsonObject], None]) -> None:
+        """Persist one rollback-safe global-settings transaction."""
+
+        ...
+
+    @abstractmethod
+    def set_global_settings(self, settings: JsonObject) -> None:
+        """Persist raw plugin-wide settings."""
+
+        ...
+
+    @abstractmethod
+    def set_typed_global_settings(
+        self,
+        settings: GlobalSettingsT,
+        codec: JsonCodec[GlobalSettingsT],
+    ) -> None:
+        """Encode and persist typed plugin-wide settings."""
+
+        ...
+
+
+@runtime_checkable
+class DependencyAwareActionRegistry(Protocol[DependenciesT]):
+    """Registry that builds actions with one typed shared dependency object."""
+
+    @abstractmethod
+    def create(
+        self,
+        action_uuid: str,
+        context: str,
+        settings: JsonObject,
+        dependencies: DependenciesT,
+    ) -> Action[Any, Any] | None:
+        """Return an action for one visible context, or ``None`` if unknown."""
 
         ...
 
@@ -92,13 +181,18 @@ ApplicationServiceFactory: TypeAlias = Callable[[ApplicationContext], Applicatio
 
 __all__ = [
     "ActionFactory",
+    "ApplicationRuntime",
     "ApplicationContext",
     "ApplicationService",
     "ApplicationServiceFactory",
+    "DependencyAwareActionRegistry",
     "GlobalSettings",
+    "HandlerSchedulerFactory",
+    "InboundOverflowPolicy",
     "Plugin",
     "PluginHooks",
     "RuntimeLifecycle",
     "SessionReadiness",
     "StreamDockSender",
+    "WebSocketConnectorFactory",
 ]

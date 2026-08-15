@@ -60,6 +60,28 @@ jobs:
       - name: Compile Python sources
         run: python -m compileall -q src tests scripts examples
 
+  typecheck:
+    name: Static typing (Python 3.11)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install SDK and development tools
+        run: python -m pip install -e ".[dev]"
+
+      - name: Type check public SDK contracts
+        run: python -m mypy
+
   package:
     name: Build and verify distributions
     runs-on: ubuntu-latest

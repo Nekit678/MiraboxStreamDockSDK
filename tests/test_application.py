@@ -7,15 +7,19 @@ import unittest
 from concurrent.futures import InvalidStateError
 from threading import Event, Thread
 from threading import enumerate as enumerate_threads
-from typing import get_type_hints
+from typing import get_args, get_origin, get_type_hints
 
 import mirabox_sdk
 import mirabox_sdk.runtime as runtime
 from mirabox_sdk import (
+    ActionFactory,
     ApplicationContext,
+    ApplicationRuntime,
     ApplicationService,
     CommandFuture,
+    DependencyAwareActionRegistry,
     GlobalSettings,
+    HandlerSchedulerFactory,
     LogMessageCommand,
     OutboundCommandBusClosedError,
     OutboundCommandBusNotReadyError,
@@ -26,10 +30,12 @@ from mirabox_sdk import (
     RegistrationInfo,
     RegistrationPluginInfo,
     RuntimeDispatcherConfig,
+    RuntimeLifecycle,
     RuntimeSchedulerKind,
     SessionReadiness,
     StreamDockApplication,
     StreamDockShutdownConfig,
+    WebSocketConnectorFactory,
     create_stream_dock_application,
 )
 from mirabox_sdk._next.messaging.models import CommandFuture as BoundaryCommandFuture
@@ -55,6 +61,11 @@ class _RecordingRuntime:
         self.release = Event()
         self.block = block
         self.closed = False
+        self._global_settings = _RecordingGlobalSettings()
+
+    @property
+    def global_settings(self) -> GlobalSettings:
+        return self._global_settings
 
     def run_forever(self) -> None:
         self.events.append("runtime-run")
@@ -73,6 +84,33 @@ class _RecordingRuntime:
 
     def metrics(self) -> object:
         raise AssertionError("metrics are not used by application lifecycle tests")
+
+    def update_global_settings(self, _update: object) -> None:
+        raise AssertionError("global settings are not used by application lifecycle tests")
+
+    def set_global_settings(self, _settings: object) -> None:
+        raise AssertionError("global settings are not used by application lifecycle tests")
+
+    def set_typed_global_settings(self, _settings: object, _codec: object) -> None:
+        raise AssertionError("global settings are not used by application lifecycle tests")
+
+
+class _RecordingGlobalSettings:
+    @property
+    def loaded(self) -> bool:
+        return False
+
+    def snapshot(self) -> dict[str, object]:
+        return {}
+
+    def update(self, _update: object) -> None:
+        raise AssertionError("global settings are not used by application lifecycle tests")
+
+    def set(self, _settings: object) -> None:
+        raise AssertionError("global settings are not used by application lifecycle tests")
+
+    def set_typed(self, _settings: object, _codec: object) -> None:
+        raise AssertionError("global settings are not used by application lifecycle tests")
 
 
 class _RecordingService:
@@ -188,9 +226,12 @@ class StableRuntimeApiTests(unittest.TestCase):
             "ActionContextMetrics",
             "ActionFactory",
             "ApplicationContext",
+            "ApplicationRuntime",
             "ApplicationService",
             "ApplicationServiceFactory",
+            "DependencyAwareActionRegistry",
             "GlobalSettings",
+            "HandlerSchedulerFactory",
             "HandlerSchedulerMetrics",
             "InboundOverflowPolicy",
             "Plugin",
@@ -210,6 +251,7 @@ class StableRuntimeApiTests(unittest.TestCase):
             "StreamDockRuntimeMetrics",
             "StreamDockSender",
             "StreamDockShutdownConfig",
+            "WebSocketConnectorFactory",
             "create_stream_dock_application",
         }
 
@@ -220,6 +262,24 @@ class StableRuntimeApiTests(unittest.TestCase):
             get_type_hints(ApplicationContext)["session_readiness"],
             SessionReadiness,
         )
+
+    def test_application_annotations_use_supported_public_types(self) -> None:
+        application_hints = get_type_hints(StreamDockApplication.__init__)
+        factory_hints = get_type_hints(create_stream_dock_application)
+
+        self.assertIs(application_hints["runtime"], ApplicationRuntime)
+        self.assertEqual(factory_hints["scheduler_factory"], HandlerSchedulerFactory | None)
+        self.assertEqual(factory_hints["connector_factory"], WebSocketConnectorFactory | None)
+        self.assertEqual(factory_hints["plugin"], mirabox_sdk.Plugin | None)
+        self.assertEqual(factory_hints["plugin_hooks"], mirabox_sdk.PluginHooks | None)
+        self.assertEqual(factory_hints["queue_config"], mirabox_sdk.StreamDockQueueConfig | None)
+        self.assertEqual(
+            factory_hints["shutdown_config"], mirabox_sdk.StreamDockShutdownConfig | None
+        )
+        self.assertEqual(factory_hints["runtime_config"], RuntimeDispatcherConfig | None)
+        action_factory_types = get_args(factory_hints["action_factory"])
+        self.assertIs(action_factory_types[0], ActionFactory)
+        self.assertIs(get_origin(action_factory_types[1]), DependencyAwareActionRegistry)
 
     def test_legacy_and_experimental_runtime_surfaces_are_not_public(self) -> None:
         removed = {
@@ -383,8 +443,10 @@ class ApplicationServiceLifecycleTests(unittest.TestCase):
         runtime_lifecycle = _RecordingRuntime(events)
         service = _RecordingService("service", events)
 
+        self.assertIsInstance(runtime_lifecycle, ApplicationRuntime)
+        self.assertIsInstance(runtime_lifecycle, RuntimeLifecycle)
         self.assertIsInstance(service, ApplicationService)
-        StreamDockApplication(runtime_lifecycle, services=(service,))  # type: ignore[arg-type]
+        StreamDockApplication(runtime_lifecycle, services=(service,))
         with self.assertRaisesRegex(TypeError, r"services\[0\]"):
             StreamDockApplication(runtime_lifecycle, services=(object(),))  # type: ignore[arg-type,list-item]
         invalid_methods = type("InvalidService", (), {"start": 1, "stop": 2})()
@@ -393,6 +455,24 @@ class ApplicationServiceLifecycleTests(unittest.TestCase):
                 runtime_lifecycle,  # type: ignore[arg-type]
                 services=(invalid_methods,),  # type: ignore[arg-type]
             )
+
+    def test_rejects_runtime_that_only_implements_narrow_lifecycle(self) -> None:
+        class LifecycleOnlyRuntime:
+            def run_forever(self) -> None:
+                return None
+
+            def close(self) -> None:
+                return None
+
+            def metrics(self) -> object:
+                return object()
+
+        runtime_lifecycle = LifecycleOnlyRuntime()
+        self.assertIsInstance(runtime_lifecycle, RuntimeLifecycle)
+        self.assertNotIsInstance(runtime_lifecycle, ApplicationRuntime)
+
+        with self.assertRaisesRegex(TypeError, "ApplicationRuntime"):
+            StreamDockApplication(runtime_lifecycle)  # type: ignore[arg-type]
 
     def test_starts_in_order_and_stops_in_reverse_exactly_once(self) -> None:
         events: list[str] = []

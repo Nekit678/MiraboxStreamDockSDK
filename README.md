@@ -397,7 +397,7 @@ behavior implemented by this SDK.
 
 | Area | Public API |
 |---|---|
-| Runtime | `StreamDockApplication`, `StreamDockRuntime`, `ApplicationContext`, `ApplicationService`, `SessionReadiness`, `create_stream_dock_application`, `RuntimeDispatcherConfig`, runtime metrics and ports |
+| Runtime | `StreamDockApplication`, `ApplicationRuntime`, `StreamDockRuntime`, `ApplicationContext`, `ApplicationService`, `SessionReadiness`, `create_stream_dock_application`, `RuntimeDispatcherConfig`, runtime metrics and ports |
 | Actions | `Action`, `ActionRegistry`, `StreamDockSender` |
 | Launch and registration | `PluginLaunchArguments`, registration dataclasses, `parse_plugin_cli_arguments`, `run_plugin_cli` |
 | Input events | Typed immutable event models and `InboundOverflowPolicy` |
@@ -410,6 +410,14 @@ behavior implemented by this SDK.
 The supported public surface is exported from `mirabox_sdk`. Objects from
 individual modules should be treated as implementation details unless they are
 also exported there.
+
+`ApplicationRuntime` is the complete contract used by
+`StreamDockApplication.runtime`; `RuntimeLifecycle` is deliberately narrower
+and cannot be passed to `StreamDockApplication`. Advanced composition points
+accepted by `create_stream_dock_application()`—`ActionFactory`,
+`DependencyAwareActionRegistry`, `HandlerSchedulerFactory`, and
+`WebSocketConnectorFactory`—are supported top-level imports. Do not import
+from `mirabox_sdk._next`; that namespace is internal.
 
 ## Application services
 
