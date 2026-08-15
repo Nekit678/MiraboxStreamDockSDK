@@ -4,6 +4,12 @@ This document maps the public MiraBox Stream Dock plugin protocol to the Python
 API implemented by `mirabox-stream-dock-sdk`. It is a compatibility map, not a
 replacement for the upstream protocol specification.
 
+The supported application model starts with `StreamDockApplication`. Import
+public names only from `mirabox_sdk`; `mirabox_sdk._next` is an implementation
+namespace and not an application extension point. The complete, tested plugin
+in [`examples/counter_plugin`](../examples/counter_plugin) is the executable
+companion to this map.
+
 ## Sources
 
 The implementation is based primarily on:
@@ -43,20 +49,71 @@ Stream Dock starts a compiled plugin with four named arguments:
 
 Use `parse_plugin_cli_arguments()` to validate those arguments or
 `run_plugin_cli()` to parse them and manage the application lifecycle. After the
-WebSocket opens, `StreamDockPlugin` sends `RegisterPluginCommand` with the
-runtime-provided event name and plugin UUID.
+WebSocket opens, the `StreamDockApplication` runtime sends
+`RegisterPluginCommand` with the runtime-provided event name and plugin UUID.
+It then sends `GetGlobalSettingsCommand` as part of session initialization.
+Plugin code does not send either startup command itself.
+
+`create_stream_dock_application()` creates an unstarted typed boundary and
+runtime. The boundary parses and validates WebSocket messages, while the runtime
+owns action contexts, global settings, and the immutable route registry for all
+known event types. Applications register action UUIDs with `ActionRegistry`;
+they do not configure protocol parsers or runtime routes.
+
+```python
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from mirabox_sdk import (
+    Action,
+    ActionRegistry,
+    JsonObject,
+    PluginLaunchArguments,
+    StreamDockApplication,
+    StreamDockSender,
+    create_stream_dock_application,
+    run_plugin_cli,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class Dependencies:
+    stream_dock: StreamDockSender
+
+
+registry: ActionRegistry[Dependencies] = ActionRegistry()
+
+
+@registry.register("com.example.plugin.action")
+class ExampleAction(Action[JsonObject, Dependencies]):
+    pass
+
+
+def build_application(arguments: PluginLaunchArguments) -> StreamDockApplication:
+    return create_stream_dock_application(
+        arguments,
+        action_factory=registry,
+        action_dependencies_factory=Dependencies,
+    )
+
+
+if __name__ == "__main__":
+    raise SystemExit(run_plugin_cli(build_application))
+```
 
 ## Events received by a plugin
 
-All known messages are parsed by `parse_stream_dock_event()`. The resulting
-model is dispatched to the corresponding `Action` callback where applicable.
+The boundary parses known messages with `parse_stream_dock_event()`. The
+resulting model is dispatched to the corresponding `Action` callback where
+applicable.
 
 | Wire event | Python model | `Action` callback or runtime effect |
 |---|---|---|
 | `willAppear` | `WillAppearEvent` | Creates the context, then `on_will_appear()` |
 | `willDisappear` | `WillDisappearEvent` | Removes the context, then calls `on_will_disappear()` |
 | `didReceiveSettings` | `DidReceiveSettingsEvent` | Updates typed settings, then `on_did_receive_settings()` |
-| `didReceiveGlobalSettings` | `DidReceiveGlobalSettingsEvent` | Updates runtime state, broadcasts `on_did_receive_global_settings()`, and replays the latest event to actions created later |
+| `didReceiveGlobalSettings` | `DidReceiveGlobalSettingsEvent` | Updates runtime state, then notifies `Plugin` and active actions through `on_did_receive_global_settings()`; the latest event is replayed to actions created later |
 | `titleParametersDidChange` | `TitleParametersDidChangeEvent` | Updates title state, then `on_title_parameters_did_change()` |
 | `keyDown` | `KeyDownEvent` | `on_key_down()` |
 | `keyUp` | `KeyUpEvent` | `on_key_up()` |
@@ -77,34 +134,60 @@ model is dispatched to the corresponding `Action` callback where applicable.
 behavior even though it is not currently listed on the upstream “Received
 Events” page.
 
-An unknown event is preserved as `UnknownStreamDockEvent` by default and
-delivered once to `StreamDockPlugin.on_unhandled_event()`. Override that
-plugin-level hook to observe new protocol envelopes. Unknown events are not
-broadcast to actions because an SDK version that does not recognize an event
-cannot safely infer its action or broadcast scope. Pass `allow_unknown=False`
-to `parse_stream_dock_event()` when strict rejection with
-`UnsupportedEventError` is preferable.
+Known events are parsed into typed immutable models before the runtime dispatches
+them. `parse_stream_dock_event()` remains available for tests and advanced input
+validation, but a normal plugin does not call it for WebSocket traffic.
 
-Known-event parsing and runtime delivery are driven by the same read-only
-`EVENT_REGISTRY`. Its `EventDescriptor` entries bind each wire name to its
-parser, typed model, `EventScope`, `Action` callback, and optional stateful
-runtime handler. `ActionStore` owns context creation/removal and snapshots;
-`GlobalSettingsStore` owns persistence, COW snapshots, broadcasts, and replays.
+An unknown event is preserved as `UnknownStreamDockEvent` by default and
+delivered once to `Plugin.on_unhandled_event()`. Subclass `Plugin` and pass an
+instance as `plugin=` to `create_stream_dock_application()` to observe known
+plugin-wide broadcasts and unknown events. `PluginHooks` remains available only
+for an existing unknown-event-only integration. Unknown events are not broadcast
+to actions because an SDK version that does not recognize an event cannot safely
+infer its action or broadcast scope. Pass `allow_unknown=False` to
+`parse_stream_dock_event()` when strict rejection with `UnsupportedEventError`
+is preferable.
+
+For each known plugin-wide broadcast, the `Plugin` callback runs before a stable
+snapshot of active action callbacks. A failing callback is logged and isolated
+so the other recipients still receive the broadcast. Action callbacks are serial
+for one context and may overlap for different contexts; lifecycle, broadcast,
+and unknown events are ordering barriers.
+
+## Global settings
+
+`application.global_settings` is the canonical runtime-owned `GlobalSettings`
+facade. The same object is supplied as `ApplicationContext.global_settings` to
+context-aware action-dependency and service factories. Incoming global-settings
+events replace its state before callbacks; a successfully sent local write also
+replaces its state and becomes the value replayed to actions that appear later.
+
+`snapshot()` returns an isolated copy. Mutating that return value never changes
+runtime state and must not be used as a write mechanism. The permitted writes
+are `global_settings.update(callback)` for one rollback-safe mutation of an
+isolated draft, `global_settings.set(settings)` for a complete raw JSON object,
+and `global_settings.set_typed(settings, codec)` for a complete typed value. If
+the callback, validation, or `setGlobalSettings` command fails, the previous
+local state remains unchanged. `global_settings.loaded` becomes true only after
+a received or successfully persisted value exists. Each recipient of
+`DidReceiveGlobalSettingsEvent` receives an isolated settings view, so one
+callback cannot change the canonical value or another callback's event.
 
 ## Events sent by a plugin
 
 Commands can be constructed directly and passed to `StreamDockSender.send()`
 or `send_async()`. The latter returns a `CommandFuture` without waiting for
-serialization or WebSocket I/O. The `Action` and `StreamDockPlugin` helpers
-cover the common cases.
+serialization or WebSocket I/O. `Action` methods cover ordinary context-scoped
+commands, while `application.global_settings` is the preferred global-settings
+write facade.
 
 | Wire event | Command model | Convenience API |
 |---|---|---|
-| Runtime registration event | `RegisterPluginCommand` | Sent by `StreamDockPlugin` on connection |
+| Runtime registration event | `RegisterPluginCommand` | Sent by the runtime on connection |
 | `setSettings` | `SetSettingsCommand` | `Action.set_settings()` |
 | `getSettings` | `GetSettingsCommand` | `Action.get_settings()` |
-| `setGlobalSettings` | `SetGlobalSettingsCommand` | `StreamDockPlugin.set_global_settings()` / `set_typed_global_settings()` |
-| `getGlobalSettings` | `GetGlobalSettingsCommand` | `StreamDockPlugin.get_global_settings()` |
+| `setGlobalSettings` | `SetGlobalSettingsCommand` | `application.global_settings.update()`, `set()`, or `set_typed()` |
+| `getGlobalSettings` | `GetGlobalSettingsCommand` | Sent by the runtime during session initialization |
 | `setTitle` | `SetTitleCommand` | `Action.set_title()` / `set_title_async()` |
 | `setImage` | `SetImageCommand` | `Action.set_image()` / `set_image_async()` |
 | `setState` | `SetStateCommand` | `Action.set_state()` / `set_state_async()` |
@@ -205,9 +288,10 @@ practical.
 When adding or changing protocol behavior:
 
 1. compare the official documentation and templates;
-2. add one `EventDescriptor` to `EVENT_REGISTRY` after defining the event model
-   and parser;
+2. update the typed event or command model and the runtime route that consumes
+   it;
 3. record the Stream Dock version used for runtime verification;
-4. add or update a wire-level regression test;
+4. add or update a wire-level regression test and an application-level dispatch
+   test;
 5. update this map, the public exports, and the changelog when the supported API
    changes.
