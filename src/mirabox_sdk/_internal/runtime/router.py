@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from threading import RLock
 
+from ...diagnostics import SdkDiagnostic
 from ...events import DidReceiveGlobalSettingsEvent, StreamDockEvent, UnknownStreamDockEvent
+from ..diagnostics import report_error
 from .actions import (
     ActionEventDispatcher,
     BroadcastDispatcher,
@@ -46,6 +49,7 @@ class RuntimeEventRouter(RuntimeEventDispatcher):
         plugin: Plugin | None = None,
         plugin_hooks: PluginHooks | None = None,
         registry: RuntimeEventRegistry = RUNTIME_EVENT_REGISTRY,
+        error_observer: Callable[[SdkDiagnostic], None] | None = None,
     ) -> None:
         if plugin is not None and not isinstance(plugin, Plugin):
             raise TypeError("plugin must extend Plugin or be None")
@@ -66,7 +70,11 @@ class RuntimeEventRouter(RuntimeEventDispatcher):
                 global_settings_state,
                 metrics=action_metrics,
             )
-        broadcasts = BroadcastDispatcher(contexts, metrics=action_metrics)
+        broadcasts = BroadcastDispatcher(
+            contexts,
+            metrics=action_metrics,
+            error_observer=error_observer,
+        )
         global_settings_route = registry.get_by_wire_name(DidReceiveGlobalSettingsEvent.event.value)
         if global_settings_route is None:  # pragma: no cover - registry invariant
             raise RuntimeEventDispatchError("global settings route is missing")
@@ -81,9 +89,11 @@ class RuntimeEventRouter(RuntimeEventDispatcher):
             global_settings,
             global_settings_route=action_global_settings_route,
             metrics=action_metrics,
+            error_observer=error_observer,
         )
 
         self._registry = registry
+        self._error_observer = error_observer
         if plugin is not None:
             resolved_plugin = plugin
         elif isinstance(plugin_hooks, Plugin):
@@ -130,10 +140,12 @@ class RuntimeEventRouter(RuntimeEventDispatcher):
             try:
                 self._plugin.on_unhandled_event(event)
             except Exception as exc:
-                logger.error(
-                    "Failed to process unknown event %s; exception_type=%s",
-                    event.event_name,
-                    type(exc).__name__,
+                report_error(
+                    logger,
+                    exc,
+                    event_name=event.event_name,
+                    callback="on_unhandled_event",
+                    error_observer=self._error_observer,
                 )
                 return DispatchResult(DispatchOutcome.CALLBACK_FAILED, exc)
             return DispatchResult(DispatchOutcome.HANDLED)
@@ -200,11 +212,12 @@ class RuntimeEventRouter(RuntimeEventDispatcher):
         except Exception as exc:
             with self._routing_lock:
                 self._plugin_callback_failures += 1
-            logger.error(
-                "Failed to process plugin event %s; callback=%s exception_type=%s",
-                event.event_name,
-                callback,
-                type(exc).__name__,
+            report_error(
+                logger,
+                exc,
+                event_name=event.event_name,
+                callback=callback,
+                error_observer=self._error_observer,
             )
             return DispatchResult(DispatchOutcome.CALLBACK_FAILED, exc)
         return DispatchResult(DispatchOutcome.HANDLED)

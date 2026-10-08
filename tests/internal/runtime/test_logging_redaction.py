@@ -65,6 +65,9 @@ class RuntimeLoggingRedactionTests(unittest.TestCase):
         self.assertNotIn("payload", output)
         self.assertIn("exception_type=_SensitiveFailure", output)
         self.assertIn("status_code=1000", output)
+        self.assertIn("callback=on_key_down", output)
+        self.assertIn("test_logging_redaction.py:", output)
+        self.assertIn("in on_key_down", output)
 
 
 if __name__ == "__main__":

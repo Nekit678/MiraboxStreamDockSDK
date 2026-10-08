@@ -9,6 +9,7 @@ from threading import Condition, Event, Lock, Thread, current_thread
 from typing import Protocol, TypeVar, cast, runtime_checkable
 
 from ...codecs import JsonCodec
+from ...diagnostics import SdkDiagnostic
 from ...global_settings import GlobalSettings
 from ...json_types import JsonObject
 from ...protocols import StreamDockActionDependencies
@@ -635,6 +636,7 @@ def create_stream_dock_runtime(
     plugin_hooks: PluginHooks | None = None,
     config: RuntimeDispatcherConfig | None = None,
     scheduler_factory: HandlerSchedulerFactory | None = None,
+    error_observer: Callable[[SdkDiagnostic], None] | None = None,
 ) -> ComposedStreamDockRuntime:
     """Build one unstarted runtime over typed boundary ports."""
 
@@ -689,6 +691,7 @@ def create_stream_dock_runtime(
         resolved_global_settings,
         plugin=plugin,
         plugin_hooks=plugin_hooks,
+        error_observer=error_observer,
     )
 
     fatal_errors = _FatalErrorRelay()
@@ -715,7 +718,11 @@ def create_stream_dock_runtime(
         plugin_uuid=launch_arguments.plugin_uuid,
         readiness=session_readiness,
     )
-    plugin_lifecycle = PluginSessionLifecycle(plugin) if plugin is not None else None
+    plugin_lifecycle = (
+        PluginSessionLifecycle(plugin, error_observer=error_observer)
+        if plugin is not None
+        else None
+    )
     event_pump = RuntimeEventPump(
         boundary.events,
         scheduler,

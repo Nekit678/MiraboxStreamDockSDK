@@ -8,7 +8,9 @@ from math import isfinite
 from threading import Condition, Thread, current_thread
 from time import monotonic
 
+from ...diagnostics import SdkDiagnostic
 from ...events import UnknownStreamDockEvent
+from ..diagnostics import report_error
 from ..lifecycle import RuntimeWorkerError
 from ..protocol.ports import StreamDockEventDecoder
 from ..transport.ports import (
@@ -42,10 +44,13 @@ class EventReader(EventReaderWorker):
         raw_inbound_source: RawInboundSource,
         decoder: StreamDockEventDecoder,
         inbound_event_sink: InboundEventSink,
+        *,
+        error_observer: Callable[[SdkDiagnostic], None] | None = None,
     ) -> None:
         self._source = raw_inbound_source
         self._decoder = decoder
         self._sink = inbound_event_sink
+        self._error_observer = error_observer
         self._on_fatal_error: Callable[[Exception], None] | None = None
         self._condition = Condition()
         self._thread: Thread | None = None
@@ -197,9 +202,11 @@ class EventReader(EventReaderWorker):
         try:
             event = self._decoder.decode(frame)
         except Exception as exc:
-            logger.warning(
-                "Discarded invalid inbound Stream Dock frame (%s)",
-                type(exc).__name__,
+            report_error(
+                logger,
+                exc,
+                category="protocol_error",
+                error_observer=self._error_observer,
             )
             with self._condition:
                 self._protocol_failures += 1

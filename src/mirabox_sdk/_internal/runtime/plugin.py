@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from threading import Lock
 
+from ...diagnostics import SdkDiagnostic
 from ...events import (
     ApplicationDidLaunchEvent,
     ApplicationDidTerminateEvent,
@@ -14,6 +16,7 @@ from ...events import (
     SystemDidWakeUpEvent,
     UnknownStreamDockEvent,
 )
+from ..diagnostics import report_error
 from .ports import PluginHooks
 
 logger = logging.getLogger(__name__)
@@ -82,8 +85,14 @@ class LegacyPluginHooksAdapter(Plugin):
 class PluginSessionLifecycle:
     """Own the once-only ready/stop pair independently from wire events."""
 
-    def __init__(self, plugin: Plugin) -> None:
+    def __init__(
+        self,
+        plugin: Plugin,
+        *,
+        error_observer: Callable[[SdkDiagnostic], None] | None = None,
+    ) -> None:
         self._plugin = plugin
+        self._error_observer = error_observer
         self._lock = Lock()
         self._ready_started = False
         self._stopped = False
@@ -108,10 +117,11 @@ class PluginSessionLifecycle:
         try:
             getattr(self._plugin, callback)()
         except Exception as exc:
-            logger.error(
-                "Plugin session callback failed; callback=%s exception_type=%s",
-                callback,
-                type(exc).__name__,
+            report_error(
+                logger,
+                exc,
+                callback=callback,
+                error_observer=self._error_observer,
             )
             if callback == "on_stop":
                 raise

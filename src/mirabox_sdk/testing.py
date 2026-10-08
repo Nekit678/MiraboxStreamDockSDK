@@ -22,6 +22,7 @@ from ._internal.transport.queues import TransportQueueClosedError
 from ._internal.transport.session import Connected, Disconnected
 from .commands import StreamDockCommand
 from .completion import CommandFuture
+from .diagnostics import SdkDiagnostic
 from .json_types import JsonObject, JsonValue, clone_json_object
 from .protocols import StreamDockActionDependencies, StreamDockSender
 from .registration import PluginLaunchArguments
@@ -105,6 +106,7 @@ class StreamDockHarness:
         queue_config: StreamDockQueueConfig | None = None,
         shutdown_config: StreamDockShutdownConfig | None = None,
         runtime_config: RuntimeDispatcherConfig | None = None,
+        error_observer: Callable[[SdkDiagnostic], None] | None = None,
     ) -> None:
         self._arguments = launch_arguments
         self._context: ApplicationContext | None = None
@@ -126,6 +128,7 @@ class StreamDockHarness:
             queue_config=queue_config,
             shutdown_config=shutdown_config,
             runtime_config=runtime_config,
+            error_observer=error_observer,
             connector_factory=self._build_connector,
             _context_callback=self._capture_context,
         )

@@ -8,6 +8,10 @@ change public APIs between minor versions.
 
 ### Added
 
+- Add public `SdkDiagnostic` / `SourceLocation` and an application/harness
+  `error_observer` for protocol and action/plugin callback failures (DX-02).
+  Default error logs identify schema paths and traceback locations without
+  exception messages, source text, locals, or arbitrary settings keys.
 - Expose immutable `ShutdownOutcome` / `ShutdownFailure` diagnostics and a shared
   `ApplicationContext.stop_signal` for cooperative cancellation (RT-02, RT-03).
 
@@ -35,6 +39,9 @@ change public APIs between minor versions.
 
 ### Fixed
 
+- Restore inbound/outbound DEBUG protocol traces and `include_payload=True`,
+  reusing decoded/serialized frames and restoring redaction on reconfiguration
+  (DX-01).
 - Reject Property Inspector sends before initialization or after close explicitly,
   and run documented startup operations from `connected` (PI-01).
 - Snapshot deferred PI messages and nested settings as JSON on acceptance,

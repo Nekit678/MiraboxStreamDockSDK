@@ -6,6 +6,7 @@ import logging
 from collections.abc import Callable
 from threading import RLock
 
+from ...diagnostics import SdkDiagnostic
 from ...errors import JsonCodecDecodeError
 from ...events import (
     ActionEvent,
@@ -16,6 +17,7 @@ from ...events import (
     WillDisappearEvent,
 )
 from ...json_types import clone_json_object
+from ..diagnostics import report_error
 from .global_settings import GlobalSettingsCoordinator
 from .metrics import ActionContextMetrics, _ActionContextMetricRecorder
 from .models import DispatchOutcome, DispatchResult
@@ -147,11 +149,13 @@ class BroadcastDispatcher:
         contexts: ActionContextManager,
         *,
         metrics: _ActionContextMetricRecorder | None = None,
+        error_observer: Callable[[SdkDiagnostic], None] | None = None,
     ) -> None:
         if not isinstance(contexts, ActionContextManager):
             raise TypeError("contexts must implement ActionContextManager")
         self._contexts = contexts
         self._metrics = metrics or _ActionContextMetricRecorder()
+        self._error_observer = error_observer
 
     def dispatch(
         self,
@@ -189,12 +193,13 @@ class BroadcastDispatcher:
             _invoke(action, event, route)
         except Exception as exc:
             self._metrics.increment("broadcast_failures")
-            logger.error(
-                "Failed to process broadcast event %s for action %s context %s; exception_type=%s",
-                event.event_name,
-                action.action,
-                action.context,
-                type(exc).__name__,
+            report_error(
+                logger,
+                exc,
+                event_name=event.event_name,
+                callback=route.callback,
+                context=action.context,
+                error_observer=self._error_observer,
             )
             return DispatchResult(DispatchOutcome.CALLBACK_FAILED, exc)
         return DispatchResult(DispatchOutcome.HANDLED)
@@ -225,6 +230,7 @@ class ActionEventDispatcher:
         *,
         global_settings_route: RuntimeEventRoute | None,
         metrics: _ActionContextMetricRecorder | None = None,
+        error_observer: Callable[[SdkDiagnostic], None] | None = None,
     ) -> None:
         if not isinstance(contexts, ActionContextManager):
             raise TypeError("contexts must implement ActionContextManager")
@@ -235,6 +241,7 @@ class ActionEventDispatcher:
         self._contexts = contexts
         self._broadcasts = broadcasts
         self._global_settings = global_settings
+        self._error_observer = error_observer
         self._global_settings_route = global_settings_route
         if (
             self._global_settings_route is not None
@@ -277,12 +284,13 @@ class ActionEventDispatcher:
         except RuntimeActionIdentityError:
             raise
         except Exception as exc:
-            logger.error(
-                "Failed to create action %s for event %s context %s; exception_type=%s",
-                event.action,
-                event.event_name,
-                event.context,
-                type(exc).__name__,
+            report_error(
+                logger,
+                exc,
+                event_name=event.event_name,
+                callback="create",
+                context=event.context,
+                error_observer=self._error_observer,
             )
             return DispatchResult(DispatchOutcome.CALLBACK_FAILED, exc)
         if action is None:
@@ -295,11 +303,13 @@ class ActionEventDispatcher:
             try:
                 action.on_will_disappear()
             except Exception as exc:
-                logger.error(
-                    "Failed to roll back action %s context %s; exception_type=%s",
-                    action.action,
-                    action.context,
-                    type(exc).__name__,
+                report_error(
+                    logger,
+                    exc,
+                    event_name=event.event_name,
+                    callback="on_will_disappear",
+                    context=action.context,
+                    error_observer=self._error_observer,
                 )
             return result
 
@@ -338,22 +348,24 @@ class ActionEventDispatcher:
             )
             error.__cause__ = exc
             self._metrics.increment("settings_update_failures")
-            logger.error(
-                "Failed to update settings for event %s action %s context %s; exception_type=%s",
-                event.event_name,
-                event.action,
-                event.context,
-                type(error).__name__,
+            report_error(
+                logger,
+                error,
+                event_name=event.event_name,
+                callback="update_settings_from_wire",
+                context=event.context,
+                error_observer=self._error_observer,
             )
             return DispatchResult(DispatchOutcome.CALLBACK_FAILED, error)
         except Exception as exc:
             self._metrics.increment("settings_update_failures")
-            logger.error(
-                "Failed to update settings for event %s action %s context %s; exception_type=%s",
-                event.event_name,
-                event.action,
-                event.context,
-                type(exc).__name__,
+            report_error(
+                logger,
+                exc,
+                event_name=event.event_name,
+                callback="update_settings_from_wire",
+                context=event.context,
+                error_observer=self._error_observer,
             )
             return DispatchResult(DispatchOutcome.CALLBACK_FAILED, exc)
         self._metrics.increment("settings_updates")
@@ -375,12 +387,13 @@ class ActionEventDispatcher:
             action.title = event.title
             action.title_parameters = event.title_parameters
         except Exception as exc:
-            logger.error(
-                "Failed to update title for event %s action %s context %s; exception_type=%s",
-                event.event_name,
-                event.action,
-                event.context,
-                type(exc).__name__,
+            report_error(
+                logger,
+                exc,
+                event_name=event.event_name,
+                callback="update_title",
+                context=event.context,
+                error_observer=self._error_observer,
             )
             return DispatchResult(DispatchOutcome.CALLBACK_FAILED, exc)
         self._metrics.increment("title_updates")
@@ -406,8 +419,8 @@ class ActionEventDispatcher:
         )
         return DispatchResult(DispatchOutcome.IGNORED)
 
-    @staticmethod
     def _invoke_action(
+        self,
         action: RuntimeActionCallbacks,
         event: StreamDockEvent,
         route: RuntimeEventRoute,
@@ -415,12 +428,13 @@ class ActionEventDispatcher:
         try:
             _invoke(action, event, route)
         except Exception as exc:
-            logger.error(
-                "Failed to process action event %s for action %s context %s; exception_type=%s",
-                event.event_name,
-                action.action,
-                action.context,
-                type(exc).__name__,
+            report_error(
+                logger,
+                exc,
+                event_name=event.event_name,
+                callback=route.callback,
+                context=action.context,
+                error_observer=self._error_observer,
             )
             return DispatchResult(DispatchOutcome.CALLBACK_FAILED, exc)
         return DispatchResult(DispatchOutcome.HANDLED)

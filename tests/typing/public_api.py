@@ -18,6 +18,8 @@ from mirabox_sdk import (
     LogMessageCommand,
     Plugin,
     PluginLaunchArguments,
+    SdkDiagnostic,
+    SourceLocation,
     StreamDockActionDependencies,
     StreamDockApplication,
     StreamDockRuntimeMetrics,
@@ -106,6 +108,12 @@ def check_registered_classes(dependencies: Dependencies) -> None:
     assert_type(typed_action.read_label(), str)
 
 
+def observe_error(diagnostic: SdkDiagnostic) -> None:
+    assert_type(diagnostic.error, Exception)
+    assert_type(diagnostic.field_path, tuple[str | int, ...])
+    assert_type(diagnostic.source_locations, tuple[SourceLocation, ...])
+
+
 def build_application(arguments: PluginLaunchArguments) -> StreamDockApplication:
     return create_stream_dock_application(
         arguments,
@@ -113,6 +121,7 @@ def build_application(arguments: PluginLaunchArguments) -> StreamDockApplication
         action_dependencies_factory=lambda ctx: Dependencies(ctx.stream_dock),
         plugin_factory=ExamplePlugin,
         service_factories=(lambda _context: ExampleService(),),
+        error_observer=observe_error,
     )
 
 
@@ -159,4 +168,5 @@ def build_test_harness(arguments: PluginLaunchArguments) -> StreamDockHarness:
         action_factory=registry,
         action_dependencies_factory=lambda ctx: Dependencies(ctx.stream_dock),
         plugin_factory=ExamplePlugin,
+        error_observer=observe_error,
     )

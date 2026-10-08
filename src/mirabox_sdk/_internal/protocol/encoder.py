@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import json
+import logging
 
 from ...commands import StreamDockCommand, ValidatedWireMessage
+from ...logging_config import _log_protocol_frame
 from .ports import StreamDockCommandEncoder
+
+logger = logging.getLogger(__name__)
 
 
 class JsonStreamDockCommandEncoder(StreamDockCommandEncoder):
@@ -37,7 +41,16 @@ class JsonStreamDockCommandEncoder(StreamDockCommandEncoder):
         if not isinstance(wire_message, ValidatedWireMessage):
             raise TypeError("command.to_validated_wire() must return ValidatedWireMessage")
 
+        envelope = wire_message._json_object()
         try:
-            return self._json_encoder.encode(wire_message._json_object())
+            frame = self._json_encoder.encode(envelope)
         except (TypeError, ValueError):
             raise ValueError("Stream Dock command contains a non-JSON value") from None
+        _log_protocol_frame(
+            logger,
+            direction="outbound",
+            event_name=str(envelope.get("event", "")),
+            context=envelope.get("context"),
+            frame=frame,
+        )
+        return frame

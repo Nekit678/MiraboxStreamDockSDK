@@ -51,6 +51,7 @@ from .completion import (
     OutboundCommandBusNotReadyError,
     OutboundQueueFullError,
 )
+from .diagnostics import SdkDiagnostic, SourceLocation
 from .errors import (
     InvalidFieldError,
     InvalidPluginLaunchArgumentsError,
@@ -157,6 +158,8 @@ from .runtime import (
 from .runtime.shutdown import ShutdownFailure, ShutdownOutcome, StopSignal
 
 __all__ = [
+    "SdkDiagnostic",
+    "SourceLocation",
     "ShutdownFailure",
     "ShutdownOutcome",
     "StopSignal",

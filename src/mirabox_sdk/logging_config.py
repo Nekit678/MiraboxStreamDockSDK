@@ -207,6 +207,38 @@ def _protocol_payload_logging_enabled() -> bool:
     return _include_protocol_payload
 
 
+def _log_protocol_frame(
+    logger: logging.Logger,
+    *,
+    direction: str,
+    event_name: str,
+    context: object,
+    frame: str,
+) -> None:
+    """Trace an existing frame without serializing it again for logging."""
+
+    if not logger.isEnabledFor(logging.DEBUG):
+        return
+    metadata = {"direction": direction, "event_name": event_name, "context": context}
+    if _protocol_payload_logging_enabled():
+        logger.debug(
+            "Protocol frame; direction=%s event=%s context=%s frame=%s",
+            direction,
+            event_name,
+            context,
+            frame,
+            extra={**metadata, "protocol_frame": frame},
+        )
+    else:
+        logger.debug(
+            "Protocol frame; direction=%s event=%s context=%s",
+            direction,
+            event_name,
+            context,
+            extra=metadata,
+        )
+
+
 def _validate_rotation(max_bytes: int, backup_count: int) -> None:
     if isinstance(max_bytes, bool) or not isinstance(max_bytes, int):
         raise TypeError("max_bytes must be an integer")

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import warnings
 from collections.abc import Callable, Iterable
+from functools import partial
 from threading import Event, Lock, Thread
 from typing import TypeVar
 
@@ -21,6 +22,7 @@ from .._internal.runtime.global_settings import (
 from .._internal.runtime.ports import ActionFactory
 from .._internal.runtime.session import SessionReadinessGate
 from ..codecs import JsonCodec
+from ..diagnostics import SdkDiagnostic
 from ..global_settings import GlobalSettings
 from ..json_types import JsonObject
 from ..json_types import JsonValue as JsonValue  # Resolve recursive JSON type hints.
@@ -242,6 +244,7 @@ def create_stream_dock_application(
     queue_config: StreamDockQueueConfig | None = None,
     shutdown_config: StreamDockShutdownConfig | None = None,
     runtime_config: RuntimeDispatcherConfig | None = None,
+    error_observer: Callable[[SdkDiagnostic], None] | None = None,
     services: Iterable[ApplicationService] = (),
     service_factories: Iterable[ApplicationServiceFactory] = (),
     inbound_overflow_policy: InboundOverflowPolicy = InboundOverflowPolicy.DROP_NEWEST,
@@ -264,6 +267,12 @@ def create_stream_dock_application(
     mandatory session initialization; ``on_stop()`` releases its resources
     during runtime cleanup, including when ``on_ready()`` raises.
     ``plugin_hooks`` remains the legacy unknown-event-only adapter.
+    ``error_observer`` receives structured parser and action/plugin callback
+    failures, including the original exception, independently of logging.
+    Observers run synchronously on the reporting worker and may run concurrently;
+    they must be thread-safe and return promptly. Observer exceptions are logged
+    by type and isolated. Protocol errors are discarded; callback failures retain
+    the existing routing and rollback behavior. Exception data may be sensitive.
     """
 
     return _create_stream_dock_application(
@@ -277,6 +286,7 @@ def create_stream_dock_application(
         queue_config=queue_config,
         shutdown_config=shutdown_config,
         runtime_config=runtime_config,
+        error_observer=error_observer,
         services=services,
         service_factories=service_factories,
         inbound_overflow_policy=inbound_overflow_policy,
@@ -299,6 +309,7 @@ def _create_stream_dock_application(
     queue_config: StreamDockQueueConfig | None = None,
     shutdown_config: StreamDockShutdownConfig | None = None,
     runtime_config: RuntimeDispatcherConfig | None = None,
+    error_observer: Callable[[SdkDiagnostic], None] | None = None,
     scheduler_factory: HandlerSchedulerFactory | None = None,
     services: Iterable[ApplicationService] = (),
     service_factories: Iterable[ApplicationServiceFactory] = (),
@@ -312,6 +323,8 @@ def _create_stream_dock_application(
 
     if not isinstance(launch_arguments, PluginLaunchArguments):
         raise TypeError("launch_arguments must be PluginLaunchArguments")
+    if error_observer is not None and not callable(error_observer):
+        raise TypeError("error_observer must be callable or None")
     if action_dependencies_factory is not None and not callable(action_dependencies_factory):
         raise TypeError("action_dependencies_factory must be callable or None")
     if legacy_action_dependencies_factory is not None and not callable(
@@ -344,6 +357,7 @@ def _create_stream_dock_application(
     resolved_service_factories = _resolve_service_factories(service_factories)
 
     from .._internal.boundary.composition import create_stream_dock_boundary
+    from .._internal.messaging.reader import EventReader
 
     resolved_queue_config = queue_config or StreamDockQueueConfig(
         raw_inbound_limit=_DEFAULT_QUEUE_LIMIT,
@@ -360,6 +374,7 @@ def _create_stream_dock_application(
         shutdown_config=shutdown_config,
         shutdown_state=shutdown,
         connector_factory=connector_factory,
+        event_reader_factory=partial(EventReader, error_observer=error_observer),
         inbound_overflow_policy=inbound_overflow_policy,
         coalesce_dial_rotations=coalesce_dial_rotations,
         coalesce_commands=coalesce_commands,
@@ -399,6 +414,7 @@ def _create_stream_dock_application(
             plugin_hooks=plugin_hooks,
             config=resolved_runtime_config,
             scheduler_factory=scheduler_factory,
+            error_observer=error_observer,
         )
     except BaseException:
         boundary.close()

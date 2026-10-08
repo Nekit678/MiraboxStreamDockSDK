@@ -8,6 +8,8 @@ from threading import enumerate as enumerate_threads
 from mirabox_sdk import StreamDockEvent, UnknownStreamDockEvent
 from mirabox_sdk._internal.messaging.inbound import InboundEventQueue
 from mirabox_sdk._internal.messaging.reader import EventReader, EventReaderLifecycleError
+from mirabox_sdk._internal.protocol.adapters.event_parser import EventParserAdapter
+from mirabox_sdk._internal.protocol.decoder import JsonStreamDockEventDecoder
 from mirabox_sdk._internal.transport.queues import RawInboundQueue
 
 
@@ -37,6 +39,25 @@ class _RecordingDecoder:
 
 
 class EventReaderTests(unittest.TestCase):
+    def test_invalid_field_diagnostic_identifies_event_and_schema_path(self) -> None:
+        source = _DequeFrameSource(
+            (
+                '{"event":"keyDown","action":"action","context":"button",'
+                '"device":"device","payload":{"settings":{}}}',
+            )
+        )
+        reader = EventReader(
+            source,
+            JsonStreamDockEventDecoder(EventParserAdapter()),
+            InboundEventQueue(1),
+        )
+        with self.assertLogs("mirabox_sdk._internal.messaging.reader", level="WARNING") as logs:
+            reader.start()
+            self.assertTrue(reader.drain(timeout=1))
+            self.assertTrue(reader.stop(timeout=1))
+        self.assertIn("event keyDown", logs.output[0])
+        self.assertIn("field_path=$.payload.coordinates", logs.output[0])
+
     def test_decodes_off_the_producer_thread_and_preserves_wire_order(self) -> None:
         raw_inbound = RawInboundQueue(3)
         typed_inbound = InboundEventQueue(3)

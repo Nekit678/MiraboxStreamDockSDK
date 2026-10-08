@@ -14,10 +14,15 @@ from threading import Event, Thread, get_ident
 from unittest.mock import patch
 
 from mirabox_sdk import (
+    ActionRegistry,
+    ApplicationContext,
     LoggingOverflowPolicy,
+    SendToPropertyInspectorCommand,
     configure_logging,
     dropped_log_records,
 )
+from mirabox_sdk.testing import StreamDockHarness
+from tests.test_testing import _launch_arguments
 
 
 class _BlockingStream(StringIO):
@@ -124,6 +129,42 @@ logging.getLogger("mirabox_sdk.connection").error("final record")
         self.assertFalse(configured_logger.propagate)
         self.assertNotIn("hidden", stream.getvalue())
         self.assertIn("INFO mirabox_sdk.connection: connected", stream.getvalue())
+
+    def test_protocol_traces_redact_payloads_support_opt_in_and_reset(self) -> None:
+        marker = "protocol-payload-marker-🎛️"
+        streams = []
+        for include_payload in (False, True, False):
+            stream = StringIO()
+            streams.append(stream)
+            if include_payload:
+                configure_logging(level="DEBUG", stream=stream, include_payload=True)
+            else:
+                configure_logging(level="DEBUG", stream=stream)
+            with StreamDockHarness(
+                _launch_arguments(),
+                action_factory=ActionRegistry[ApplicationContext](),
+                action_dependencies_factory=lambda ctx: ctx,
+            ) as harness:
+                harness.send_event(
+                    "didReceiveGlobalSettings", payload={"settings": {"key": marker}}
+                )
+                harness.wait_for_events(1)
+                harness.context.stream_dock.send(
+                    SendToPropertyInspectorCommand("com.example.action", "button", {"key": marker})
+                )
+        configure_logging(enabled=False)
+
+        for include_payload, stream in zip((False, True, False), streams, strict=True):
+            output = stream.getvalue()
+            self.assertIn("direction=inbound event=didReceiveGlobalSettings", output)
+            self.assertIn("direction=outbound event=sendToPropertyInspector context=button", output)
+            if include_payload:
+                # Both directions reuse the actual frame and preserve Unicode.
+                self.assertIn('"settings": {"key": "protocol-payload-marker-', output)
+                self.assertIn('"payload": {"key": "protocol-payload-marker-🎛️"}', output)
+            else:
+                self.assertNotIn("protocol-payload-marker", output)
+                self.assertNotIn("frame=", output)
 
     def test_repeated_configuration_replaces_managed_handler(self) -> None:
         first_stream = StringIO()

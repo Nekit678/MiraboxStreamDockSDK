@@ -1016,6 +1016,45 @@ if dropped_log_records():
     ...
 ```
 
+Protocol traces записываются после успешного декодирования входящего сообщения
+и кодирования исходящего. Исходящая запись подтверждает сериализацию; завершение
+отправки отражается в command future. Используется готовый frame без повторной
+JSON-сериализации. Повторный `configure_logging()` без `include_payload`
+восстанавливает скрытие payload.
+
+Ошибки parser и action/plugin callbacks содержат категорию диагностики, событие,
+callback, контекст при его наличии, безопасный путь поля (например,
+`$.payload.coordinates`) и расположение кадров стека: файл, строку и функцию.
+Текст исключения, исходный код и locals не записываются даже на уровне `DEBUG`.
+Произвольные ключи внутри settings или путей пользовательских сообщений
+заменяются на `<key>`; ключи схемы протокола и индексы массивов сохраняются.
+
+Для программной обработки ошибок передайте observer в фабрику приложения:
+
+```python
+from mirabox_sdk import SdkDiagnostic, create_stream_dock_application
+
+def observe_error(diagnostic: SdkDiagnostic) -> None:
+    # Forward selected metadata to your application's diagnostics collector.
+    # diagnostic.error is the original exception and may contain secrets.
+    ...
+
+application = create_stream_dock_application(
+    launch_arguments,
+    action_factory=registry,
+    action_dependencies_factory=lambda ctx: Dependencies(ctx.stream_dock),
+    error_observer=observe_error,
+)
+```
+
+Observer работает при выключенном логировании и также поддерживается
+`StreamDockHarness`. Он вызывается синхронно в потоке, обнаружившем ошибку;
+возможны конкурентные вызовы, поэтому обработчик должен быть потокобезопасным
+и быстро возвращать управление. Ошибка каждого получателя broadcast сообщается
+отдельно. Исключения observer логируются по типу и изолируются, сохраняя доставку
+другим actions. Ошибки `Plugin.on_ready()` и `on_stop()` также передаются observer.
+Результаты shutdown и ошибки services доступны через `shutdown_outcome`.
+
 ## Структура проекта
 
 ```text

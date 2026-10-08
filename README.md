@@ -1007,6 +1007,45 @@ if dropped_log_records():
     ...
 ```
 
+Protocol traces are recorded after successful inbound decoding and outbound
+encoding. An outbound trace confirms serialization; command futures report
+transport completion. Traces reuse the existing frame without extra JSON
+serialization. Calling `configure_logging()` again with `include_payload`
+omitted restores redaction.
+
+Parser and action/plugin callback failures include a diagnostic category, event,
+callback, context when available, safe field path (for example,
+`$.payload.coordinates`), and traceback file/line/function locations. SDK logs
+omit exception messages, source text and locals even at `DEBUG`. Arbitrary keys
+inside settings or custom message paths appear as `<key>`; protocol schema keys
+and array indexes are retained.
+
+For programmatic error handling, pass an observer to the application factory:
+
+```python
+from mirabox_sdk import SdkDiagnostic, create_stream_dock_application
+
+def observe_error(diagnostic: SdkDiagnostic) -> None:
+    # Forward selected metadata to your application's diagnostics collector.
+    # diagnostic.error is the original exception and may contain secrets.
+    ...
+
+application = create_stream_dock_application(
+    launch_arguments,
+    action_factory=registry,
+    action_dependencies_factory=lambda ctx: Dependencies(ctx.stream_dock),
+    error_observer=observe_error,
+)
+```
+
+The observer works with logging disabled and is also supported by
+`StreamDockHarness`. It runs synchronously on the reporting worker and may be
+called concurrently: keep it thread-safe and return promptly. Each failing
+broadcast target is reported separately. Observer exceptions are logged by type
+and isolated, preserving delivery to other actions. Plugin `on_ready()` and
+`on_stop()` failures are reported too. Shutdown and service failures remain
+available through `shutdown_outcome`.
+
 ## Project structure
 
 ```text

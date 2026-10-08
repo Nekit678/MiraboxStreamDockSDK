@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import NoReturn
 
 from ...errors import MalformedEventError
 from ...events import StreamDockEvent
+from ...logging_config import _log_protocol_frame
 from .ports import DecodedEventParser, StreamDockEventDecoder
+
+logger = logging.getLogger(__name__)
 
 
 def _reject_non_finite_json_constant(value: str) -> NoReturn:
@@ -52,4 +56,12 @@ class JsonStreamDockEventDecoder(StreamDockEventDecoder):
         except ValueError as exc:
             raise MalformedEventError(f"invalid JSON: {exc}") from exc
 
-        return self._event_parser.parse(value)
+        event = self._event_parser.parse(value)
+        _log_protocol_frame(
+            logger,
+            direction="inbound",
+            event_name=event.event_name,
+            context=getattr(event, "context", None),
+            frame=frame,
+        )
+        return event
