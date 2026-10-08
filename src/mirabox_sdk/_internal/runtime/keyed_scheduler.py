@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import logging
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass
 from threading import Condition, Thread, current_thread
 from time import monotonic
 
 from ...events import ActionEvent, StreamDockEvent
+from ..lifecycle import RuntimeWorkerError
 from .metrics import HandlerSchedulerMetrics
 from .models import DispatchOutcome, DispatchResult
 from .ports import DispatchCompletion, HandlerScheduler, RuntimeEventDispatcher
@@ -45,12 +47,14 @@ class KeyedSerialHandlerScheduler(HandlerScheduler):
         *,
         worker_count: int,
         pending_limit: int,
+        on_fatal_error: Callable[[Exception], None] | None = None,
     ) -> None:
         if not isinstance(dispatcher, RuntimeEventDispatcher):
             raise TypeError("dispatcher must implement RuntimeEventDispatcher")
         _require_positive_integer("worker_count", worker_count)
         _require_positive_integer("pending_limit", pending_limit)
 
+        self._on_fatal_error = on_fatal_error
         self._dispatcher = dispatcher
         self._worker_count = worker_count
         self._pending_limit = pending_limit
@@ -104,20 +108,19 @@ class KeyedSerialHandlerScheduler(HandlerScheduler):
                     self._live_workers += 1
                 try:
                     worker.start()
-                except Exception:
+                except BaseException:
                     with self._condition:
                         self._live_workers -= 1
                     raise
                 started_count += 1
-        except Exception:
+        except BaseException:
             with self._condition:
                 self._workers = workers[:started_count]
                 self._accepting = False
                 if self._live_workers == 0:
                     self._stopped = True
                 self._condition.notify_all()
-            for worker in workers[:started_count]:
-                worker.join()
+            self._discard_pending()
             raise
 
     def submit(self, event: StreamDockEvent) -> DispatchCompletion:
@@ -281,8 +284,13 @@ class KeyedSerialHandlerScheduler(HandlerScheduler):
                     result = self._dispatcher.dispatch(work.event)
                     if not isinstance(result, DispatchResult):
                         raise TypeError("dispatcher must return DispatchResult")
-                except Exception as exc:
-                    error = exc
+                except BaseException as exc:
+                    error = (
+                        exc
+                        if isinstance(exc, Exception)
+                        else RuntimeWorkerError("Runtime scheduler callback", exc)
+                    )
+                    self.stop_accepting()
 
                 try:
                     if error is not None:
@@ -303,6 +311,14 @@ class KeyedSerialHandlerScheduler(HandlerScheduler):
                             self._callback_failures += 1
                         self._active_by_thread.pop(current_thread(), None)
                         self._condition.notify_all()
+                if error is not None:
+                    self._discard_pending()
+        except BaseException as exc:
+            error = RuntimeWorkerError("Runtime scheduler worker", exc)
+            self.stop_accepting()
+            if self._on_fatal_error is not None:
+                self._on_fatal_error(error)
+            self._discard_pending()
         finally:
             with self._condition:
                 self._live_workers -= 1
@@ -345,16 +361,22 @@ class KeyedSerialHandlerScheduler(HandlerScheduler):
             self._terminalizing += len(discarded)
             self._discarded_during_shutdown += len(discarded)
             self._condition.notify_all()
+        observer_failure: BaseException | None = None
         for work in discarded:
             try:
                 work.completion._finish(
                     result=DispatchResult(DispatchOutcome.DISCARDED_DURING_SHUTDOWN)
                 )
+            except BaseException as exc:
+                if observer_failure is None:
+                    observer_failure = exc
             finally:
                 with self._condition:
                     self._terminalizing -= 1
                     self._completed += 1
                     self._condition.notify_all()
+        if observer_failure is not None:
+            raise observer_failure
 
 
 def _require_positive_integer(name: str, value: object) -> None:

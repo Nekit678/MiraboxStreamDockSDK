@@ -6,6 +6,7 @@ import logging
 from collections.abc import Callable
 from threading import Event, Lock, Thread, current_thread
 
+from ..lifecycle import ShutdownState
 from ..messaging.inbound import InboundEventQueue, InboundOverflowPolicy
 from ..messaging.outbound import OutboundCommandQueue, WriterReadyOutboundCommandSink
 from ..messaging.ports import (
@@ -87,10 +88,17 @@ class ComposedStreamDockBoundary(StreamDockBoundary):
         self._raw_outbound_queue = raw_outbound_queue
         self._session_event_queue = session_event_queue
         self._shutdown_config = shutdown_config or BoundaryShutdownConfig()
+        self._shutdown = ShutdownState()
+        self._failure: Exception | None = None
+        self._on_fatal_error: Callable[[Exception], None] | None = None
+        for worker in (event_reader, command_writer):
+            if isinstance(worker, (EventReader, CommandWriter)):
+                worker._on_fatal_error = self._on_worker_failure
 
         self._state_lock = Lock()
         self._close_lock = Lock()
         self._close_completed = Event()
+        self._workers_stopped = Event()
         self._connector_run_finished = Event()
         self._run_started = False
         self._reader_started = False
@@ -105,6 +113,15 @@ class ComposedStreamDockBoundary(StreamDockBoundary):
         """Return the typed inbound event source."""
 
         return self._events
+
+    def _set_fatal_error_callback(self, callback: Callable[[Exception], None]) -> None:
+        """Bind worker supervision before starting boundary consumers."""
+        if not callable(callback):
+            raise TypeError("callback must be callable")
+        with self._state_lock:
+            if self._run_started:
+                raise StreamDockBoundaryLifecycleError("Boundary has already been started")
+            self._on_fatal_error = callback
 
     @property
     def commands(self) -> OutboundCommandSink:
@@ -133,25 +150,43 @@ class ComposedStreamDockBoundary(StreamDockBoundary):
                 self._lifecycle_thread = current_thread()
                 lifecycle_started = True
                 self._commands.begin_starting()
+                self._shutdown.worker("Event reader", False)
                 self._event_reader.start()
                 self._reader_started = True
+                self._shutdown.worker("Command writer", False)
                 self._command_writer.start()
                 self._writer_started = True
                 self._commands.mark_ready()
 
+            self._shutdown.worker("WebSocket connector", False)
             self._connector.run_forever()
         finally:
             if lifecycle_started:
+                self._shutdown.worker("WebSocket connector", True)
                 self._connector_run_finished.set()
                 try:
                     self.close()
                 finally:
                     with self._state_lock:
                         self._lifecycle_thread = None
+        if self._failure is not None:
+            raise self._failure
+
+    def _on_worker_failure(self, error: Exception) -> None:
+        with self._state_lock:
+            if self._failure is None:
+                self._failure = error
+                self._shutdown.primary_failure = error
+        self._shutdown.begin()
+        if self._on_fatal_error is not None:
+            self._on_fatal_error(error)
+        else:
+            Thread(target=self.close, name="mirabox-boundary-fatal-close", daemon=True).start()
 
     def close(self) -> None:
         """Idempotently drain inbound, then outbound, then session events."""
 
+        self._shutdown.begin()
         with self._close_lock:
             if self._close_completed.is_set():
                 return
@@ -167,16 +202,32 @@ class ComposedStreamDockBoundary(StreamDockBoundary):
                 called_from_lifecycle = current_thread() is self._lifecycle_thread
                 called_from_owner = current_thread() is self._close_owner
             if not called_from_lifecycle and not called_from_owner:
-                self._close_completed.wait()
+                self._close_completed.wait(self._shutdown.remaining())
             return
 
+        self._shutdown.pending("Boundary cleanup", True)
+        thread = Thread(
+            target=self._finish_close, name="mirabox-internal-boundary-close", daemon=True
+        )
+        try:
+            thread.start()
+        except Exception as exc:
+            self._shutdown.failed("Boundary close worker start", exc)
+            self._close_completed.set()
+        if not self._close_completed.wait(self._shutdown.remaining()):
+            self._shutdown.timed_out("Boundary cleanup")
+
+    def _finish_close(self) -> None:
         try:
             self._close_owned()
+        except BaseException as exc:
+            self._shutdown.failed("Boundary cleanup", exc)
         finally:
             with self._state_lock:
                 self._closed = True
                 self._close_owner = None
             self._commands.mark_closed()
+            self._shutdown.pending("Boundary cleanup", False)
             self._close_completed.set()
 
     def metrics(self) -> StreamDockBoundaryMetrics:
@@ -248,6 +299,7 @@ class ComposedStreamDockBoundary(StreamDockBoundary):
             "Raw outbound queue",
             config.raw_outbound_drain_timeout,
         )
+        self._shutdown.worker("WebSocket sender", False)
         self._safe_call(self._connector.close, "WebSocket connector close")
         if not self._wait_for_connector_run(config.connector_stop_timeout):
             self._safe_stop_accepting(self._session_event_queue, "Session event queue")
@@ -261,60 +313,86 @@ class ComposedStreamDockBoundary(StreamDockBoundary):
             config.session_event_drain_timeout,
         )
 
+        workers_stopped = True
+        for component, name in (
+            (self._event_reader, "Event reader"),
+            (self._command_writer, "Command writer"),
+        ):
+            stopped = component.stop(timeout=None)
+            self._shutdown.worker(name, stopped)
+            workers_stopped = workers_stopped and stopped
+        sender = getattr(self._connector, "_sender_thread", None)
+        if sender is not None:
+            sender.join()
+        self._shutdown.worker("WebSocket sender", True)
+        if self._run_started:
+            self._connector_run_finished.wait()
+        if workers_stopped:
+            self._workers_stopped.set()
+
     def _wait_for_connector_run(self, timeout: float | None) -> bool:
         with self._state_lock:
             run_started = self._run_started
             called_from_lifecycle = current_thread() is self._lifecycle_thread
         if not run_started or called_from_lifecycle:
             return True
-        if not self._connector_run_finished.wait(timeout):
+        if not self._connector_run_finished.wait(self._shutdown.remaining(timeout)):
+            self._shutdown.timed_out("WebSocket connector stop")
+            self._shutdown.worker("WebSocket connector", False)
             logger.warning("WebSocket connector did not stop before shutdown timeout")
             return False
+        self._shutdown.worker("WebSocket connector", True)
         return True
 
-    @staticmethod
-    def _safe_stop_accepting(component: object, name: str) -> None:
-        ComposedStreamDockBoundary._safe_call(
+    def _safe_stop_accepting(self, component: object, name: str) -> None:
+        self._safe_call(
             component.stop_accepting,  # type: ignore[attr-defined]
             f"{name} stop_accepting",
         )
 
-    @staticmethod
-    def _safe_drain(component: object, name: str, timeout: float | None) -> None:
+    def _safe_drain(self, component: object, name: str, timeout: float | None) -> None:
         try:
-            drained = component.drain(timeout=timeout)  # type: ignore[attr-defined]
+            drained = component.drain(timeout=self._shutdown.remaining(timeout))  # type: ignore[attr-defined]
         except Exception as exc:
+            self._shutdown.failed(f"{name} drain", exc)
             logger.error("%s drain failed with %s", name, type(exc).__name__)
             return
         if not drained:
+            self._shutdown.timed_out(f"{name} drain")
             logger.warning("%s did not drain before shutdown timeout", name)
 
-    @staticmethod
-    def _safe_stop(component: object, name: str, timeout: float | None) -> None:
+    def _safe_stop(self, component: object, name: str, timeout: float | None) -> None:
         try:
-            stopped = component.stop(timeout=timeout)  # type: ignore[attr-defined]
+            stopped = component.stop(timeout=self._shutdown.remaining(timeout))  # type: ignore[attr-defined]
         except Exception as exc:
+            self._shutdown.failed(f"{name} stop", exc)
             logger.error("%s stop failed with %s", name, type(exc).__name__)
             return
+        self._shutdown.worker(name, stopped)
         if not stopped:
+            self._shutdown.timed_out(f"{name} stop")
             logger.warning("%s did not stop before shutdown timeout", name)
 
-    @staticmethod
-    def _safe_shutdown(component: object, name: str, timeout: float | None) -> None:
+    def _safe_shutdown(self, component: object, name: str, timeout: float | None) -> None:
         try:
-            drained = component.shutdown(timeout=timeout)  # type: ignore[attr-defined]
+            drained = component.shutdown(timeout=self._shutdown.remaining(timeout))  # type: ignore[attr-defined]
         except Exception as exc:
+            self._shutdown.failed(f"{name} shutdown", exc)
             logger.error("%s shutdown failed with %s", name, type(exc).__name__)
             return
         if not drained:
+            self._shutdown.timed_out(f"{name} drain")
             logger.warning("%s did not drain before shutdown timeout", name)
 
-    @staticmethod
-    def _safe_call(action: Callable[[], object], name: str) -> None:
+    def _safe_call(self, action: Callable[[], object], name: str) -> None:
+        self._shutdown.pending(name, True)
         try:
             action()
         except Exception as exc:
+            self._shutdown.failed(name, exc)
             logger.error("%s failed with %s", name, type(exc).__name__)
+        finally:
+            self._shutdown.pending(name, False)
 
 
 def create_stream_dock_boundary(
@@ -322,6 +400,7 @@ def create_stream_dock_boundary(
     queue_config: BoundaryQueueConfig,
     *,
     shutdown_config: BoundaryShutdownConfig | None = None,
+    shutdown_state: ShutdownState | None = None,
     decoder: StreamDockEventDecoder | None = None,
     encoder: StreamDockCommandEncoder | None = None,
     connector_factory: WebSocketConnectorFactory | None = None,
@@ -339,6 +418,7 @@ def create_stream_dock_boundary(
     if not isinstance(resolved_shutdown_config, BoundaryShutdownConfig):
         raise TypeError("shutdown_config must be BoundaryShutdownConfig or None")
 
+    shared_shutdown = shutdown_state or ShutdownState()
     raw_inbound = RawInboundQueue(queue_config.raw_inbound_limit)
     inbound_events = InboundEventQueue(
         queue_config.inbound_event_limit,
@@ -370,12 +450,15 @@ def create_stream_dock_boundary(
             raw_outbound,
             session_events,
             outbound_shutdown_timeout=resolved_shutdown_config.raw_outbound_drain_timeout,
+            shutdown_remaining=shared_shutdown.remaining,
         )
     else:
         connector = connector_factory(raw_inbound, raw_outbound, session_events)
 
+    if isinstance(connector, WebSocketClientConnector):
+        connector._shutdown_remaining = shared_shutdown.remaining
     commands = WriterReadyOutboundCommandSink(outbound_commands)
-    return ComposedStreamDockBoundary(
+    boundary = ComposedStreamDockBoundary(
         events=inbound_events,
         commands=commands,
         session_events=session_events,
@@ -389,3 +472,5 @@ def create_stream_dock_boundary(
         session_event_queue=session_events,
         shutdown_config=resolved_shutdown_config,
     )
+    boundary._shutdown = shared_shutdown
+    return boundary

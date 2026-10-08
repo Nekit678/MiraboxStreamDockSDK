@@ -226,7 +226,8 @@ class CommandWriterTests(unittest.TestCase):
         writer.start()
         self.assertTrue(both_encoded.wait(1))
 
-        self.assertTrue(writer.stop(timeout=0.05))
+        self.assertFalse(writer.stop(timeout=0.05))
+        self.assertTrue(writer.stop(timeout=1))
         with self.assertRaises(CommandWriterStoppedError):
             completions[0].result(timeout=0)
         with self.assertRaises(TransportQueueClosedError):

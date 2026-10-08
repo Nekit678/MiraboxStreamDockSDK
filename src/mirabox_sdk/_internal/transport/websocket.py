@@ -79,10 +79,12 @@ class WebSocketClientConnector(WebSocketConnector):
         *,
         outbound_shutdown_timeout: float | None = _DEFAULT_OUTBOUND_SHUTDOWN_TIMEOUT,
         websocket_app_factory: WebSocketAppFactory = websocket.WebSocketApp,
+        shutdown_remaining: Callable[[float | None], float | None] | None = None,
     ) -> None:
         if type(port) is not int or not 1 <= port <= 65535:
             raise ValueError("port must be an integer between 1 and 65535")
 
+        self._shutdown_remaining = shutdown_remaining
         self._outbound_shutdown_timeout = _validate_timeout(outbound_shutdown_timeout)
         self._raw_inbound = raw_inbound_sink
         self._raw_outbound = raw_outbound_source
@@ -150,7 +152,7 @@ class WebSocketClientConnector(WebSocketConnector):
             self._started = True
             try:
                 sender.start()
-            except Exception:
+            except BaseException:
                 self._sender_thread = None
                 self._lifecycle_thread = None
                 self._started = False
@@ -185,7 +187,7 @@ class WebSocketClientConnector(WebSocketConnector):
                     self._lifecycle_thread,
                 )
             if not called_from_worker:
-                self._close_completed.wait()
+                self._close_completed.wait(self._remaining_timeout(None))
             return
 
         try:
@@ -372,6 +374,9 @@ class WebSocketClientConnector(WebSocketConnector):
         close_reason = reason if isinstance(reason, str) else None
         self._handle_disconnect(close_code, close_reason)
 
+    def _remaining_timeout(self, timeout: float | None) -> float | None:
+        return timeout if self._shutdown_remaining is None else self._shutdown_remaining(timeout)
+
     def _close_owned(self) -> None:
         self._stop_accepting(self._raw_inbound, "Raw inbound sink")
         self._stop_accepting(self._raw_outbound, "Raw outbound source")
@@ -387,7 +392,7 @@ class WebSocketClientConnector(WebSocketConnector):
         drain_timed_out = False
         if sender is not None and not called_from_sender and connected:
             drained, drain_timed_out = self._wait_for_outbound_drain(
-                self._outbound_shutdown_timeout
+                self._remaining_timeout(self._outbound_shutdown_timeout)
             )
 
         if not drained:
@@ -423,7 +428,7 @@ class WebSocketClientConnector(WebSocketConnector):
         self._safe_close_websocket()
 
         if sender is not None and not called_from_sender and sender.is_alive():
-            sender.join(_SENDER_JOIN_GRACE)
+            sender.join(self._remaining_timeout(_SENDER_JOIN_GRACE))
 
         if sender is None:
             with self._condition:
@@ -469,7 +474,7 @@ class WebSocketClientConnector(WebSocketConnector):
         self._handle_disconnect(None, None)
         sender = self._sender_thread
         if sender is not None and sender is not current_thread() and sender.is_alive():
-            sender.join(_SENDER_JOIN_GRACE)
+            sender.join(self._remaining_timeout(_SENDER_JOIN_GRACE))
 
         with self._condition:
             self._terminal = True

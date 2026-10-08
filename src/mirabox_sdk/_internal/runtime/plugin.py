@@ -40,9 +40,10 @@ class Plugin:
     def on_stop(self) -> None:
         """Release work started by ``on_ready()``, even if that callback failed.
 
-        Called once during runtime cleanup, after protocol callbacks drain
-        or reach their configured shutdown timeout, and before services stop.
-        Signal and join owned workers here; the transport is already closed.
+        Called once on the runtime cleanup worker after protocol callbacks
+        finish, and before services stop. Cleanup is deferred after a shutdown
+        timeout. Join owned workers here; application work can observe the
+        context stop signal before cleanup starts. The transport is closed.
         No call is made if ``on_ready()`` was never attempted.
         """
 
@@ -112,3 +113,5 @@ class PluginSessionLifecycle:
                 callback,
                 type(exc).__name__,
             )
+            if callback == "on_stop":
+                raise

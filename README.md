@@ -601,9 +601,9 @@ def build_application(arguments: PluginLaunchArguments) -> StreamDockApplication
 ```
 
 `ApplicationContext` is immutable and shared by all plugin, dependency, and service
-factories. It provides the same `stream_dock`, `global_settings`, and
-`session_readiness` objects to each collaborator, without mutable wiring or
-internal imports.
+factories. It provides the same `stream_dock`, `global_settings`,
+`session_readiness`, and `stop_signal` objects to each collaborator, without mutable
+wiring or internal imports.
 
 `action_dependencies_factory` always receives `ApplicationContext`, regardless
 of parameter names or annotations. Wrap an existing sender-only factory as
@@ -616,8 +616,11 @@ Services start in declaration order before the WebSocket runtime connects and
 stop in reverse order after it finishes. If startup fails, only services that
 started successfully are stopped. Cleanup always attempts every started
 service; a primary startup or runtime failure is preserved. `stop()` may still
-be called from an action callback: service cleanup runs on the application
-lifecycle thread before `run()` returns.
+be called from an action callback. Service cleanup runs on an application-owned
+cleanup worker after runtime resources are released; after a shutdown timeout it
+can continue after `run()` returns. Workers should observe
+`context.stop_signal.requested` or `context.stop_signal.wait(timeout)` to exit
+cooperatively before resources are closed.
 
 `ApplicationService.start()` is a process-start phase only. The outbound writer
 is not running there, so services must not call `StreamDockSender`, synchronous
@@ -675,13 +678,14 @@ an owned worker for ongoing work. Override `on_stop()` to signal and join that
 worker: the runtime calls it once after releasing actions and before stopping
 application services, including when `on_ready()` raised after partial startup.
 The transport is already closed at that point. Neither callback runs if the
-session never reaches readiness. If callback shutdown timeouts expire,
-`on_stop()` may overlap unfinished callbacks; shared resources must support
-cooperative shutdown.
+session never reaches readiness. If a callback shutdown wait expires, action
+cleanup, `on_stop()` and service cleanup are deferred until callbacks finish.
+Resources remain allocated while work is unfinished.
 
 Session callback exceptions are logged with the callback name and exception
 type, without exception messages, and isolated from protocol delivery and
-cleanup. They do not replace a primary runtime failure. Routing metrics and
+cleanup. `on_stop()` failures also appear in `shutdown_outcome.cleanup_failures`.
+They do not replace a primary runtime failure. Routing metrics and
 dispatch results describe wire-event callbacks only.
 
 The runtime invokes the plugin callback first, then the stable snapshot of
@@ -770,15 +774,45 @@ same context and pressed state are combined by summing `ticks`; an intervening
 event for that context, or any broadcast/unknown event, prevents coalescing.
 
 Read `application.metrics()` for immutable queue, event-pump, scheduler, route,
-action, session, and transport snapshots. Runtime and boundary shutdown stages
-are bounded to five seconds by default; pass `None` explicitly only when an
-unbounded wait is required. At a timeout, pending and active work remains
-observable in metrics and metadata-only diagnostics.
+action, session, and transport snapshots. `RuntimeDispatcherConfig.shutdown_timeout`
+sets one total shutdown waiting budget (five seconds by default), shared by
+boundary, runtime and service cleanup. Each stage receives the lesser of its
+own timeout and the remaining budget. Set the total timeout to `None` only
+when an unbounded overall wait is intended.
 
-Python cannot safely stop a running thread. A callback that exceeds the timeout
-continues on its daemon worker until the callback itself returns, even though
-`close()` proceeds. Callback code should therefore use its own bounded I/O and
-cooperative cancellation where appropriate.
+`callback_drain_timeout` limits the scheduler's shutdown drain wait. The old
+`callback_timeout` name remains supported with a `DeprecationWarning`; the two
+names are mutually exclusive. Neither setting monitors or interrupts callbacks
+during normal operation. Bound external I/O separately.
+
+`ApplicationContext.stop_signal` is set before shutdown starts closing resources,
+on local stop, remote disconnect or fatal failure. Background work can use its
+`requested` property or `wait(timeout)` method for cooperative cancellation.
+Python cannot safely stop an arbitrary running thread. After a timeout the
+caller can return while daemon work continues; action release, plugin stop and
+service stop remain ordered after all callbacks and boundary workers finish.
+Slow cleanup also continues in its owned daemon worker, without releasing
+resources needed by earlier unfinished cleanup. Deferred cleanup cannot be
+guaranteed if the process exits first.
+
+`application.shutdown_outcome` is `None` before shutdown and otherwise returns
+an immutable `ShutdownOutcome` snapshot. `complete`, `workers_stopped`,
+`unfinished_callbacks` and `pending_cleanup` distinguish finished work from
+work still running. `cleanup_failures` contains `ShutdownFailure(stage, error)`
+with original exceptions; `timed_out_stages`, `callback_timeouts`,
+`discarded_events` and `discarded_commands` retain shutdown diagnostics. Event
+counts include typed-queue and scheduler discards; command counts include
+command-queue and writer discards. Read a new snapshot to observe deferred
+cleanup; old snapshots never change. `successful` requires completion without
+failures or timeouts. The first fatal runtime failure remains primary, with
+cleanup stages attached as exception notes. `SystemExit` and other unexpected
+worker exits are fatal errors retaining the original exception in `__cause__`;
+the owned event still reaches terminal acknowledgement.
+
+Cleanup errors retain the existing exception policy for `run()`/`stop()`;
+service-stop errors completed within the waiting budget still propagate when
+there is no primary failure. `run_plugin_cli()` returns `1` for an unsuccessful
+shutdown outcome, including unfinished workers or cleanup failures.
 
 ## Outbound command bus
 
@@ -848,7 +882,7 @@ The runtime uses explicit thread ownership:
 | WebSocket frame I/O and typed protocol parsing | Boundary-owned transport/codec workers |
 | Wire-event callbacks on `Action`, `Plugin`, and `PluginHooks` | Runtime-owned keyed workers; callbacks are serial per context and may overlap across contexts, while lifecycle, broadcast, and unknown barriers run exclusively |
 | `Plugin.on_ready()` | Runtime event-pump thread, after session readiness and before inbound protocol callbacks |
-| `Plugin.on_stop()` | Runtime lifecycle thread, after action cleanup and before application services stop |
+| `Plugin.on_stop()` | Runtime cleanup worker, after action cleanup and before application services stop |
 | `StreamDockSender.send()` / `send_async()` and action command helpers | Any application, service, or action-callback thread after the outbound writer starts; overlapping calls are supported |
 | `StreamDockApplication.stop()` | Any application or action-callback thread; calls are idempotent and may overlap |
 

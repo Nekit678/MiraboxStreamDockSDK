@@ -602,7 +602,7 @@ def build_application(arguments: PluginLaunchArguments) -> StreamDockApplication
 
 `ApplicationContext` immutable и является общим для всех plugin-, dependency- и
 service-factory. Он передаёт каждому участнику одни и те же объекты
-`stream_dock`, `global_settings` и `session_readiness` без mutable wiring и
+`stream_dock`, `global_settings`, `session_readiness` и `stop_signal` без mutable wiring и
 импортов внутренних модулей.
 
 `action_dependencies_factory` всегда получает `ApplicationContext`, независимо
@@ -617,7 +617,10 @@ service-factory. Он передаёт каждому участнику одн�
 останавливаются только успешно запущенные сервисы. Cleanup пытается остановить
 каждый запущенный сервис, сохраняя исходную ошибку startup или runtime.
 `stop()` по-прежнему можно вызывать из action callback: сервисы освобождаются
-на lifecycle-потоке приложения до возврата из `run()`.
+на отдельном cleanup worker приложения после освобождения ресурсов runtime.
+При таймауте cleanup может продолжиться после возврата из `run()`. Фоновая работа
+может проверять `context.stop_signal.requested` или использовать
+`context.stop_signal.wait(timeout)` для кооперативного завершения.
 
 `ApplicationService.start()` — только фаза запуска процесса. В ней outbound
 writer ещё не работает, поэтому сервис не должен вызывать `StreamDockSender`,
@@ -678,13 +681,14 @@ class MyPlugin(Plugin):
 завершения: runtime вызывает этот callback один раз после освобождения actions и
 до остановки сервисов приложения, в том числе после частичной инициализации с
 ошибкой в `on_ready()`. Транспорт к этому моменту уже закрыт. Если сессия не
-достигла readiness, оба callback пропускаются. При истечении таймаутов завершения
-callbacks `on_stop()` может пересекаться с незавершёнными callbacks; общие ресурсы
-должны поддерживать совместную остановку.
+достигла readiness, оба callback пропускаются. При таймауте ожидания callbacks
+освобождение actions, `on_stop()` и остановка сервисов откладываются до завершения
+callbacks. Пока работа продолжается, её ресурсы остаются выделенными.
 
 Ошибки session callbacks записываются в log с именем callback и типом исключения,
 без текста исключения, и изолируются от protocol delivery и cleanup. Они не
-заменяют исходную ошибку runtime. Routing metrics и dispatch results относятся
+заменяют исходную ошибку runtime. Ошибки `on_stop()` также доступны через
+`shutdown_outcome.cleanup_failures`. Routing metrics и dispatch results относятся
 только к callbacks входящих protocol events.
 
 Runtime сначала вызывает callback плагина, затем callbacks стабильного snapshot
@@ -776,15 +780,45 @@ Coalescing rotation-событий включается явно: совмест
 объединение.
 
 `application.metrics()` возвращает immutable snapshots очередей, pumps,
-scheduler-а, routing, actions, session и transport. Этапы shutdown по умолчанию
-ограничены пятью секундами; pending и active work при timeout остаются
-наблюдаемыми в метриках и metadata-only diagnostics.
+scheduler-а, routing, actions, session и transport.
+`RuntimeDispatcherConfig.shutdown_timeout` задаёт общий бюджет ожидания остановки
+(по умолчанию пять секунд), общий для boundary, runtime и cleanup сервисов.
+Каждая стадия получает минимум своего таймаута и оставшегося бюджета.
+`None` отключает общий предел ожидания.
 
-Python не позволяет безопасно принудительно остановить выполняющийся поток.
-Callback, превысивший timeout, продолжит работу в daemon worker-е до
-самостоятельного возврата, хотя `close()` уже продолжит shutdown. Поэтому I/O
-в callback-е должен иметь собственные timeout-ы и, где уместно, кооперативную
-отмену.
+`callback_drain_timeout` ограничивает ожидание scheduler при shutdown.
+Прежнее имя `callback_timeout` сохранено с `DeprecationWarning`; одновременно
+задавать оба имени нельзя. Эти настройки не контролируют и не прерывают callbacks
+при обычной работе. Внешние I/O операции должны иметь собственные таймауты.
+
+`ApplicationContext.stop_signal` устанавливается до закрытия ресурсов при
+локальной остановке, отключении транспорта или fatal failure. Фоновая работа
+может проверять `requested` или вызывать `wait(timeout)` для кооперативной отмены.
+Python не позволяет безопасно остановить произвольный поток. После таймаута
+вызывающий код может получить управление, пока daemon work продолжается.
+Освобождение actions, остановка плагина и сервисов выполняются после завершения
+callbacks и workers boundary. Медленный cleanup тоже продолжается на собственном
+daemon worker; ресурсы, нужные незавершённому cleanup, сохраняются. При выходе
+процесса завершение отложенного cleanup не гарантируется.
+
+`application.shutdown_outcome` равен `None` до остановки, затем возвращает
+неизменяемый `ShutdownOutcome`. Поля `complete`, `workers_stopped`,
+`unfinished_callbacks` и `pending_cleanup` показывают, какая работа ещё выполняется.
+`cleanup_failures` содержит `ShutdownFailure(stage, error)` с исходными исключениями;
+`timed_out_stages`, `callback_timeouts`, `discarded_events` и `discarded_commands`
+сохраняют диагностику остановки. Счётчик событий включает отброшенные события typed
+queue и scheduler; счётчик команд — отбрасывания command queue и writer.
+Для наблюдения за отложенным cleanup прочитайте новый snapshot; прежние snapshots
+не меняются. `successful` требует завершения без ошибок и таймаутов.
+Первая fatal failure остаётся основной, а ошибки cleanup добавляются к ней как
+exception notes. `SystemExit` и другие неожиданные выходы worker становятся fatal
+errors с исходной причиной в `__cause__`; owned event при этом терминализируется
+и подтверждается.
+
+Для `run()`/`stop()` сохраняется прежняя политика исключений cleanup; ошибки остановки
+сервисов, полученные в пределах бюджета, по-прежнему передаются вызывающему коду,
+если основной ошибки нет. `run_plugin_cli()` возвращает `1` при неуспешном shutdown,
+в том числе при незавершённых workers или ошибках cleanup.
 
 ## Исходящая шина команд
 
@@ -852,7 +886,7 @@ Runtime явно распределяет владение между поток
 | WebSocket frame I/O и typed protocol parsing | Transport/codec workers boundary |
 | Callback-и protocol events у `Action`, `Plugin` и `PluginHooks` | Keyed workers runtime; callback-и последовательны внутри context и могут пересекаться между contexts, а lifecycle-, broadcast- и unknown-barriers выполняются эксклюзивно |
 | `Plugin.on_ready()` | Поток event pump runtime после readiness сессии и до входящих protocol callbacks |
-| `Plugin.on_stop()` | Lifecycle-поток runtime после освобождения actions и до остановки сервисов приложения |
+| `Plugin.on_stop()` | Cleanup worker runtime после освобождения actions и до остановки сервисов приложения |
 | `StreamDockSender.send()` / `send_async()` и helpers исходящих команд `Action` | Любой поток приложения, service или action callback после запуска outbound writer; перекрывающиеся вызовы поддерживаются |
 | `StreamDockApplication.stop()` | Любой поток приложения или action callback; вызовы идемпотентны и могут перекрываться |
 

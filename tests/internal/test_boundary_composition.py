@@ -9,10 +9,13 @@ from threading import enumerate as enumerate_threads
 from time import monotonic, sleep
 
 from mirabox_sdk import (
+    ActionRegistry,
+    ApplicationContext,
     KeyDownEvent,
     LogMessageCommand,
     OutboundCommandBusClosedError,
     OutboundCommandBusNotReadyError,
+    RuntimeDispatcherConfig,
     StreamDockCommand,
     StreamDockEvent,
     UnknownStreamDockEvent,
@@ -26,10 +29,13 @@ from mirabox_sdk._internal.boundary.config import (
     BoundaryShutdownConfig,
 )
 from mirabox_sdk._internal.boundary.ports import StreamDockBoundary
+from mirabox_sdk._internal.messaging.reader import EventReader
+from mirabox_sdk._internal.messaging.writer import CommandWriter
 from mirabox_sdk._internal.protocol.ports import (
     StreamDockCommandEncoder,
     StreamDockEventDecoder,
 )
+from mirabox_sdk._internal.runtime.composition import create_stream_dock_runtime
 from mirabox_sdk._internal.transport.frames import OutboundFrame
 from mirabox_sdk._internal.transport.metrics import WebSocketConnectorMetrics
 from mirabox_sdk._internal.transport.ports import (
@@ -40,6 +46,11 @@ from mirabox_sdk._internal.transport.ports import (
 )
 from mirabox_sdk._internal.transport.queues import TransportQueueClosedError
 from mirabox_sdk._internal.transport.session import Connected, Disconnected
+from mirabox_sdk._internal.transport.websocket import WebSocketClientConnector
+from mirabox_sdk.runtime.application import _create_stream_dock_application
+from tests.internal.runtime.fakes import RecordingActionFactory
+from tests.internal.runtime.test_composition import _launch_arguments
+from tests.internal.test_websocket_connector import _FakeWebSocketFactory
 
 from .wire_fixtures import known_event_envelopes
 
@@ -372,6 +383,105 @@ class StreamDockBoundaryPipelineTests(unittest.TestCase):
 
 
 class StreamDockBoundaryLifecycleTests(unittest.TestCase):
+    def test_hung_sender_returns_incomplete_outcome_without_closing_service_resources(self) -> None:
+        factory = _FakeWebSocketFactory(block_sends=True)
+        service_stopped = Event()
+
+        class Service:
+            def start(self) -> None:
+                pass
+
+            def stop(self) -> None:
+                service_stopped.set()
+
+        def connector_factory(raw_inbound: object, raw_outbound: object, session: object) -> object:
+            return WebSocketClientConnector(
+                12345,
+                raw_inbound,
+                raw_outbound,
+                session,
+                websocket_app_factory=factory,
+            )
+
+        application = _create_stream_dock_application(
+            _launch_arguments(),
+            action_factory=ActionRegistry[ApplicationContext](),
+            action_dependencies_factory=lambda ctx: ctx,
+            services=(Service(),),
+            connector_factory=connector_factory,
+            runtime_config=RuntimeDispatcherConfig(shutdown_timeout=0.05),
+        )
+        socket = factory.app
+        self.assertIsNotNone(socket)
+        # Socket close ends the receive loop but cannot unblock the external send.
+        socket.close = socket.loop_finished.set
+        errors: list[BaseException] = []
+
+        def run() -> None:
+            try:
+                application.run()
+            except BaseException as exc:
+                errors.append(exc)
+
+        runner = Thread(target=run)
+        self.addCleanup(socket.release_sends.set)
+        runner.start()
+        self.assertTrue(socket.send_started.wait(1))
+        start = monotonic()
+        application.stop()
+        runner.join(0.3)
+        self.assertLess(monotonic() - start, 0.4)
+        self.assertFalse(runner.is_alive())
+        self.assertFalse(application.shutdown_outcome.complete)
+        self.assertFalse(application.shutdown_outcome.workers_stopped)
+        self.assertFalse(service_stopped.is_set())
+        socket.release_sends.set()
+        self.assertTrue(service_stopped.wait(1))
+        _wait_until(lambda: application.shutdown_outcome.complete)
+
+    def test_reader_and_writer_source_exit_reaches_runtime_supervisor(self) -> None:
+        for stage in ("reader", "writer"):
+            for cause in (OSError("source failed"), SystemExit(3)):
+                with self.subTest(stage=stage, cause=type(cause).__name__):
+                    self._assert_source_failure(stage, cause)
+
+    def _assert_source_failure(self, stage: str, cause: BaseException) -> None:
+        class FailedSource:
+            def receive(self, *, timeout: float | None = None) -> object:
+                raise cause
+
+        class FailedReader(EventReader):
+            def __init__(self, source: object, decoder: object, sink: object) -> None:
+                super().__init__(FailedSource(), decoder, sink)
+
+        class FailedWriter(CommandWriter):
+            def __init__(self, source: object, encoder: object, sink: object) -> None:
+                super().__init__(FailedSource(), encoder, sink)
+
+        boundary = create_stream_dock_boundary(
+            12345,
+            _queue_config(),
+            connector_factory=_FakeConnectorFactory(),
+            event_reader_factory=FailedReader if stage == "reader" else EventReader,
+            command_writer_factory=FailedWriter if stage == "writer" else CommandWriter,
+        )
+        runtime = create_stream_dock_runtime(
+            _launch_arguments(),
+            boundary=boundary,
+            action_factory=RecordingActionFactory(boundary.commands),
+            config=RuntimeDispatcherConfig(shutdown_timeout=0.2),
+        )
+        start = monotonic()
+        with (
+            self.assertLogs("mirabox_sdk", level="WARNING"),
+            self.assertRaises(Exception) as raised,
+        ):
+            runtime.run_forever()
+        self.assertLess(monotonic() - start, 0.8)
+        observed = raised.exception
+        self.assertIs(observed if isinstance(cause, Exception) else observed.__cause__, cause)
+        self.assertIs(runtime.shutdown_outcome.primary_failure, observed)
+
     def test_command_after_writer_start_finishes_when_connector_startup_fails(self) -> None:
         startup_error = RuntimeError("fake connector startup failed")
         release_startup = Event()

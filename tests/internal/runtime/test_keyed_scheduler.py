@@ -33,6 +33,36 @@ def _scheduler(
 
 
 class KeyedSerialHandlerSchedulerTests(unittest.TestCase):
+    def test_discard_finishes_every_completion_when_an_observer_raises_base_exception(self) -> None:
+        entered, release = Event(), Event()
+
+        def dispatch(event: StreamDockEvent) -> DispatchResult:
+            entered.set()
+            release.wait()
+            return DispatchResult(DispatchOutcome.HANDLED)
+
+        scheduler = _scheduler(dispatch, worker_count=1)
+        self.addCleanup(lambda: scheduler.stop(timeout=1))
+        self.addCleanup(release.set)
+        scheduler.start()
+        active = scheduler.submit(key_down_event())
+        self.assertTrue(entered.wait(1))
+        pending = [scheduler.submit(key_down_event()) for _ in range(2)]
+
+        def failed_observer(completion: DispatchCompletion) -> None:
+            raise SystemExit(3)
+
+        pending[0].add_done_callback(failed_observer)
+        with self.assertLogs("mirabox_sdk", level="WARNING"), self.assertRaises(SystemExit):
+            scheduler.stop(timeout=0)
+        for completion in pending:
+            self.assertIs(completion.result(0).outcome, DispatchOutcome.DISCARDED_DURING_SHUTDOWN)
+        release.set()
+        self.assertIs(active.result(1).outcome, DispatchOutcome.HANDLED)
+        self.assertTrue(scheduler.stop(timeout=1))
+        self.assertEqual(scheduler.metrics().current_active_callbacks, 0)
+        self.assertEqual(scheduler.metrics().completed, 3)
+
     def test_validates_dependencies_and_bounded_capacity(self) -> None:
         with self.assertRaisesRegex(TypeError, "RuntimeEventDispatcher"):
             KeyedSerialHandlerScheduler(  # type: ignore[arg-type]

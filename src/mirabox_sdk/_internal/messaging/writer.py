@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from concurrent.futures import InvalidStateError
 from math import isfinite
 from threading import Condition, Thread, current_thread
 from time import monotonic
 
+from ..lifecycle import RuntimeWorkerError
 from ..protocol.ports import StreamDockCommandEncoder
 from ..transport.frames import OutboundFrame, TransportReceipt
 from ..transport.ports import (
@@ -58,6 +60,7 @@ class CommandWriter(CommandWriterWorker):
         self._source = command_source
         self._encoder = encoder
         self._sink = raw_outbound_sink
+        self._on_fatal_error: Callable[[Exception], None] | None = None
         self._condition = Condition()
         self._thread: Thread | None = None
         self._started = False
@@ -94,7 +97,7 @@ class CommandWriter(CommandWriterWorker):
             self._started = True
             try:
                 thread.start()
-            except Exception:
+            except BaseException:
                 self._thread = None
                 self._started = False
                 raise
@@ -135,7 +138,7 @@ class CommandWriter(CommandWriterWorker):
         thread.join(timeout)
         if thread.is_alive() and timeout is not None:
             self._stop_accepting(self._sink, "Raw outbound sink")
-            thread.join(_RECEIVE_POLL_INTERVAL * 2)
+            # Unblock producers without extending the caller's timeout budget.
         return not thread.is_alive()
 
     def metrics(self) -> CommandWriterMetrics:
@@ -175,9 +178,8 @@ class CommandWriter(CommandWriterWorker):
                         "Outbound command source failed with %s",
                         type(exc).__name__,
                     )
-                    with self._condition:
-                        self._source_idle = True
-                        self._condition.notify_all()
+                    if self._on_fatal_error is not None:
+                        self._on_fatal_error(exc)
                     return
 
                 with self._condition:
@@ -188,10 +190,23 @@ class CommandWriter(CommandWriterWorker):
 
                 try:
                     self._process(submission)
+                except BaseException as exc:
+                    self._finish_completion(
+                        submission.completion, error=RuntimeWorkerError("Command writer", exc)
+                    )
+                    raise
                 finally:
                     with self._condition:
                         self._in_flight = None
                         self._condition.notify_all()
+        except BaseException as exc:
+            logger.error(
+                "Command writer worker exited unexpectedly; exception_type=%s", type(exc).__name__
+            )
+            with self._condition:
+                self._stop_requested = True
+            if self._on_fatal_error is not None:
+                self._on_fatal_error(RuntimeWorkerError("Command writer", exc))
         finally:
             with self._condition:
                 if self._stop_requested:

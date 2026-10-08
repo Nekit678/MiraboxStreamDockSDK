@@ -5,10 +5,11 @@ from __future__ import annotations
 import logging
 import warnings
 from collections.abc import Callable, Iterable
-from threading import Lock
+from threading import Event, Lock, Thread
 from typing import TypeVar
 
 from .._internal.boundary.ports import WebSocketConnectorFactory
+from .._internal.lifecycle import ShutdownState
 from .._internal.runtime.composition import (
     HandlerSchedulerFactory,
     create_stream_dock_runtime,
@@ -37,6 +38,7 @@ from .ports import (
     Plugin,
     PluginHooks,
 )
+from .shutdown import ShutdownOutcome
 
 _DEFAULT_QUEUE_LIMIT = 1024
 _DEFAULT_SESSION_QUEUE_LIMIT = 16
@@ -56,6 +58,9 @@ class StreamDockApplication:
         "_services",
         "_started_services",
         "_stop_requested",
+        "_shutdown",
+        "_services_stopped",
+        "_service_errors",
     )
 
     def __init__(
@@ -72,12 +77,23 @@ class StreamDockApplication:
         self._lifecycle_lock = Lock()
         self._has_run = False
         self._stop_requested = False
+        self._shutdown = getattr(runtime, "_shutdown", ShutdownState())
+        self._services_stopped = Event()
+        self._service_errors: tuple[BaseException, ...] = ()
 
     @property
     def runtime(self) -> ApplicationRuntime:
         """Return the complete runtime facade used by this application."""
 
         return self._runtime
+
+    @property
+    def shutdown_outcome(self) -> ShutdownOutcome | None:
+        """Inspect shutdown, including failures and work continuing after the deadline."""
+        runtime_outcome = getattr(self._runtime, "shutdown_outcome", None)
+        if runtime_outcome is not None:
+            return runtime_outcome
+        return self._shutdown.snapshot()
 
     def run(self) -> None:
         """Start services, run once, and release started services in reverse."""
@@ -87,7 +103,9 @@ class StreamDockApplication:
                 raise RuntimeError("Stream Dock application can only be run once before stop")
             self._has_run = True
 
+        self._shutdown.pending("Application services", True)
         primary_error: BaseException | None = None
+        runtime_attempted = False
         try:
             for service in self._services:
                 with self._lifecycle_lock:
@@ -100,22 +118,48 @@ class StreamDockApplication:
             with self._lifecycle_lock:
                 run_runtime = not self._stop_requested
             if run_runtime:
+                runtime_attempted = True
                 self._runtime.run_forever()
         except BaseException as exc:
             primary_error = exc
             raise
         finally:
-            cleanup_errors = self._stop_started_services()
-            if cleanup_errors and primary_error is None:
-                raise cleanup_errors[0]
+            self._shutdown.begin()
+            if primary_error is not None:
+                self._shutdown.primary_failure = primary_error
+            self._shutdown.pending("Application services", True)
+            cleanup_thread = Thread(
+                target=self._cleanup_services,
+                args=(runtime_attempted,),
+                name="mirabox-application-cleanup",
+                daemon=True,
+            )
+            try:
+                cleanup_thread.start()
+            except Exception as exc:
+                self._shutdown.failed("Application cleanup worker start", exc)
+                if primary_error is None:
+                    raise
+                self._services_stopped.set()
+            outcome = self.shutdown_outcome
+            wait_timeout = (
+                0
+                if outcome is not None and not outcome.workers_stopped
+                else self._shutdown.remaining()
+            )
+            if not self._services_stopped.wait(wait_timeout):
+                self._shutdown.timed_out("Application services")
+            elif self._service_errors and primary_error is None:
+                raise self._service_errors[0]
 
     def stop(self) -> None:
         """Idempotently request graceful shutdown.
 
-        Services are released by the lifecycle thread after the runtime stops,
+        Services are released by a cleanup worker after runtime resources are released,
         so this method remains non-blocking when called from an action callback.
         """
 
+        self._shutdown.begin()
         with self._lifecycle_lock:
             self._stop_requested = True
         self._runtime.close()
@@ -150,22 +194,37 @@ class StreamDockApplication:
 
         self._runtime.set_typed_global_settings(settings, codec)
 
-    def _stop_started_services(self) -> tuple[Exception, ...]:
+    def _cleanup_services(self, runtime_attempted: bool) -> None:
+        resources_released = getattr(self._runtime, "_resources_released", None)
+        if resources_released is not None and runtime_attempted:
+            resources_released.wait()
+        try:
+            self._service_errors = self._stop_started_services()
+        finally:
+            self._shutdown.pending("Application services", False)
+            self._services_stopped.set()
+
+    def _stop_started_services(self) -> tuple[BaseException, ...]:
         with self._lifecycle_lock:
             started_services = tuple(reversed(self._started_services))
             self._started_services.clear()
 
-        errors: list[Exception] = []
+        errors: list[BaseException] = []
         for service in started_services:
+            stage = f"Application service {type(service).__name__} stop"
+            self._shutdown.pending(stage, True)
             try:
                 service.stop()
-            except Exception as exc:
+            except BaseException as exc:
                 errors.append(exc)
+                self._shutdown.failed(stage, exc)
                 logger.error(
                     "Failed to stop application service; service_type=%s exception_type=%s",
                     type(service).__name__,
                     type(exc).__name__,
                 )
+            finally:
+                self._shutdown.pending(stage, False)
         return tuple(errors)
 
 
@@ -293,10 +352,13 @@ def _create_stream_dock_application(
         raw_outbound_limit=_DEFAULT_QUEUE_LIMIT,
         session_event_limit=_DEFAULT_SESSION_QUEUE_LIMIT,
     )
+    resolved_runtime_config = runtime_config or RuntimeDispatcherConfig()
+    shutdown = ShutdownState(resolved_runtime_config.shutdown_timeout)
     boundary = create_stream_dock_boundary(
         launch_arguments.port,
         resolved_queue_config,
         shutdown_config=shutdown_config,
+        shutdown_state=shutdown,
         connector_factory=connector_factory,
         inbound_overflow_policy=inbound_overflow_policy,
         coalesce_dial_rotations=coalesce_dial_rotations,
@@ -310,6 +372,7 @@ def _create_stream_dock_application(
         stream_dock=boundary.commands,
         global_settings=global_settings,
         session_readiness=session_readiness,
+        stop_signal=shutdown.signal,
     )
     try:
         if _context_callback is not None:
@@ -334,7 +397,7 @@ def _create_stream_dock_application(
             session_readiness=session_readiness,
             plugin=plugin,
             plugin_hooks=plugin_hooks,
-            config=runtime_config,
+            config=resolved_runtime_config,
             scheduler_factory=scheduler_factory,
         )
     except BaseException:

@@ -154,8 +154,12 @@ from .runtime import (
     WebSocketConnectorMetrics,
     create_stream_dock_application,
 )
+from .runtime.shutdown import ShutdownFailure, ShutdownOutcome, StopSignal
 
 __all__ = [
+    "ShutdownFailure",
+    "ShutdownOutcome",
+    "StopSignal",
     "__version__",
     "Action",
     "ActionContextMetrics",

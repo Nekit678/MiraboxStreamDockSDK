@@ -8,6 +8,9 @@ change public APIs between minor versions.
 
 ### Added
 
+- Expose immutable `ShutdownOutcome` / `ShutdownFailure` diagnostics and a shared
+  `ApplicationContext.stop_signal` for cooperative cancellation (RT-02, RT-03).
+
 - Add `mirabox-sdk validate-plugin PATH` and public `validate_plugin()`
   (SDK-DX-001) for offline manifest, code/resource path, local HTML dependency
   and bundled Property Inspector client checks. The explicit
@@ -31,6 +34,15 @@ change public APIs between minor versions.
 - Migrate Counter unit and integration tests to public testing helpers.
 
 ### Fixed
+
+- Terminalize scheduler events after `BaseException`, preserve the fatal cause
+  and supervise unexpected reader/writer exits, including partial pool startup
+  (RT-01).
+- Share one shutdown deadline across boundary, runtime and services; defer
+  resource cleanup until callbacks and workers finish. Add `callback_drain_timeout`
+  as the explicit name for the deprecated `callback_timeout` shutdown wait (RT-02).
+- Report cleanup failures and unfinished shutdown publicly without replacing a
+  primary runtime failure; return CLI status `1` for unsuccessful shutdown (RT-03).
 
 - Inspect internal directory symlinks when validating bundled Property Inspector
   clients (SDK-DX-002), scanning each resolved directory once to avoid cycles.

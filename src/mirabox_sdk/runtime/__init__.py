@@ -41,8 +41,12 @@ from .ports import (
     SessionReadiness,
     StreamDockSender,
 )
+from .shutdown import ShutdownFailure, ShutdownOutcome, StopSignal
 
 __all__ = [
+    "ShutdownFailure",
+    "ShutdownOutcome",
+    "StopSignal",
     "ActionContextMetrics",
     "ApplicationContext",
     "ApplicationRuntime",

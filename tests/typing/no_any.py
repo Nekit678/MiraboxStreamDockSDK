@@ -10,6 +10,9 @@ from mirabox_sdk import (
     JsonObject,
     LogMessageCommand,
     OwnedJsonPayload,
+    ShutdownFailure,
+    ShutdownOutcome,
+    StopSignal,
     StreamDockApplication,
     StreamDockSender,
     ValidatedJsonObject,
@@ -41,6 +44,16 @@ def check_contract(
     assert_type(context.global_settings.loaded, bool)
     assert_type(context.global_settings.snapshot(), JsonObject)
     assert_type(context.session_readiness.wait(0), bool)
+    assert_type(context.stop_signal, StopSignal)
+    assert_type(context.stop_signal.requested, bool)
+    assert_type(context.stop_signal.wait(0), bool)
+    outcome = application.shutdown_outcome
+    assert_type(outcome, ShutdownOutcome | None)
+    if outcome is not None:
+        assert_type(outcome.successful, bool)
+        assert_type(outcome.pending_cleanup, tuple[str, ...])
+        assert_type(outcome.cleanup_failures, tuple[ShutdownFailure, ...])
+        assert_type(outcome.primary_failure, BaseException | None)
     assert_type(action.settings, JsonObject)
     assert_type(action.dependencies, ApplicationContext)
     strict_action = StrictAction("com.example.strict.action", "button", {}, context)

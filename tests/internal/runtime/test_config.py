@@ -52,6 +52,8 @@ class RuntimeDispatcherConfigTests(unittest.TestCase):
             "runtime_drain_timeout",
             "worker_stop_timeout",
             "callback_timeout",
+            "callback_drain_timeout",
+            "shutdown_timeout",
         )
         for field_name in field_names:
             self.assertIsNone(
@@ -93,6 +95,14 @@ class RuntimeDispatcherConfigTests(unittest.TestCase):
             scheduler_pending_limit=8,
         )
         self.assertEqual(config.worker_count, 2)
+
+    def test_callback_timeout_remains_a_deprecated_shutdown_wait(self) -> None:
+        with self.assertWarnsRegex(DeprecationWarning, "callback_drain_timeout"):
+            legacy = RuntimeDispatcherConfig(callback_timeout=0.1)
+        self.assertEqual(legacy.callback_timeout, 0.1)
+        self.assertIsNone(legacy.callback_drain_timeout)
+        with self.assertRaisesRegex(ValueError, "mutually exclusive"):
+            RuntimeDispatcherConfig(callback_timeout=0.1, callback_drain_timeout=0.2)
 
 
 if __name__ == "__main__":

@@ -11,6 +11,7 @@ from threading import Condition, Thread, current_thread
 from time import monotonic
 
 from ...events import StreamDockEvent
+from ..lifecycle import RuntimeWorkerError
 from ..messaging.ports import InboundEventSource, InboundEventSourceClosedError
 from ..transport.ports import SessionEventSource, SessionEventSourceClosedError
 from .metrics import RuntimeEventPumpMetrics, SessionCoordinatorMetrics
@@ -112,7 +113,7 @@ class RuntimeEventPump(RuntimeEventPumpWorker):
             self._started = True
             try:
                 thread.start()
-            except Exception:
+            except BaseException:
                 self._thread = None
                 self._started = False
                 raise
@@ -230,6 +231,8 @@ class RuntimeEventPump(RuntimeEventPumpWorker):
                     completion.add_done_callback(partial(self._on_dispatch_done, owned))
                 except Exception as exc:
                     self._finish_owned(owned, error=exc)
+        except BaseException as exc:
+            self._record_fatal(RuntimeWorkerError("Runtime event pump", exc))
         finally:
             with self._condition:
                 self._stopped = True
@@ -380,7 +383,7 @@ class SessionEventPump(SessionEventPumpWorker):
             self._started = True
             try:
                 thread.start()
-            except Exception:
+            except BaseException:
                 self._thread = None
                 self._started = False
                 raise
@@ -451,6 +454,10 @@ class SessionEventPump(SessionEventPumpWorker):
                     self._coordinator.fail_readiness(exc)
                     self._record_fatal(exc)
                     return
+        except BaseException as exc:
+            error = RuntimeWorkerError("Runtime session pump", exc)
+            self._coordinator.fail_readiness(error)
+            self._record_fatal(error)
         finally:
             with self._condition:
                 self._stopped = True

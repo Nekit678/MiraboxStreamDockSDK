@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from math import isfinite
 from threading import Condition, Thread, current_thread
 from time import monotonic
 
 from ...events import UnknownStreamDockEvent
+from ..lifecycle import RuntimeWorkerError
 from ..protocol.ports import StreamDockEventDecoder
 from ..transport.ports import (
     QueueAcceptanceControl as TransportQueueAcceptanceControl,
@@ -44,6 +46,7 @@ class EventReader(EventReaderWorker):
         self._source = raw_inbound_source
         self._decoder = decoder
         self._sink = inbound_event_sink
+        self._on_fatal_error: Callable[[Exception], None] | None = None
         self._condition = Condition()
         self._thread: Thread | None = None
         self._started = False
@@ -78,7 +81,7 @@ class EventReader(EventReaderWorker):
             self._started = True
             try:
                 thread.start()
-            except Exception:
+            except BaseException:
                 self._thread = None
                 self._started = False
                 raise
@@ -122,7 +125,7 @@ class EventReader(EventReaderWorker):
         thread.join(timeout)
         if thread.is_alive() and timeout is not None:
             self._stop_accepting(self._sink, "Inbound event sink")
-            thread.join(_RECEIVE_POLL_INTERVAL * 2)
+            # Unblock producers without extending the caller's timeout budget.
         return not thread.is_alive()
 
     def metrics(self) -> EventReaderMetrics:
@@ -161,9 +164,8 @@ class EventReader(EventReaderWorker):
                         "Inbound frame source failed with %s",
                         type(exc).__name__,
                     )
-                    with self._condition:
-                        self._source_idle = True
-                        self._condition.notify_all()
+                    if self._on_fatal_error is not None:
+                        self._on_fatal_error(exc)
                     return
 
                 with self._condition:
@@ -178,6 +180,12 @@ class EventReader(EventReaderWorker):
                     with self._condition:
                         self._in_flight = False
                         self._condition.notify_all()
+        except BaseException as exc:
+            logger.error(
+                "Event reader worker exited unexpectedly; exception_type=%s", type(exc).__name__
+            )
+            if self._on_fatal_error is not None:
+                self._on_fatal_error(RuntimeWorkerError("Event reader", exc))
         finally:
             with self._condition:
                 self._stopped = True

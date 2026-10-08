@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import unittest
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from unittest.mock import Mock, call, patch
 
 from mirabox_sdk import (
@@ -26,6 +26,8 @@ from mirabox_sdk import (
     SetImageCommand,
     SetStateCommand,
     SetTitleCommand,
+    ShutdownFailure,
+    ShutdownOutcome,
     StreamDockSender,
     SystemDidWakeUpEvent,
     WillAppearEvent,
@@ -358,6 +360,44 @@ class ActionRegistryTests(unittest.TestCase):
 
 
 class PluginCliTests(unittest.TestCase):
+    def test_incomplete_shutdown_and_cleanup_failure_return_nonzero(self) -> None:
+        clean = ShutdownOutcome(
+            complete=True,
+            workers_stopped=True,
+            unfinished_callbacks=0,
+            pending_cleanup=(),
+            cleanup_failures=(),
+            timed_out_stages=(),
+            callback_timeouts=0,
+            discarded_events=0,
+            discarded_commands=0,
+            primary_failure=None,
+        )
+        outcomes = (
+            replace(clean, complete=False, workers_stopped=False),
+            replace(clean, cleanup_failures=(ShutdownFailure("cleanup", ValueError()),)),
+            replace(clean, timed_out_stages=("scheduler stop",)),
+        )
+        for outcome in outcomes:
+            with self.subTest(outcome=outcome):
+                application = Mock(shutdown_outcome=outcome)
+                with self.assertLogs("mirabox_sdk.cli", level="ERROR"):
+                    result = run_plugin_cli(
+                        Mock(return_value=application),
+                        [
+                            "-port",
+                            "12345",
+                            "-pluginUUID",
+                            "plugin-uuid",
+                            "-registerEvent",
+                            "registerPlugin",
+                            "-info",
+                            REGISTRATION_INFO_JSON,
+                        ],
+                    )
+                self.assertEqual(result, 1)
+                application.stop.assert_called_once_with()
+
     def test_parses_standard_plugin_launch_arguments(self) -> None:
         arguments = parse_plugin_cli_arguments(
             [

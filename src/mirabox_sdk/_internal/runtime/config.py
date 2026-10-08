@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from math import isfinite
 
@@ -37,7 +38,11 @@ def _require_optional_timeout(name: str, value: object) -> None:
 
 @dataclass(frozen=True, slots=True)
 class RuntimeDispatcherConfig:
-    """Immutable limits and timeouts owned by the runtime dispatcher."""
+    """Immutable runtime limits. Shutdown waits share ``shutdown_timeout``.
+
+    ``callback_drain_timeout`` only bounds shutdown drain; it does not monitor
+    callbacks during normal dispatch. ``callback_timeout`` is its deprecated alias.
+    """
 
     session_poll_interval: float = 0.05
     event_poll_interval: float = 0.05
@@ -47,6 +52,8 @@ class RuntimeDispatcherConfig:
     runtime_drain_timeout: float | None = 5.0
     worker_stop_timeout: float | None = 5.0
     callback_timeout: float | None = None
+    callback_drain_timeout: float | None = None
+    shutdown_timeout: float | None = 5.0
 
     def __post_init__(self) -> None:
         _require_positive_finite_number("session_poll_interval", self.session_poll_interval)
@@ -61,6 +68,18 @@ class RuntimeDispatcherConfig:
         _require_optional_timeout("runtime_drain_timeout", self.runtime_drain_timeout)
         _require_optional_timeout("worker_stop_timeout", self.worker_stop_timeout)
         _require_optional_timeout("callback_timeout", self.callback_timeout)
+        _require_optional_timeout("callback_drain_timeout", self.callback_drain_timeout)
+        _require_optional_timeout("shutdown_timeout", self.shutdown_timeout)
+        if self.callback_timeout is not None:
+            if self.callback_drain_timeout is not None:
+                raise ValueError(
+                    "callback_timeout and callback_drain_timeout are mutually exclusive"
+                )
+            warnings.warn(
+                "callback_timeout is a shutdown wait; use callback_drain_timeout instead",
+                DeprecationWarning,
+                stacklevel=2,
+            )
 
         if self.scheduler_kind is RuntimeSchedulerKind.SEQUENTIAL and self.worker_count != 1:
             raise ValueError("sequential scheduler requires worker_count == 1")

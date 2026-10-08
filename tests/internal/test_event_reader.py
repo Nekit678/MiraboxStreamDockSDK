@@ -165,7 +165,8 @@ class EventReaderTests(unittest.TestCase):
         reader = EventReader(raw_inbound, _RecordingDecoder(), typed_inbound)
         reader.start()
 
-        self.assertTrue(reader.stop(timeout=0.05))
+        self.assertFalse(reader.stop(timeout=0.05))
+        self.assertTrue(reader.stop(timeout=1))
         self.assertEqual(typed_inbound.receive().event_name, "first")
         self.assertEqual(reader.metrics().rejected, 1)
         self.assertFalse(

@@ -2,7 +2,7 @@
 
 from abc import abstractmethod
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol, TypeAlias, TypeVar, runtime_checkable
 
 from .._internal.messaging.inbound import InboundOverflowPolicy
@@ -15,6 +15,7 @@ from ..json_types import JsonObject
 from ..json_types import JsonValue as JsonValue  # Resolve recursive JSON type hints.
 from ..protocols import StreamDockActionDependencies, StreamDockSender
 from .metrics import StreamDockRuntimeMetrics
+from .shutdown import StopSignal
 
 GlobalSettingsT = TypeVar("GlobalSettingsT")
 DependenciesT = TypeVar(
@@ -143,7 +144,8 @@ class ApplicationService(Protocol):
     """Synchronous resource owned by one Stream Dock application.
 
     Services start in declaration order before the runtime connects and stop in
-    reverse order after the runtime finishes. A service whose ``start()``
+    reverse order after runtime callbacks and cleanup finish. Cleanup can be
+    deferred past the shutdown deadline. A service whose ``start()``
     raises is responsible for rolling back its own partial initialization.
     """
 
@@ -169,11 +171,13 @@ class ApplicationContext:
     Its :attr:`global_settings` object is the same runtime-owned facade exposed
     by :class:`StreamDockApplication`. ``session_readiness`` is one shared
     read-only signal for work that requires a connected, initialized session.
+    ``stop_signal`` requests cooperative cancellation before resources close.
     """
 
     stream_dock: StreamDockSender
     global_settings: GlobalSettings
     session_readiness: SessionReadiness
+    stop_signal: StopSignal = field(default_factory=StopSignal)
 
 
 ApplicationServiceFactory: TypeAlias = Callable[[ApplicationContext], ApplicationService]

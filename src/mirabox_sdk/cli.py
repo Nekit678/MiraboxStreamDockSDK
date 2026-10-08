@@ -10,6 +10,7 @@ from collections.abc import Callable
 from .errors import InvalidPluginLaunchArgumentsError, InvalidRegistrationInfoError
 from .protocols import PluginApplication
 from .registration import PluginLaunchArguments, parse_plugin_launch_arguments
+from .runtime.shutdown import ShutdownOutcome
 
 logger = logging.getLogger(__name__)
 
@@ -101,7 +102,8 @@ def run_plugin_cli(
     Returns:
         ``0`` after normal completion or keyboard interruption, ``2`` for
         invalid Stream Dock launch data, and ``1`` when construction, execution,
-        or shutdown raises an unexpected exception.
+        or shutdown raises an unexpected exception. Applications exposing a
+        ``ShutdownOutcome`` also return ``1`` for incomplete or failed shutdown.
 
     Note:
         ``stop()`` is attempted exactly once after a successfully constructed
@@ -135,4 +137,8 @@ def run_plugin_cli(
         except Exception:
             active_logger.exception("Failed to stop Stream Dock plugin")
             exit_code = 1
+    outcome = getattr(application, "shutdown_outcome", None)
+    if isinstance(outcome, ShutdownOutcome) and not outcome.successful:
+        active_logger.error("Plugin shutdown was incomplete or reported cleanup failures")
+        exit_code = 1
     return exit_code

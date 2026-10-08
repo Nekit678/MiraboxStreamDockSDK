@@ -3,6 +3,8 @@ from __future__ import annotations
 import unittest
 from collections.abc import Callable
 from threading import Event, Lock, Thread, current_thread
+from time import monotonic
+from unittest.mock import patch
 
 from mirabox_sdk import (
     ActionRegistry,
@@ -266,6 +268,25 @@ def _composed_fakes() -> tuple[
 
 
 class ComposedRuntimeLifecycleTests(unittest.TestCase):
+    def test_lifecycle_keyboard_interrupt_keeps_existing_cli_interrupt_policy(self) -> None:
+        runtime, _, scheduler, _, _, _ = _composed_fakes()
+        interrupt = KeyboardInterrupt()
+        scheduler.start_error = interrupt
+        with self.assertRaises(KeyboardInterrupt) as raised:
+            runtime.run_forever()
+        self.assertIs(raised.exception, interrupt)
+        self.assertTrue(runtime.shutdown_outcome.successful)
+
+    def test_fatal_failure_during_consumer_startup_is_rethrown(self) -> None:
+        runtime, _, _, _, session, history = _composed_fakes()
+        failure = RuntimeError("fatal startup")
+        session.start = lambda: runtime._on_fatal_error(failure)
+        with self.assertRaises(RuntimeError) as raised:
+            runtime.run_forever()
+        self.assertIs(raised.exception, failure)
+        self.assertNotIn("boundary.run", history)
+        self.assertIs(runtime.state, RuntimeLifecycleState.FAILED)
+
     def test_owns_startup_drain_and_cleanup_order(self) -> None:
         runtime, _, _, _, _, history = _composed_fakes()
 
@@ -332,11 +353,14 @@ class ComposedRuntimeLifecycleTests(unittest.TestCase):
 
         self.assertIs(raised.exception, primary)
         self.assertIs(runtime.failure, primary)
+        self.assertIs(runtime.shutdown_outcome.primary_failure, primary)
+        self.assertEqual(len(runtime.shutdown_outcome.cleanup_failures), 2)
+        self.assertTrue(any("cleanup" in note for note in primary.__notes__))
         output = "\n".join(logs.output)
         self.assertNotIn("close cleanup", output)
         self.assertNotIn("scheduler cleanup", output)
 
-    def test_shutdown_timeout_still_finishes_other_cleanup_stages(self) -> None:
+    def test_shutdown_timeout_stops_workers_and_defers_resource_cleanup(self) -> None:
         runtime, _, scheduler, event_pump, session_pump, history = _composed_fakes()
         event_pump.drain_result = False
         session_pump.drain_result = False
@@ -349,7 +373,9 @@ class ComposedRuntimeLifecycleTests(unittest.TestCase):
         self.assertIn("events.request_stop", history)
         self.assertIn("session.stop", history)
         self.assertIn("scheduler.stop", history)
-        self.assertIn("actions.clear", history)
+        self.assertNotIn("actions.clear", history)
+        self.assertFalse(runtime.shutdown_outcome.workers_stopped)
+        self.assertFalse(runtime.shutdown_outcome.complete)
 
     def test_close_before_run_is_idempotent_and_prevents_start(self) -> None:
         runtime, boundary, _, _, _, _ = _composed_fakes()
@@ -397,6 +423,67 @@ class ComposedRuntimeLifecycleTests(unittest.TestCase):
 
 
 class RuntimeFactoryIntegrationTests(unittest.TestCase):
+    def test_partial_worker_startup_is_terminal_even_for_base_exception(self) -> None:
+        original_start = Thread.start
+        for cause in (RuntimeError("thread start failed"), SystemExit(3)):
+            with self.subTest(cause=type(cause).__name__):
+                boundary = _FakeBoundary()
+                runtime = create_stream_dock_runtime(
+                    _launch_arguments(),
+                    boundary=boundary,
+                    action_factory=RecordingActionFactory(boundary.commands),
+                    config=RuntimeDispatcherConfig(worker_count=3, shutdown_timeout=0.2),
+                )
+
+                def start(thread: Thread, failure: BaseException = cause) -> None:
+                    if thread.name == "mirabox-internal-runtime-keyed-2":
+                        raise failure
+                    original_start(thread)
+
+                with patch.object(Thread, "start", start), self.assertRaises(Exception) as raised:
+                    runtime.run_forever()
+                observed = raised.exception
+                self.assertIs(
+                    observed if isinstance(cause, Exception) else observed.__cause__, cause
+                )
+                self.assertTrue(runtime.shutdown_outcome.complete)
+                self.assertEqual(runtime.metrics().scheduler.current_active_callbacks, 0)
+                self.assertIs(runtime.state, RuntimeLifecycleState.FAILED)
+
+    def test_hung_boundary_close_consumes_one_deadline_and_defers_resources(self) -> None:
+        release = Event()
+
+        class HungBoundary(_FakeBoundary):
+            def close(self) -> None:
+                self.close_started.set()
+                release.wait()
+                super().close()
+
+        boundary = HungBoundary(block_run_until_close=True)
+        runtime = create_stream_dock_runtime(
+            _launch_arguments(),
+            boundary=boundary,
+            action_factory=RecordingActionFactory(boundary.commands),
+            config=RuntimeDispatcherConfig(shutdown_timeout=0.05, event_poll_interval=10),
+        )
+        errors: list[Exception] = []
+        runner = Thread(target=lambda: _capture_error(runtime.run_forever, errors))
+        self.addCleanup(release.set)
+        runner.start()
+        self.assertTrue(boundary.run_started.wait(1))
+        start = monotonic()
+        runtime.close()
+        runner.join(0.3)
+        self.assertLess(monotonic() - start, 0.4)
+        self.assertFalse(runner.is_alive())
+        self.assertEqual(errors, [])
+        self.assertFalse(runtime.shutdown_outcome.complete)
+        self.assertFalse(runtime.shutdown_outcome.workers_stopped)
+        self.assertIn("Boundary close", runtime.shutdown_outcome.pending_cleanup)
+        release.set()
+        self.assertTrue(runtime._cleanup_complete.wait(1))
+        self.assertTrue(runtime.shutdown_outcome.complete)
+
     def test_factory_selects_bounded_keyed_scheduler_from_config(self) -> None:
         boundary = _FakeBoundary()
         runtime = create_stream_dock_runtime(

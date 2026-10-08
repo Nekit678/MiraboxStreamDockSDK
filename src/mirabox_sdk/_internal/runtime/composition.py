@@ -14,6 +14,7 @@ from ...json_types import JsonObject
 from ...protocols import StreamDockActionDependencies
 from ...registration import PluginLaunchArguments
 from ..boundary.ports import StreamDockBoundary
+from ..lifecycle import RuntimeWorkerError, ShutdownOutcome, ShutdownState
 from .adapters import ActionRegistryFactoryAdapter, DependencyAwareActionRegistry
 from .config import RuntimeDispatcherConfig
 from .global_settings import DefaultGlobalSettingsState, GlobalSettingsCoordinator
@@ -126,6 +127,20 @@ class ComposedStreamDockRuntime(RuntimeLifecycle):
         if on_stop is not None and not callable(on_stop):
             raise TypeError("on_stop must be callable or None")
 
+        shared_shutdown = getattr(boundary, "_shutdown", None)
+        self._shutdown = (
+            shared_shutdown
+            if isinstance(shared_shutdown, ShutdownState)
+            else ShutdownState(resolved_config.shutdown_timeout)
+        )
+        if config is not None:
+            self._shutdown._timeout = resolved_config.shutdown_timeout
+        self._resources_released = Event()
+        self._cleanup_thread: Thread | None = None
+        self._cleanup_complete = Event()
+        self._cleanup_wait_complete = Event()
+        self._boundary_run_complete = Event()
+        self._boundary_run_complete.set()
         self._boundary = boundary
         self._scheduler = scheduler
         self._event_pump = event_pump
@@ -140,7 +155,7 @@ class ComposedStreamDockRuntime(RuntimeLifecycle):
         self._lifecycle_thread: Thread | None = None
         self._shutdown_requested = False
         self._primary_failure: Exception | None = None
-        self._cleanup_failures: list[Exception] = []
+        self._failed_worker_stops: set[str] = set()
         self._terminal = Event()
 
         self._boundary_close_lock = Lock()
@@ -162,6 +177,21 @@ class ComposedStreamDockRuntime(RuntimeLifecycle):
         with self._condition:
             return self._primary_failure
 
+    @property
+    def shutdown_outcome(self) -> ShutdownOutcome | None:
+        scheduler = self._scheduler.metrics()
+        boundary = self._boundary.metrics()
+        return self._shutdown.snapshot(
+            unfinished_callbacks=scheduler.current_active_callbacks,
+            callback_timeouts=scheduler.callback_timeouts,
+            discarded_events=scheduler.discarded_during_shutdown
+            + getattr(getattr(boundary, "inbound_events", None), "discarded_during_shutdown", 0),
+            discarded_commands=getattr(
+                getattr(boundary, "command_writer", None), "discarded_during_shutdown", 0
+            )
+            + getattr(getattr(boundary, "outbound_commands", None), "discarded_during_shutdown", 0),
+        )
+
     def run_forever(self) -> None:
         """Start consumers before the boundary and supervise one complete run."""
 
@@ -179,30 +209,51 @@ class ComposedStreamDockRuntime(RuntimeLifecycle):
         session_pump_started = False
         try:
             scheduler_attempted = True
+            self._shutdown.worker("Runtime scheduler stop", False)
             self._scheduler.start()
-            if self._shutdown_is_requested():
-                return
-
-            self._event_pump.start()
-            event_pump_started = True
-            if self._shutdown_is_requested():
-                return
-
-            self._session_pump.start()
-            session_pump_started = True
-            with self._condition:
-                if not self._shutdown_requested:
-                    self._state = transition_runtime_state(
-                        self._state,
-                        RuntimeLifecycleState.RUNNING,
+            if not self._shutdown_is_requested():
+                self._event_pump.start()
+                self._shutdown.worker("Runtime event pump stop", False)
+                event_pump_started = True
+            if not self._shutdown_is_requested():
+                self._session_pump.start()
+                self._shutdown.worker("Runtime session pump stop", False)
+                session_pump_started = True
+                with self._condition:
+                    if not self._shutdown_requested:
+                        self._state = transition_runtime_state(
+                            self._state,
+                            RuntimeLifecycleState.RUNNING,
+                        )
+            if not self._shutdown_is_requested():
+                self._boundary_run_complete.clear()
+                self._shutdown.worker("Boundary run", False)
+                boundary_thread = Thread(
+                    target=self._run_boundary,
+                    name="mirabox-internal-boundary-run",
+                    daemon=True,
+                )
+                try:
+                    boundary_thread.start()
+                except BaseException:
+                    self._boundary_run_complete.set()
+                    self._shutdown.worker("Boundary run", True)
+                    raise
+                with self._condition:
+                    self._condition.wait_for(
+                        lambda: self._boundary_run_complete.is_set() or self._shutdown_requested
                     )
-            if self._shutdown_is_requested():
-                return
-
-            self._boundary.run_forever()
-        except Exception as exc:
+                if not self._boundary_run_complete.wait(self._shutdown.remaining()):
+                    self._shutdown.timed_out("Boundary run")
+        except KeyboardInterrupt:
+            raise
+        except BaseException as exc:
             if not self._shutdown_is_requested() or self.failure is not None:
-                self._record_primary_failure(exc)
+                self._record_primary_failure(
+                    exc
+                    if isinstance(exc, Exception)
+                    else RuntimeWorkerError("Runtime startup", exc)
+                )
         finally:
             with self._condition:
                 if self._state in (
@@ -215,14 +266,32 @@ class ComposedStreamDockRuntime(RuntimeLifecycle):
                     )
                 self._shutdown_requested = True
 
-            self._cleanup(
-                scheduler_attempted=scheduler_attempted,
-                event_pump_started=event_pump_started,
-                session_pump_started=session_pump_started,
+            self._shutdown.begin()
+            self._shutdown.pending("Runtime cleanup", True)
+            cleanup_thread = Thread(
+                target=self._cleanup_owned,
+                kwargs=dict(
+                    scheduler_attempted=scheduler_attempted,
+                    event_pump_started=event_pump_started,
+                    session_pump_started=session_pump_started,
+                ),
+                name="mirabox-internal-runtime-cleanup",
+                daemon=True,
             )
+            self._cleanup_thread = cleanup_thread
+            try:
+                cleanup_thread.start()
+            except BaseException as exc:
+                self._record_cleanup_failure("Runtime cleanup worker start", exc)
+            if not self._cleanup_wait_complete.wait(self._shutdown.remaining()):
+                self._shutdown.timed_out("Runtime cleanup")
 
             with self._condition:
                 failure = self._primary_failure
+                shared_failure = self._shutdown.primary_failure
+                if failure is None and isinstance(shared_failure, Exception):
+                    failure = shared_failure
+                    self._primary_failure = failure
                 target = (
                     RuntimeLifecycleState.FAILED
                     if failure is not None
@@ -236,13 +305,31 @@ class ComposedStreamDockRuntime(RuntimeLifecycle):
         if failure is not None:
             raise failure
 
+    def _run_boundary(self) -> None:
+        try:
+            self._boundary.run_forever()
+        except BaseException as exc:
+            if not self._shutdown_is_requested() or self.failure is not None:
+                error = (
+                    exc if isinstance(exc, Exception) else RuntimeWorkerError("Boundary run", exc)
+                )
+                self._on_fatal_error(error)
+        finally:
+            self._shutdown.begin()
+            self._shutdown.worker("Boundary run", True)
+            self._boundary_run_complete.set()
+            with self._condition:
+                self._condition.notify_all()
+
     def close(self) -> None:
         """Idempotently close the boundary and wait outside runtime callbacks."""
 
+        self._shutdown.begin()
         with self._condition:
             if self._state.terminal:
                 return
             self._shutdown_requested = True
+            self._condition.notify_all()
             close_before_run = self._state is RuntimeLifecycleState.NEW
             called_from_lifecycle = self._lifecycle_thread is current_thread()
 
@@ -252,6 +339,7 @@ class ComposedStreamDockRuntime(RuntimeLifecycle):
         )
         called_from_worker = (
             called_from_lifecycle
+            or self._cleanup_thread is current_thread()
             or called_from_scheduler
             or self._event_pump.is_worker_thread()
             or self._session_pump.is_worker_thread()
@@ -261,7 +349,7 @@ class ComposedStreamDockRuntime(RuntimeLifecycle):
             return
 
         if close_before_run:
-            self._boundary_close_complete.wait()
+            self._boundary_close_complete.wait(self._shutdown.remaining())
             self._close_session_readiness()
             with self._condition:
                 if self._state is RuntimeLifecycleState.NEW:
@@ -270,10 +358,12 @@ class ComposedStreamDockRuntime(RuntimeLifecycle):
                         RuntimeLifecycleState.STOPPED,
                     )
                     self._condition.notify_all()
+            self._resources_released.set()
             self._terminal.set()
             return
 
-        self._terminal.wait()
+        if not self._terminal.wait(self._shutdown.remaining()):
+            self._shutdown.timed_out("Runtime close")
 
     def metrics(self) -> StreamDockRuntimeMetrics:
         """Aggregate immutable snapshots without exposing typed sources."""
@@ -323,45 +413,57 @@ class ComposedStreamDockRuntime(RuntimeLifecycle):
         with self._condition:
             if self._primary_failure is None:
                 self._primary_failure = error
+                self._shutdown.primary_failure = error
             self._shutdown_requested = True
             self._condition.notify_all()
 
     def _on_fatal_error(self, error: Exception) -> None:
-        self._record_primary_failure(error)
+        self._shutdown.begin()
+        first_failure = self._shutdown.primary_failure
+        self._record_primary_failure(
+            first_failure if isinstance(first_failure, Exception) else error
+        )
         self._ensure_boundary_closed(nonblocking=True)
 
     def _ensure_boundary_closed(self, *, nonblocking: bool) -> None:
-        owner = False
+        self._shutdown.begin()
         with self._boundary_close_lock:
             if not self._boundary_close_started:
                 self._boundary_close_started = True
-                owner = True
-                if nonblocking:
-                    thread = Thread(
-                        target=self._close_boundary_owned,
-                        name="mirabox-internal-runtime-close",
-                        daemon=True,
-                    )
-                    self._boundary_close_thread = thread
-                    try:
-                        thread.start()
-                    except Exception as exc:
-                        self._record_cleanup_failure("Boundary close worker start", exc)
-                        self._boundary_close_complete.set()
-                    return
-
-        if owner:
-            self._close_boundary_owned()
-        elif not nonblocking:
-            self._boundary_close_complete.wait()
+                self._shutdown.pending("Boundary close", True)
+                thread = Thread(
+                    target=self._close_boundary_owned,
+                    name="mirabox-internal-runtime-close",
+                    daemon=True,
+                )
+                self._boundary_close_thread = thread
+                try:
+                    thread.start()
+                except Exception as exc:
+                    self._record_cleanup_failure("Boundary close worker start", exc)
+                    self._boundary_close_complete.set()
+        if not nonblocking:
+            if not self._boundary_close_complete.wait(self._shutdown.remaining()):
+                self._shutdown.timed_out("Boundary close")
 
     def _close_boundary_owned(self) -> None:
         try:
             self._boundary.close()
-        except Exception as exc:
+        except BaseException as exc:
             self._record_cleanup_failure("Stream Dock boundary close", exc)
         finally:
+            self._shutdown.pending("Boundary close", False)
             self._boundary_close_complete.set()
+
+    def _cleanup_owned(self, **kwargs: bool) -> None:
+        try:
+            self._cleanup(**kwargs)
+        except BaseException as exc:
+            self._record_cleanup_failure("Runtime cleanup", exc)
+        finally:
+            self._shutdown.pending("Runtime cleanup", False)
+            self._cleanup_complete.set()
+            self._cleanup_wait_complete.set()
 
     def _cleanup(
         self,
@@ -379,7 +481,7 @@ class ComposedStreamDockRuntime(RuntimeLifecycle):
             event_drained = self._safe_bool_cleanup(
                 "Runtime event pump drain",
                 self._event_pump.drain,
-                timeout=self._config.runtime_drain_timeout,
+                timeout=self._shutdown.remaining(self._config.runtime_drain_timeout),
             )
 
         if scheduler_attempted:
@@ -389,47 +491,80 @@ class ComposedStreamDockRuntime(RuntimeLifecycle):
             logger.warning("Runtime event pump did not drain before shutdown timeout")
             self._safe_cleanup("Runtime event pump request_stop", self._event_pump.request_stop)
 
+        session_stopped = True
         if session_pump_started:
             if not self._safe_bool_cleanup(
                 "Runtime session pump drain",
                 self._session_pump.drain,
-                timeout=self._config.runtime_drain_timeout,
+                timeout=self._shutdown.remaining(self._config.runtime_drain_timeout),
             ):
                 logger.warning("Runtime session pump did not drain before shutdown timeout")
-            self._safe_bool_cleanup(
+            session_stopped = self._safe_bool_cleanup(
                 "Runtime session pump stop",
                 self._session_pump.stop,
-                timeout=self._config.worker_stop_timeout,
+                timeout=self._shutdown.remaining(self._config.worker_stop_timeout),
             )
 
+        scheduler_stopped = True
         if scheduler_attempted:
             scheduler_timeout = (
-                self._config.callback_timeout
+                self._config.callback_drain_timeout
+                if self._config.callback_drain_timeout is not None
+                else self._config.callback_timeout
                 if self._config.callback_timeout is not None
                 else self._config.runtime_drain_timeout
             )
             if not self._safe_bool_cleanup(
                 "Runtime scheduler drain",
                 self._scheduler.drain,
-                timeout=scheduler_timeout,
+                timeout=self._shutdown.remaining(scheduler_timeout),
             ):
                 logger.warning("Runtime scheduler did not drain before shutdown timeout")
-            self._safe_bool_cleanup(
+            scheduler_stopped = self._safe_bool_cleanup(
                 "Runtime scheduler stop",
                 self._scheduler.stop,
-                timeout=self._config.worker_stop_timeout,
+                timeout=self._shutdown.remaining(self._config.worker_stop_timeout),
             )
 
+        event_stopped = True
         if event_pump_started:
-            self._safe_bool_cleanup(
+            event_stopped = self._safe_bool_cleanup(
                 "Runtime event pump stop",
                 self._event_pump.stop,
-                timeout=self._config.worker_stop_timeout,
+                timeout=self._shutdown.remaining(self._config.worker_stop_timeout),
             )
+
+        # A timeout limits the caller's wait, never the lifetime of shared resources.
+        # This daemon owns deferred cleanup until every resource user has exited.
+        if not (scheduler_stopped and event_stopped and session_stopped):
+            self._cleanup_wait_complete.set()
+        self._boundary_close_complete.wait()
+        boundary_complete = getattr(self._boundary, "_workers_stopped", None)
+        if boundary_complete is not None:
+            boundary_complete.wait()
+        self._boundary_run_complete.wait()
+        if self._failed_worker_stops:
+            return
+        if scheduler_attempted and not scheduler_stopped:
+            if not self._safe_bool_cleanup(
+                "Runtime scheduler stop", self._scheduler.stop, timeout=None
+            ):
+                return
+        if event_pump_started and not event_stopped:
+            if not self._safe_bool_cleanup(
+                "Runtime event pump stop", self._event_pump.stop, timeout=None
+            ):
+                return
+        if session_pump_started and not session_stopped:
+            if not self._safe_bool_cleanup(
+                "Runtime session pump stop", self._session_pump.stop, timeout=None
+            ):
+                return
 
         self._release_actions()
         if self._on_stop is not None:
             self._safe_cleanup("Plugin session stop", self._on_stop)
+        self._resources_released.set()
 
     def _close_session_readiness(self) -> None:
         if self._session_readiness is not None:
@@ -438,23 +573,22 @@ class ComposedStreamDockRuntime(RuntimeLifecycle):
     def _release_actions(self) -> None:
         try:
             actions = self._router.contexts.clear()
-        except Exception as exc:
+        except BaseException as exc:
             self._record_cleanup_failure("Runtime action clear", exc)
             return
         for action in actions:
-            try:
-                action.on_will_disappear()
-            except Exception as exc:
-                self._record_cleanup_failure(
-                    f"Runtime action release for context {action.context}",
-                    exc,
-                )
+            self._safe_cleanup(
+                f"Runtime action release for context {action.context}", action.on_will_disappear
+            )
 
     def _safe_cleanup(self, name: str, action: Callable[..., object], **kwargs: object) -> None:
+        self._shutdown.pending(name, True)
         try:
             action(**kwargs)
-        except Exception as exc:
+        except BaseException as exc:
             self._record_cleanup_failure(name, exc)
+        finally:
+            self._shutdown.pending(name, False)
 
     def _safe_bool_cleanup(
         self,
@@ -463,14 +597,21 @@ class ComposedStreamDockRuntime(RuntimeLifecycle):
         **kwargs: object,
     ) -> bool:
         try:
-            return action(**kwargs)
-        except Exception as exc:
+            result = action(**kwargs)
+            if name.endswith(" stop"):
+                self._shutdown.worker(name, result)
+            if not result:
+                self._shutdown.timed_out(name)
+            return result
+        except BaseException as exc:
             self._record_cleanup_failure(name, exc)
+            if name.endswith(" stop"):
+                self._shutdown.worker(name, False)
+                self._failed_worker_stops.add(name)
             return False
 
-    def _record_cleanup_failure(self, stage: str, error: Exception) -> None:
-        with self._condition:
-            self._cleanup_failures.append(error)
+    def _record_cleanup_failure(self, stage: str, error: BaseException) -> None:
+        self._shutdown.failed(stage, error)
         logger.error(
             "%s failed; exception_type=%s",
             stage,
@@ -546,6 +687,7 @@ def create_stream_dock_runtime(
         plugin_hooks=plugin_hooks,
     )
 
+    fatal_errors = _FatalErrorRelay()
     if scheduler_factory is None:
         if resolved_config.scheduler_kind is RuntimeSchedulerKind.SEQUENTIAL:
             scheduler: HandlerScheduler = SequentialHandlerScheduler(router)
@@ -554,6 +696,7 @@ def create_stream_dock_runtime(
                 router,
                 worker_count=resolved_config.worker_count,
                 pending_limit=resolved_config.scheduler_pending_limit,
+                on_fatal_error=fatal_errors,
             )
     else:
         if not isinstance(scheduler_factory, HandlerSchedulerFactory):
@@ -568,7 +711,6 @@ def create_stream_dock_runtime(
         plugin_uuid=launch_arguments.plugin_uuid,
         readiness=session_readiness,
     )
-    fatal_errors = _FatalErrorRelay()
     plugin_lifecycle = PluginSessionLifecycle(plugin) if plugin is not None else None
     event_pump = RuntimeEventPump(
         boundary.events,
@@ -595,6 +737,9 @@ def create_stream_dock_runtime(
         on_stop=plugin_lifecycle.stop if plugin_lifecycle is not None else None,
     )
     fatal_errors.bind(runtime._on_fatal_error)
+    bind_boundary_failure = getattr(boundary, "_set_fatal_error_callback", None)
+    if callable(bind_boundary_failure):
+        bind_boundary_failure(fatal_errors)
     return runtime
 
 

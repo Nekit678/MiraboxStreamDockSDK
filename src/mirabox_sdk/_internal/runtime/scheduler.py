@@ -9,6 +9,7 @@ from math import isfinite
 from threading import Condition, Lock, Thread, current_thread
 
 from ...events import ActionEvent, StreamDockEvent, UnknownStreamDockEvent
+from ..lifecycle import RuntimeWorkerError
 from .metrics import HandlerSchedulerMetrics
 from .models import DispatchOutcome, DispatchResult
 from .ports import DispatchCompletion, HandlerScheduler, RuntimeEventDispatcher
@@ -145,29 +146,35 @@ class SequentialHandlerScheduler(HandlerScheduler):
                 result = self._dispatcher.dispatch(event)
                 if not isinstance(result, DispatchResult):
                     raise TypeError("dispatcher must return DispatchResult")
-            except Exception as exc:
-                error = exc
+            except BaseException as exc:
+                error = (
+                    exc
+                    if isinstance(exc, Exception)
+                    else RuntimeWorkerError("Runtime scheduler callback", exc)
+                )
+                self.stop_accepting()
 
-            if error is not None:
-                completion._finish(error=error)
-            else:
-                assert result is not None
-                completion._finish(result=result)
-
-            with self._condition:
-                self._completed += 1
-                if is_barrier:
-                    self._barriers_processed += 1
-                if result is not None and result.outcome is DispatchOutcome.CALLBACK_FAILED:
-                    self._callback_failures += 1
-                self._current_active_callbacks = 0
-                self._active_contexts = 0
-                self._active_thread = None
-                self._active_event_name = None
-                self._active_context = None
-                if not self._accepting:
-                    self._stopped = True
-                self._condition.notify_all()
+            try:
+                if error is not None:
+                    completion._finish(error=error)
+                else:
+                    assert result is not None
+                    completion._finish(result=result)
+            finally:
+                with self._condition:
+                    self._completed += 1
+                    if is_barrier:
+                        self._barriers_processed += 1
+                    if result is not None and result.outcome is DispatchOutcome.CALLBACK_FAILED:
+                        self._callback_failures += 1
+                    self._current_active_callbacks = 0
+                    self._active_contexts = 0
+                    self._active_thread = None
+                    self._active_event_name = None
+                    self._active_context = None
+                    if not self._accepting:
+                        self._stopped = True
+                    self._condition.notify_all()
             return completion
         finally:
             self._dispatch_lock.release()
