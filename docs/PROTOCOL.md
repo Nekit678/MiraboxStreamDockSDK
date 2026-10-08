@@ -10,9 +10,37 @@ namespace and not an application extension point. The complete, tested plugin
 in [`examples/counter_plugin`](../examples/counter_plugin) is the executable
 companion to this map.
 
-The supported import paths are `mirabox_sdk` and `mirabox_sdk.runtime`. Version
-`0.5.0` removes the unsupported direct legacy runtime modules and the temporary
-`mirabox_sdk._next` namespace from distributions.
+The supported import paths are `mirabox_sdk` and `mirabox_sdk.runtime`, with
+testing helpers in `mirabox_sdk.testing`. Version `0.5.0` removes the unsupported
+direct legacy runtime modules and the temporary `mirabox_sdk._next` namespace
+from distributions.
+
+## Current implementation
+
+The source checkout has one production stack. The earlier boundary, contract
+parity, and runtime dispatcher design documents were removed after the legacy
+and `_next` implementations were retired. Use this map for the current protocol
+contract and the following sources for implementation details:
+
+| Responsibility | Current source |
+|---|---|
+| Application composition, shared dependencies, and managed services | [`runtime/application.py`](../src/mirabox_sdk/runtime/application.py) |
+| Public runtime contracts and configuration | [`runtime/ports.py`](../src/mirabox_sdk/runtime/ports.py), [`runtime/config.py`](../src/mirabox_sdk/runtime/config.py) |
+| Boundary composition and shutdown | [`_internal/boundary/composition.py`](../src/mirabox_sdk/_internal/boundary/composition.py) |
+| WebSocket transport and raw queues | [`_internal/transport/`](../src/mirabox_sdk/_internal/transport) |
+| Protocol decoding and command encoding | [`_internal/protocol/`](../src/mirabox_sdk/_internal/protocol) |
+| Typed event and command queues, reader, and writer | [`_internal/messaging/`](../src/mirabox_sdk/_internal/messaging) |
+| Runtime lifecycle, session initialization, routing, and scheduling | [`_internal/runtime/`](../src/mirabox_sdk/_internal/runtime) |
+
+These source links do not make `_internal` a supported plugin import path.
+Boundary contract tests live in [`tests/internal/`](../tests/internal), runtime
+dispatcher tests in [`tests/internal/runtime/`](../tests/internal/runtime), and
+public application and testing-helper checks in
+[`tests/test_application.py`](../tests/test_application.py) and
+[`tests/test_testing.py`](../tests/test_testing.py). Current test commands and
+the scheduler benchmark are documented in
+[`CONTRIBUTING.md`](../CONTRIBUTING.md#checks); release verification is documented
+in [`RELEASING.md`](../RELEASING.md#preparing-a-release).
 
 ## Sources
 

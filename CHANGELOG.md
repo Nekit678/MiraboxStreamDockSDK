@@ -26,6 +26,10 @@ change public APIs between minor versions.
 
 ### Fixed
 
+- Align developer documentation with the current implementation (SDK-DOC-001):
+  replace retired architecture/parity guidance with source and test links in
+  the protocol map, document the current scheduler benchmark, and confirm
+  source and wheel typing checks in development and release checklists.
 - Check the real typed consumer API (SDK-TYPE-001): follow imports across SDK
   sources, preserve dependency types through runtime composition, and verify
   positive, invalid-call and `Any`-guard fixtures against an isolated wheel

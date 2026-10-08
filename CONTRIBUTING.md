@@ -49,6 +49,11 @@ Linux and WSL.
 
 ### Protocol changes
 
+Use the [protocol map and current implementation links](docs/PROTOCOL.md) to
+locate the production boundary and runtime. The former migration and parity
+documents described removed implementations; current internal tests live under
+`tests/internal` and `tests/internal/runtime`.
+
 Compare proposed protocol changes with the
 [official documentation](https://sdk.key123.vip/en/) and the
 [official templates](https://github.com/MiraboxSpace/StreamDock-Plugin-SDK).
@@ -84,6 +89,20 @@ consumer fixtures include invalid calls guarded by `warn_unused_ignores` and
 expressions guarded by `disallow_any_expr`. Keep `json_types.pyi` consistent
 with its runtime module; the same check runs `mypy.stubtest` and resolves public
 annotations with `get_type_hints()`.
+
+Keep the development checklists in `README.md` and `README.ru.md` and the
+release checklist in `RELEASING.md` aligned with `.github/workflows/ci.yml` and
+`.github/workflows/release.yml`, including both source and wheel typing checks.
+
+For scheduler or queue-prefetch changes, also run the current performance gate:
+
+```bash
+python scripts/benchmark_runtime_scheduler.py --check
+```
+
+It compares sequential and keyed scheduling in the current runtime and measures
+dial-rotation coalescing at different pending limits. All scenarios use typed
+events and in-process fakes; they do not require Stream Dock or a device.
 
 ## Pull requests
 
