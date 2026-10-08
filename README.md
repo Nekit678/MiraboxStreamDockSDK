@@ -479,7 +479,7 @@ def build_application(arguments: PluginLaunchArguments) -> StreamDockApplication
     )
 ```
 
-`ApplicationContext` is immutable and shared by all dependency and service
+`ApplicationContext` is immutable and shared by all plugin, dependency, and service
 factories. It provides the same `stream_dock`, `global_settings`, and
 `session_readiness` objects to each collaborator, without mutable wiring or
 internal imports.
@@ -521,23 +521,53 @@ error from normal closure.
 ## Plugin callbacks
 
 Subclass `Plugin` to observe plugin-wide broadcast events independently of
-active actions. Pass the instance as `plugin=` to
-`create_stream_dock_application()`:
+active actions. Pass `plugin_factory=MyPlugin` to
+`create_stream_dock_application()` to receive the same `ApplicationContext`
+as action-dependency and service factories:
 
 ```python
-from mirabox_sdk import Plugin, SystemDidWakeUpEvent
+from mirabox_sdk import ApplicationContext, LogMessageCommand, Plugin, SystemDidWakeUpEvent
 
 
 class MyPlugin(Plugin):
+    def __init__(self, context: ApplicationContext) -> None:
+        self.context = context
+
+    def on_ready(self) -> None:
+        self.context.stream_dock.send(LogMessageCommand("session is ready"))
+
     def on_system_did_wake_up(self, event: SystemDidWakeUpEvent) -> None:
         refresh_shared_state()
 ```
 
+An already-constructed instance is still accepted as `plugin=existing_plugin`.
+`plugin`, `plugin_factory`, and legacy `plugin_hooks` are mutually exclusive.
+The factory runs once during composition, before services or the runtime start;
+it must return a `Plugin` and must not send commands or wait for readiness.
+Construction errors close the boundary and propagate to the caller.
+
+`on_ready()` runs once after registration and the initial global-settings request
+complete, before any inbound protocol callbacks. It can send commands and use
+the canonical global-settings facade without waiting or creating a service.
+It does not wait for the first settings response. Return promptly and start
+an owned worker for ongoing work. Override `on_stop()` to signal and join that
+worker: the runtime calls it once after releasing actions and before stopping
+application services, including when `on_ready()` raised after partial startup.
+The transport is already closed at that point. Neither callback runs if the
+session never reaches readiness. If callback shutdown timeouts expire,
+`on_stop()` may overlap unfinished callbacks; shared resources must support
+cooperative shutdown.
+
+Session callback exceptions are logged with the callback name and exception
+type, without exception messages, and isolated from protocol delivery and
+cleanup. They do not replace a primary runtime failure. Routing metrics and
+dispatch results describe wire-event callbacks only.
+
 The runtime invokes the plugin callback first, then the stable snapshot of
 active action callbacks. Global-settings state is updated before either
 callback and each recipient receives an isolated settings event. A plugin
-callback failure is logged and reported in runtime metrics/result policy, but
-does not prevent active actions from receiving the event. `PluginHooks` remains
+wire-event callback failure is logged and reported in runtime metrics/result
+policy, but does not prevent active actions from receiving the event. `PluginHooks` remains
 supported for its legacy `on_unhandled_event()`-only contract.
 
 ## Errors and unknown events
@@ -695,7 +725,9 @@ The runtime uses explicit thread ownership:
 |---|---|
 | `configure_logging()` and `StreamDockApplication.run()` / `stop()` | Application lifecycle thread; configure logging before `run()`; `stop()` is idempotent and may also be called concurrently |
 | WebSocket frame I/O and typed protocol parsing | Boundary-owned transport/codec workers |
-| Every `Action`, `Plugin`, and `PluginHooks` callback | Runtime-owned keyed workers; callbacks are serial per context and may overlap across contexts, while lifecycle, broadcast, and unknown barriers run exclusively |
+| Wire-event callbacks on `Action`, `Plugin`, and `PluginHooks` | Runtime-owned keyed workers; callbacks are serial per context and may overlap across contexts, while lifecycle, broadcast, and unknown barriers run exclusively |
+| `Plugin.on_ready()` | Runtime event-pump thread, after session readiness and before inbound protocol callbacks |
+| `Plugin.on_stop()` | Runtime lifecycle thread, after action cleanup and before application services stop |
 | `StreamDockSender.send()` / `send_async()` and action command helpers | Any application, service, or action-callback thread after the outbound writer starts; overlapping calls are supported |
 | `StreamDockApplication.stop()` | Any application or action-callback thread; calls are idempotent and may overlap |
 

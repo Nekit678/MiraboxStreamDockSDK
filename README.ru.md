@@ -480,7 +480,7 @@ def build_application(arguments: PluginLaunchArguments) -> StreamDockApplication
     )
 ```
 
-`ApplicationContext` immutable и является общим для всех dependency- и
+`ApplicationContext` immutable и является общим для всех plugin-, dependency- и
 service-factory. Он передаёт каждому участнику одни и те же объекты
 `stream_dock`, `global_settings` и `session_readiness` без mutable wiring и
 импортов внутренних модулей.
@@ -524,21 +524,52 @@ def run_session_work(context: ApplicationContext) -> None:
 ## Plugin callbacks
 
 Наследуйте `Plugin`, чтобы обрабатывать plugin-wide broadcast-события независимо
-от активных actions. Экземпляр передаётся как `plugin=` в
-`create_stream_dock_application()`:
+от активных actions. Передайте `plugin_factory=MyPlugin` в
+`create_stream_dock_application()`, чтобы получить тот же `ApplicationContext`,
+что и фабрики зависимостей actions и сервисов:
 
 ```python
-from mirabox_sdk import Plugin, SystemDidWakeUpEvent
+from mirabox_sdk import ApplicationContext, LogMessageCommand, Plugin, SystemDidWakeUpEvent
 
 
 class MyPlugin(Plugin):
+    def __init__(self, context: ApplicationContext) -> None:
+        self.context = context
+
+    def on_ready(self) -> None:
+        self.context.stream_dock.send(LogMessageCommand("session is ready"))
+
     def on_system_did_wake_up(self, event: SystemDidWakeUpEvent) -> None:
         refresh_shared_state()
 ```
 
+Уже созданный экземпляр по-прежнему принимается как `plugin=existing_plugin`.
+`plugin`, `plugin_factory` и устаревший `plugin_hooks` взаимоисключающие.
+Фабрика вызывается один раз при сборке приложения, до запуска сервисов и runtime;
+она должна вернуть `Plugin` и не должна отправлять команды или ждать readiness.
+При ошибке создания boundary закрывается, а исключение передаётся вызывающему коду.
+
+`on_ready()` вызывается один раз после завершения регистрации и первоначального
+запроса глобальных настроек, до любых входящих protocol callbacks. В нём можно
+отправлять команды и использовать canonical global-settings facade без ожидания
+и отдельного сервиса. Первый ответ с настройками этот callback не ожидает.
+Возвращайтесь из него быстро, а длительную работу запускайте в собственном worker.
+Переопределите `on_stop()`, чтобы подать worker сигнал остановки и дождаться его
+завершения: runtime вызывает этот callback один раз после освобождения actions и
+до остановки сервисов приложения, в том числе после частичной инициализации с
+ошибкой в `on_ready()`. Транспорт к этому моменту уже закрыт. Если сессия не
+достигла readiness, оба callback пропускаются. При истечении таймаутов завершения
+callbacks `on_stop()` может пересекаться с незавершёнными callbacks; общие ресурсы
+должны поддерживать совместную остановку.
+
+Ошибки session callbacks записываются в log с именем callback и типом исключения,
+без текста исключения, и изолируются от protocol delivery и cleanup. Они не
+заменяют исходную ошибку runtime. Routing metrics и dispatch results относятся
+только к callbacks входящих protocol events.
+
 Runtime сначала вызывает callback плагина, затем callbacks стабильного snapshot
 активных actions. Состояние глобальных настроек обновляется до обоих callbacks,
-а каждый получатель получает изолированное событие с настройками. Ошибка callback
+а каждый получатель получает изолированное событие с настройками. Ошибка protocol callback
 плагина записывается в log и отражается в metrics/result policy, но не мешает
 доставить событие активным actions. `PluginHooks` остаётся поддержанным для
 устаревшего контракта только с `on_unhandled_event()`.
@@ -699,7 +730,9 @@ Runtime явно распределяет владение между поток
 |---|---|
 | `configure_logging()` и `StreamDockApplication.run()` / `stop()` | Lifecycle-поток приложения; logging настраивается до `run()`; `stop()` идемпотентен и может вызываться конкурентно |
 | WebSocket frame I/O и typed protocol parsing | Transport/codec workers boundary |
-| Все callback-и `Action`, `Plugin` и `PluginHooks` | Keyed workers runtime; callback-и последовательны внутри context и могут пересекаться между contexts, а lifecycle-, broadcast- и unknown-barriers выполняются эксклюзивно |
+| Callback-и protocol events у `Action`, `Plugin` и `PluginHooks` | Keyed workers runtime; callback-и последовательны внутри context и могут пересекаться между contexts, а lifecycle-, broadcast- и unknown-barriers выполняются эксклюзивно |
+| `Plugin.on_ready()` | Поток event pump runtime после readiness сессии и до входящих protocol callbacks |
+| `Plugin.on_stop()` | Lifecycle-поток runtime после освобождения actions и до остановки сервисов приложения |
 | `StreamDockSender.send()` / `send_async()` и helpers исходящих команд `Action` | Любой поток приложения, service или action callback после запуска outbound writer; перекрывающиеся вызовы поддерживаются |
 | `StreamDockApplication.stop()` | Любой поток приложения или action callback; вызовы идемпотентны и могут перекрываться |
 

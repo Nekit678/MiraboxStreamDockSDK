@@ -12,6 +12,7 @@ from importlib import import_module
 from threading import Event, Thread
 from threading import enumerate as enumerate_threads
 from typing import get_args, get_origin, get_type_hints
+from unittest.mock import patch
 
 import mirabox_sdk
 import mirabox_sdk.runtime as runtime
@@ -28,6 +29,7 @@ from mirabox_sdk import (
     OutboundCommandBusClosedError,
     OutboundCommandBusNotReadyError,
     OutboundQueueFullError,
+    Plugin,
     PluginLaunchArguments,
     RegistrationApplicationInfo,
     RegistrationColors,
@@ -287,6 +289,7 @@ class StableRuntimeApiTests(unittest.TestCase):
         for parameter, argument_type in (
             ("action_dependencies_factory", ApplicationContext),
             ("legacy_action_dependencies_factory", mirabox_sdk.StreamDockSender),
+            ("plugin_factory", ApplicationContext),
         ):
             with self.subTest(parameter=parameter):
                 factory_types = get_args(factory_hints[parameter])
@@ -586,6 +589,11 @@ class ApplicationServiceLifecycleTests(unittest.TestCase):
         dependencies_holder: dict[str, _ContextDependencies] = {}
         service_contexts: list[ApplicationContext] = []
         service_events: list[str] = []
+        plugin_contexts: list[ApplicationContext] = []
+
+        def build_plugin(context: ApplicationContext) -> Plugin:
+            plugin_contexts.append(context)
+            return Plugin()
 
         def build_dependencies(context: ApplicationContext) -> _ContextDependencies:
             dependencies = _ContextDependencies(
@@ -604,6 +612,7 @@ class ApplicationServiceLifecycleTests(unittest.TestCase):
             _launch_arguments(),
             action_factory=_SenderCapturingActionRegistry(),
             action_dependencies_factory=build_dependencies,
+            plugin_factory=build_plugin,
             service_factories=(build_service,),
             shutdown_config=_shutdown_config(),
             connector_factory=lambda *_: connector,
@@ -617,6 +626,7 @@ class ApplicationServiceLifecycleTests(unittest.TestCase):
         self.assertIs(global_settings, application.runtime.global_settings)
         self.assertIs(global_settings, dependencies_holder["value"].global_settings)
         self.assertIs(global_settings, service_contexts[0].global_settings)
+        self.assertIs(plugin_contexts[0], service_contexts[0])
         self.assertIs(
             dependencies_holder["value"].stream_dock,
             service_contexts[0].stream_dock,
@@ -820,6 +830,61 @@ class ApplicationServiceLifecycleTests(unittest.TestCase):
         self.assertFalse(thread.is_alive())
         self.assertEqual(errors, [])
         self.assertEqual(events, ["start-service", "runtime-close", "stop-service"])
+
+
+class ApplicationPluginFactoryTests(unittest.TestCase):
+    def test_rejects_invalid_or_conflicting_plugin_factory_before_boundary_creation(self) -> None:
+        for kwargs, message in (
+            ({"plugin_factory": object()}, "plugin_factory must be callable"),
+            (
+                {"plugin": Plugin(), "plugin_factory": lambda _ctx: Plugin()},
+                "plugin and plugin_factory are mutually exclusive",
+            ),
+            (
+                {"plugin_hooks": Plugin(), "plugin_factory": lambda _ctx: Plugin()},
+                "plugin_factory and plugin_hooks are mutually exclusive",
+            ),
+        ):
+            with (
+                self.subTest(kwargs=kwargs),
+                patch(
+                    "mirabox_sdk._internal.boundary.composition.create_stream_dock_boundary"
+                ) as build,
+                self.assertRaisesRegex(TypeError, message),
+            ):
+                create_stream_dock_application(
+                    _launch_arguments(),
+                    action_factory=_NoopActionFactory(),
+                    **kwargs,
+                )
+            build.assert_not_called()
+
+    def test_factory_failure_or_invalid_result_closes_boundary_and_preserves_error(self) -> None:
+        failure = RuntimeError("plugin construction failed")
+
+        def failing_factory(_context: ApplicationContext) -> Plugin:
+            raise failure
+
+        for factory, error_type, message in (
+            (failing_factory, RuntimeError, "plugin construction failed"),
+            (lambda _ctx: None, TypeError, "plugin_factory must return a Plugin"),
+            (lambda _ctx: object(), TypeError, "plugin_factory must return a Plugin"),
+        ):
+            connector = _UnstartedConnector()
+            with (
+                self.subTest(factory=factory),
+                self.assertRaisesRegex(error_type, message) as raised,
+            ):
+                create_stream_dock_application(
+                    _launch_arguments(),
+                    action_factory=_NoopActionFactory(),
+                    plugin_factory=factory,
+                    connector_factory=lambda *_, connector=connector: connector,
+                    shutdown_config=_shutdown_config(),
+                )
+            self.assertTrue(connector.closed)
+            if factory is failing_factory:
+                self.assertIs(raised.exception, failure)
 
 
 class CanonicalCommandFutureTests(unittest.TestCase):

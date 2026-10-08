@@ -20,7 +20,7 @@ from .global_settings import DefaultGlobalSettingsState, GlobalSettingsCoordinat
 from .keyed_scheduler import KeyedSerialHandlerScheduler
 from .metrics import ActionContextMetrics, RuntimeRouterMetrics, StreamDockRuntimeMetrics
 from .models import RuntimeLifecycleState, RuntimeSchedulerKind, transition_runtime_state
-from .plugin import Plugin
+from .plugin import Plugin, PluginSessionLifecycle
 from .ports import (
     ActionContextManager,
     ActionFactory,
@@ -103,6 +103,7 @@ class ComposedStreamDockRuntime(RuntimeLifecycle):
         router: _RuntimeRouterState,
         config: RuntimeDispatcherConfig | None = None,
         session_readiness: SessionReadinessGate | None = None,
+        on_stop: Callable[[], None] | None = None,
     ) -> None:
         if not isinstance(boundary, StreamDockBoundary):
             raise TypeError("boundary must implement StreamDockBoundary")
@@ -121,6 +122,8 @@ class ComposedStreamDockRuntime(RuntimeLifecycle):
             session_readiness, SessionReadinessGate
         ):
             raise TypeError("session_readiness must be a SessionReadinessGate or None")
+        if on_stop is not None and not callable(on_stop):
+            raise TypeError("on_stop must be callable or None")
 
         self._boundary = boundary
         self._scheduler = scheduler
@@ -129,6 +132,7 @@ class ComposedStreamDockRuntime(RuntimeLifecycle):
         self._router = router
         self._config = resolved_config
         self._session_readiness = session_readiness
+        self._on_stop = on_stop
 
         self._condition = Condition()
         self._state = RuntimeLifecycleState.NEW
@@ -423,6 +427,8 @@ class ComposedStreamDockRuntime(RuntimeLifecycle):
             )
 
         self._release_actions()
+        if self._on_stop is not None:
+            self._safe_cleanup("Plugin session stop", self._on_stop)
 
     def _close_session_readiness(self) -> None:
         if self._session_readiness is not None:
@@ -562,11 +568,13 @@ def create_stream_dock_runtime(
         readiness=session_readiness,
     )
     fatal_errors = _FatalErrorRelay()
+    plugin_lifecycle = PluginSessionLifecycle(plugin) if plugin is not None else None
     event_pump = RuntimeEventPump(
         boundary.events,
         scheduler,
         poll_interval=resolved_config.event_poll_interval,
         readiness_gate=coordinator.readiness,
+        on_ready=plugin_lifecycle.ready if plugin_lifecycle is not None else None,
         on_fatal_error=fatal_errors,
     )
     session_pump = SessionEventPump(
@@ -583,6 +591,7 @@ def create_stream_dock_runtime(
         router=router,
         config=resolved_config,
         session_readiness=coordinator.readiness,
+        on_stop=plugin_lifecycle.stop if plugin_lifecycle is not None else None,
     )
     fatal_errors.bind(runtime._on_fatal_error)
     return runtime

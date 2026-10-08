@@ -165,7 +165,8 @@ class ApplicationService(Protocol):
 class ApplicationContext:
     """Canonical dependencies shared by one Stream Dock application.
 
-    The context is created before action-dependency and service factories run.
+    The context is created before plugin, action-dependency and service
+    factories run.
     Its :attr:`global_settings` object is the same runtime-owned facade exposed
     by :class:`StreamDockApplication`. ``session_readiness`` is one shared
     read-only signal for work that requires a connected, initialized session.

@@ -16,7 +16,13 @@ from counter_plugin.actions.counter import ACTION_UUID, CounterAction
 from counter_plugin.contracts import ActionDependencies
 
 from mirabox_sdk import (
+    Action,
+    ActionRegistry,
+    ApplicationContext,
+    DidReceiveGlobalSettingsEvent,
     JsonObject,
+    LogMessageCommand,
+    Plugin,
     PluginLaunchArguments,
     PropertyInspectorMessage,
     RegistrationApplicationInfo,
@@ -27,6 +33,7 @@ from mirabox_sdk import (
     SendToPluginEvent,
     StreamDockQueueConfig,
     StreamDockShutdownConfig,
+    WillAppearEvent,
     create_stream_dock_application,
 )
 from mirabox_sdk._internal.transport.frames import OutboundFrame
@@ -245,6 +252,110 @@ class CounterActionTests(unittest.TestCase):
 
 
 class CounterRuntimeIntegrationTests(unittest.TestCase):
+    def test_plugin_factory_shares_context_and_manages_session_lifecycle(self) -> None:
+        connector_factory = _CounterConnectorFactory()
+        contexts: list[ApplicationContext] = []
+        action_contexts: list[ApplicationContext] = []
+        history: list[str] = []
+        readiness: list[bool] = []
+        received_settings: list[JsonObject] = []
+
+        class SessionPlugin(Plugin):
+            def __init__(self, context: ApplicationContext) -> None:
+                self.context = context
+                contexts.append(context)
+
+            def on_ready(self) -> None:
+                history.append("plugin.ready")
+                readiness.append(self.context.session_readiness.ready)
+                self.context.stream_dock.send(LogMessageCommand("session ready"))
+                self.context.global_settings.set({"ready": True})
+
+            def on_did_receive_global_settings(self, event: DidReceiveGlobalSettingsEvent) -> None:
+                history.append("plugin.settings")
+                received_settings.append(self.context.global_settings.snapshot())
+
+            def on_stop(self) -> None:
+                history.append("plugin.stop")
+
+        class SessionService(_CounterService):
+            def start(self) -> None:
+                history.append("service.start")
+                super().start()
+
+            def stop(self) -> None:
+                history.append("service.stop")
+                super().stop()
+
+        def build_service(context: ApplicationContext) -> SessionService:
+            contexts.append(context)
+            return SessionService()
+
+        def build_dependencies(context: ApplicationContext) -> ApplicationContext:
+            contexts.append(context)
+            return context
+
+        registry = ActionRegistry[ApplicationContext]()
+
+        @registry.register(ACTION_UUID)
+        class SessionAction(Action[JsonObject, ApplicationContext]):
+            def on_will_appear(self, event: WillAppearEvent) -> None:
+                history.append("action.appear")
+                action_contexts.append(self.dependencies)
+
+            def on_will_disappear(self) -> None:
+                history.append("action.stop")
+
+        application = create_stream_dock_application(
+            _launch_arguments(),
+            action_factory=registry,
+            action_dependencies_factory=build_dependencies,
+            plugin_factory=SessionPlugin,
+            service_factories=(build_service,),
+            connector_factory=connector_factory,
+        )
+        errors: list[Exception] = []
+
+        def run() -> None:
+            try:
+                application.run()
+            except Exception as exc:
+                errors.append(exc)
+
+        runner = Thread(target=run)
+        runner.start()
+        try:
+            _wait_until(lambda: application.metrics().event_pump.events_acknowledged == 4)
+        finally:
+            application.stop()
+            runner.join(1)
+
+        self.assertFalse(runner.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(len(contexts), 3)
+        self.assertEqual(len(action_contexts), 1)
+        self.assertTrue(all(context is contexts[0] for context in (*contexts, *action_contexts)))
+        self.assertIs(contexts[0].global_settings, application.global_settings)
+        self.assertEqual(readiness, [True])
+        self.assertEqual(received_settings, [{"profile": "integration"}])
+        self.assertEqual(
+            history,
+            [
+                "service.start",
+                "plugin.ready",
+                "plugin.settings",
+                "action.appear",
+                "action.stop",
+                "plugin.stop",
+                "service.stop",
+            ],
+        )
+        assert connector_factory.connector is not None
+        self.assertEqual(
+            [json.loads(frame)["event"] for frame in connector_factory.connector.sent],
+            ["registerPlugin", "getGlobalSettings", "logMessage", "setGlobalSettings"],
+        )
+
     def test_registration_global_settings_actions_outbound_and_shutdown(self) -> None:
         connector_factory = _CounterConnectorFactory()
         service = _CounterService()

@@ -8,6 +8,11 @@ change public APIs between minor versions.
 
 ### Fixed
 
+- Share canonical application dependencies with plugins (SDK-PLUGIN-CTX-001)
+  through `plugin_factory(ApplicationContext)`, mutually exclusive with
+  `plugin` and `plugin_hooks`. Add once-only `Plugin.on_ready()` and
+  `Plugin.on_stop()` callbacks for session work and cleanup, with isolated,
+  redacted callback failures and cleanup after partial ready initialization.
 - Remove dependency-factory guessing (SDK-FACTORY-001):
   `action_dependencies_factory` always receives `ApplicationContext`.
   Sender-only factories can use `lambda ctx: factory(ctx.stream_dock)` or the

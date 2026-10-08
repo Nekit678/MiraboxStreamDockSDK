@@ -7,11 +7,13 @@ from typing import TypeVar
 from mirabox_sdk import (
     Action,
     ActionRegistry,
+    ApplicationContext,
     ApplicationRuntime,
     ApplicationService,
     GlobalSettings,
     JsonCodec,
     JsonObject,
+    LogMessageCommand,
     Plugin,
     PluginLaunchArguments,
     StreamDockActionDependencies,
@@ -39,6 +41,15 @@ class ExampleService(ApplicationService):
 
 
 class ExamplePlugin(Plugin):
+    def __init__(self, context: ApplicationContext) -> None:
+        self.context = context
+
+    def on_ready(self) -> None:
+        self.context.stream_dock.send(LogMessageCommand("session is ready"))
+
+    def on_stop(self) -> None:
+        return None
+
     def on_system_did_wake_up(self, event: SystemDidWakeUpEvent) -> None:
         del event
 
@@ -56,7 +67,7 @@ def build_application(arguments: PluginLaunchArguments) -> StreamDockApplication
         arguments,
         action_factory=registry,
         action_dependencies_factory=lambda ctx: Dependencies(ctx.stream_dock),
-        plugin=ExamplePlugin(),
+        plugin_factory=ExamplePlugin,
         service_factories=(lambda _context: ExampleService(),),
     )
 

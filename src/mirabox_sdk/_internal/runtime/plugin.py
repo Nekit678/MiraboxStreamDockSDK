@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import logging
+from threading import Lock
+
 from ...events import (
     ApplicationDidLaunchEvent,
     ApplicationDidTerminateEvent,
@@ -13,6 +16,8 @@ from ...events import (
 )
 from .ports import PluginHooks
 
+logger = logging.getLogger(__name__)
+
 
 class Plugin:
     """Base class for plugin-wide callbacks.
@@ -23,6 +28,23 @@ class Plugin:
     failures are isolated, so a failing plugin callback does not prevent
     action delivery.
     """
+
+    def on_ready(self) -> None:
+        """Start session work once, before inbound protocol callbacks.
+
+        Registration and the initial settings request have completed, so
+        commands may be sent. This does not wait for a settings response.
+        Return promptly; use an owned worker for long-running work.
+        """
+
+    def on_stop(self) -> None:
+        """Release work started by ``on_ready()``, even if that callback failed.
+
+        Called once during runtime cleanup, after protocol callbacks drain
+        or reach their configured shutdown timeout, and before services stop.
+        Signal and join owned workers here; the transport is already closed.
+        No call is made if ``on_ready()`` was never attempted.
+        """
 
     def on_did_receive_global_settings(self, event: DidReceiveGlobalSettingsEvent) -> None:
         """Observe global settings after runtime state has been updated."""
@@ -54,3 +76,39 @@ class LegacyPluginHooksAdapter(Plugin):
 
     def on_unhandled_event(self, event: UnknownStreamDockEvent) -> None:
         self._hooks.on_unhandled_event(event)
+
+
+class PluginSessionLifecycle:
+    """Own the once-only ready/stop pair independently from wire events."""
+
+    def __init__(self, plugin: Plugin) -> None:
+        self._plugin = plugin
+        self._lock = Lock()
+        self._ready_started = False
+        self._stopped = False
+
+    def ready(self) -> None:
+        with self._lock:
+            if self._ready_started or self._stopped:
+                return
+            self._ready_started = True
+        self._invoke("on_ready")
+
+    def stop(self) -> None:
+        with self._lock:
+            if self._stopped:
+                return
+            self._stopped = True
+            ready_started = self._ready_started
+        if ready_started:
+            self._invoke("on_stop")
+
+    def _invoke(self, callback: str) -> None:
+        try:
+            getattr(self._plugin, callback)()
+        except Exception as exc:
+            logger.error(
+                "Plugin session callback failed; callback=%s exception_type=%s",
+                callback,
+                type(exc).__name__,
+            )

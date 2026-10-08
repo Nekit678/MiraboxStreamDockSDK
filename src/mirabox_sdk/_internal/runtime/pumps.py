@@ -49,6 +49,7 @@ class RuntimeEventPump(RuntimeEventPumpWorker):
         *,
         poll_interval: float = 0.05,
         readiness_gate: SessionReadiness | None = None,
+        on_ready: Callable[[], None] | None = None,
         on_fatal_error: Callable[[Exception], None] | None = None,
     ) -> None:
         if not isinstance(source, InboundEventSource):
@@ -58,6 +59,8 @@ class RuntimeEventPump(RuntimeEventPumpWorker):
         poll_interval = _validate_poll_interval(poll_interval)
         if readiness_gate is not None and not isinstance(readiness_gate, SessionReadiness):
             raise TypeError("readiness_gate must implement SessionReadiness or be None")
+        if on_ready is not None and not callable(on_ready):
+            raise TypeError("on_ready must be callable or None")
         if on_fatal_error is not None and not callable(on_fatal_error):
             raise TypeError("on_fatal_error must be callable or None")
 
@@ -65,6 +68,7 @@ class RuntimeEventPump(RuntimeEventPumpWorker):
         self._scheduler = scheduler
         self._poll_interval = poll_interval
         self._readiness_gate = readiness_gate
+        self._on_ready = on_ready
         self._on_fatal_error = on_fatal_error
         self._condition = Condition()
         self._thread: Thread | None = None
@@ -174,6 +178,11 @@ class RuntimeEventPump(RuntimeEventPumpWorker):
         try:
             if not self._await_readiness():
                 return
+            with self._condition:
+                if self._stop_requested:
+                    return
+            if self._on_ready is not None:
+                self._on_ready()
             while True:
                 with self._condition:
                     if self._stop_requested:

@@ -6,6 +6,7 @@ from threading import Event, Lock, Thread, current_thread
 
 from mirabox_sdk import (
     ActionRegistry,
+    LogMessageCommand,
     Plugin,
     PluginLaunchArguments,
     RegisterPluginCommand,
@@ -520,6 +521,210 @@ class RuntimeFactoryIntegrationTests(unittest.TestCase):
         self.assertTrue(readiness.ready)
         self.assertTrue(readiness.terminal)
         self.assertTrue(readiness.wait(timeout=0))
+
+    def test_plugin_ready_precedes_events_and_stop_releases_owned_work_once(self) -> None:
+        history: list[str] = []
+        stop_worker = Event()
+        worker_started = Event()
+        worker = Thread(target=lambda: (worker_started.set(), stop_worker.wait(1)))
+        self.addCleanup(stop_worker.set)
+
+        class SessionPlugin(Plugin):
+            def on_ready(self) -> None:
+                history.append("plugin.ready")
+                boundary.commands.send(LogMessageCommand("ready"))
+                worker.start()
+
+            def on_system_did_wake_up(self, event: SystemDidWakeUpEvent) -> None:
+                history.append("plugin.event")
+
+            def on_stop(self) -> None:
+                history.append("plugin.stop")
+                stop_worker.set()
+                worker.join(1)
+
+        class SessionAction(RecordingAction):
+            def on_will_appear(self, event: object) -> None:
+                history.append("action.appear")
+
+            def on_will_disappear(self) -> None:
+                history.append("action.release")
+
+        events = FakeInboundEventSource((will_appear_event(), SystemDidWakeUpEvent()))
+        events.close()
+        session_events = FakeSessionEventSource((Connected(),))
+        session_events.close()
+        boundary = _FakeBoundary(events=events, session_events=session_events)
+        runtime = create_stream_dock_runtime(
+            _launch_arguments(),
+            boundary=boundary,
+            action_factory=RecordingActionFactory(boundary.commands, SessionAction),
+            plugin=SessionPlugin(),
+        )
+
+        runtime.run_forever()
+        runtime.close()
+        runtime.close()
+
+        self.assertTrue(worker_started.is_set())
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(
+            history,
+            ["plugin.ready", "action.appear", "plugin.event", "action.release", "plugin.stop"],
+        )
+        self.assertEqual(
+            [command.to_wire()["event"] for command in boundary.commands.commands],
+            ["registerPlugin", "getGlobalSettings", "logMessage"],
+        )
+
+    def test_plugin_session_callbacks_are_skipped_without_readiness(self) -> None:
+        class SessionPlugin(Plugin):
+            def __init__(self) -> None:
+                self.history: list[str] = []
+
+            def on_ready(self) -> None:
+                self.history.append("ready")
+
+            def on_stop(self) -> None:
+                self.history.append("stop")
+
+        for mode in ("close-before-run", "disconnect-before-ready", "initialization-failed"):
+            plugin = SessionPlugin()
+            session_events = FakeSessionEventSource(
+                (Connected(),) if mode == "initialization-failed" else (Disconnected(1000, None),)
+            )
+            session_events.close()
+            boundary = _FakeBoundary(session_events=session_events)
+            failure = RuntimeError("initialization failed")
+            if mode == "initialization-failed":
+                boundary.commands.failures[RegisterPluginCommand] = failure
+            runtime = create_stream_dock_runtime(
+                _launch_arguments(),
+                boundary=boundary,
+                action_factory=RecordingActionFactory(boundary.commands),
+                plugin=plugin,
+            )
+
+            with self.subTest(mode=mode):
+                if mode == "close-before-run":
+                    runtime.close()
+                elif mode == "initialization-failed":
+                    with (
+                        self.assertLogs("mirabox_sdk._internal.runtime", level="ERROR"),
+                        self.assertRaises(RuntimeError) as raised,
+                    ):
+                        runtime.run_forever()
+                    self.assertIs(raised.exception, failure)
+                else:
+                    runtime.run_forever()
+                self.assertEqual(plugin.history, [])
+
+    def test_plugin_session_callback_failures_are_isolated_and_redacted(self) -> None:
+        history: list[str] = []
+        stop_worker = Event()
+        worker = Thread(target=lambda: stop_worker.wait(1))
+        self.addCleanup(stop_worker.set)
+
+        class FailingPlugin(Plugin):
+            def on_ready(self) -> None:
+                history.append("ready")
+                worker.start()
+                raise ValueError("private startup data")
+
+            def on_system_did_wake_up(self, event: SystemDidWakeUpEvent) -> None:
+                history.append("event")
+
+            def on_stop(self) -> None:
+                history.append("stop")
+                stop_worker.set()
+                worker.join(1)
+                raise RuntimeError("private cleanup data")
+
+        events = FakeInboundEventSource((SystemDidWakeUpEvent(),))
+        events.close()
+        session_events = FakeSessionEventSource((Connected(),))
+        session_events.close()
+        boundary = _FakeBoundary(events=events, session_events=session_events)
+        runtime = create_stream_dock_runtime(
+            _launch_arguments(),
+            boundary=boundary,
+            action_factory=RecordingActionFactory(boundary.commands),
+            plugin=FailingPlugin(),
+        )
+
+        with self.assertLogs("mirabox_sdk._internal.runtime.plugin", level="ERROR") as logs:
+            runtime.run_forever()
+
+        self.assertEqual(history, ["ready", "event", "stop"])
+        self.assertFalse(worker.is_alive())
+        self.assertIsNone(runtime.failure)
+        self.assertEqual(len(events.acknowledged), 1)
+        self.assertEqual(len(logs.output), 2)
+        self.assertIn("callback=on_ready exception_type=ValueError", logs.output[0])
+        self.assertIn("callback=on_stop exception_type=RuntimeError", logs.output[1])
+        self.assertNotIn("private", "\n".join(logs.output))
+
+    def test_close_from_plugin_ready_is_non_blocking_and_cleans_up(self) -> None:
+        history: list[str] = []
+
+        class ClosingPlugin(Plugin):
+            def on_ready(self) -> None:
+                runtime.close()
+                history.append("ready-returned")
+
+            def on_stop(self) -> None:
+                history.append("stop")
+
+        boundary = _FakeBoundary(
+            session_events=FakeSessionEventSource((Connected(),)),
+            block_run_until_close=True,
+        )
+        runtime = create_stream_dock_runtime(
+            _launch_arguments(),
+            boundary=boundary,
+            action_factory=RecordingActionFactory(boundary.commands),
+            plugin=ClosingPlugin(),
+        )
+        errors: list[Exception] = []
+        runner = Thread(target=lambda: _capture_error(runtime.run_forever, errors))
+        runner.start()
+        runner.join(1)
+
+        self.assertFalse(runner.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(history, ["ready-returned", "stop"])
+
+    def test_plugin_stop_failure_does_not_replace_runtime_failure(self) -> None:
+        history: list[str] = []
+
+        class FailingPlugin(Plugin):
+            def on_ready(self) -> None:
+                history.append("ready")
+
+            def on_stop(self) -> None:
+                history.append("stop")
+                raise ValueError("cleanup failure")
+
+        session_events = FakeSessionEventSource((Connected(),))
+        session_events.close()
+        boundary = _FakeBoundary(session_events=session_events)
+        failure = RuntimeError("runtime failed")
+        boundary.run_error = failure
+        runtime = create_stream_dock_runtime(
+            _launch_arguments(),
+            boundary=boundary,
+            action_factory=RecordingActionFactory(boundary.commands),
+            plugin=FailingPlugin(),
+        )
+
+        with (
+            self.assertLogs("mirabox_sdk._internal.runtime.plugin", level="ERROR"),
+            self.assertRaises(RuntimeError) as raised,
+        ):
+            runtime.run_forever()
+
+        self.assertIs(raised.exception, failure)
+        self.assertEqual(history, ["ready", "stop"])
 
     def test_action_registry_is_bound_to_application_dependencies(self) -> None:
         registry: ActionRegistry[FakeDependencies] = ActionRegistry()

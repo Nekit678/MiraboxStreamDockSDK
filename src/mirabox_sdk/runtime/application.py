@@ -177,6 +177,7 @@ def create_stream_dock_application(
         Callable[[StreamDockSender], ActionDependenciesT] | None
     ) = None,
     plugin: Plugin | None = None,
+    plugin_factory: Callable[[ApplicationContext], Plugin] | None = None,
     plugin_hooks: PluginHooks | None = None,
     queue_config: StreamDockQueueConfig | None = None,
     shutdown_config: StreamDockShutdownConfig | None = None,
@@ -199,9 +200,14 @@ def create_stream_dock_application(
     ``service_factories`` likewise receive that context; objects in
     ``services`` remain supported for already-constructed services. Services
     start before the runtime connects and stop in reverse order after it ends.
-    ``plugin`` receives known plugin-wide broadcast callbacks; ``plugin_hooks``
-    remains the legacy unknown-event-only adapter. Native three-argument
-    :class:`ActionFactory` implementations leave the dependency factory unset.
+    ``plugin_factory`` receives the same context and must return a ``Plugin``;
+    an already-constructed ``plugin`` remains supported. These parameters and
+    ``plugin_hooks`` are mutually exclusive. Plugin ``on_ready()`` runs after
+    mandatory session initialization; ``on_stop()`` releases its resources
+    during runtime cleanup, including when ``on_ready()`` raises.
+    ``plugin_hooks`` remains the legacy unknown-event-only adapter. Native
+    three-argument :class:`ActionFactory` implementations leave the dependency
+    factory unset.
     """
 
     if not isinstance(launch_arguments, PluginLaunchArguments):
@@ -226,6 +232,12 @@ def create_stream_dock_application(
         )
     if plugin is not None and not isinstance(plugin, Plugin):
         raise TypeError("plugin must extend Plugin or be None")
+    if plugin_factory is not None and not callable(plugin_factory):
+        raise TypeError("plugin_factory must be callable or None")
+    if plugin is not None and plugin_factory is not None:
+        raise TypeError("plugin and plugin_factory are mutually exclusive")
+    if plugin_factory is not None and plugin_hooks is not None:
+        raise TypeError("plugin_factory and plugin_hooks are mutually exclusive")
     if plugin is not None and plugin_hooks is not None:
         raise TypeError("plugin and plugin_hooks are mutually exclusive")
     resolved_services = _resolve_services(services)
@@ -259,6 +271,10 @@ def create_stream_dock_application(
         session_readiness=session_readiness,
     )
     try:
+        if plugin_factory is not None:
+            plugin = plugin_factory(context)
+            if not isinstance(plugin, Plugin):
+                raise TypeError("plugin_factory must return a Plugin")
         action_dependencies: StreamDockActionDependencies | None = None
         if action_dependencies_factory is not None:
             action_dependencies = action_dependencies_factory(context)
