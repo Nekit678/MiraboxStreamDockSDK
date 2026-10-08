@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import partial
 from math import isfinite
 from threading import Condition, Thread, current_thread
 from time import monotonic
@@ -226,9 +227,7 @@ class RuntimeEventPump(RuntimeEventPumpWorker):
                     self._submitted_to_scheduler += 1
                 try:
                     completion = self._scheduler.submit(event)
-                    completion.add_done_callback(
-                        lambda finished, owned=owned: self._on_dispatch_done(owned, finished)
-                    )
+                    completion.add_done_callback(partial(self._on_dispatch_done, owned))
                 except Exception as exc:
                     self._finish_owned(owned, error=exc)
         finally:

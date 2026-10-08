@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import Generic, Protocol, TypeVar, runtime_checkable
 
 from ....json_types import JsonObject
 from ....protocols import StreamDockActionDependencies
 from ..ports import ActionFactory, RuntimeActionCallbacks
 
+DependenciesT = TypeVar("DependenciesT", bound=StreamDockActionDependencies)
+RegistryDependenciesT = TypeVar(
+    "RegistryDependenciesT", bound=StreamDockActionDependencies, contravariant=True
+)
+
 
 @runtime_checkable
-class DependencyAwareActionRegistry(Protocol):
+class DependencyAwareActionRegistry(Protocol[RegistryDependenciesT]):
     """Structural view of a registry whose actions share dependencies."""
 
     def create(
@@ -18,19 +23,19 @@ class DependencyAwareActionRegistry(Protocol):
         action_uuid: str,
         context: str,
         settings: JsonObject,
-        dependencies: StreamDockActionDependencies,
+        dependencies: RegistryDependenciesT,
     ) -> RuntimeActionCallbacks | None: ...
 
 
-class ActionRegistryFactoryAdapter(ActionFactory):
+class ActionRegistryFactoryAdapter(ActionFactory, Generic[DependenciesT]):
     """Bind application dependencies without exposing them to event routing."""
 
     __slots__ = ("_dependencies", "_registry")
 
     def __init__(
         self,
-        registry: DependencyAwareActionRegistry,
-        dependencies: StreamDockActionDependencies,
+        registry: DependencyAwareActionRegistry[DependenciesT],
+        dependencies: DependenciesT,
     ) -> None:
         if not isinstance(registry, DependencyAwareActionRegistry):
             raise TypeError("registry must implement DependencyAwareActionRegistry")
@@ -47,7 +52,7 @@ class ActionRegistryFactoryAdapter(ActionFactory):
     ) -> RuntimeActionCallbacks | None:
         """Create one action through the bound dependency-aware registry."""
 
-        return self._registry.create(  # type: ignore[attr-defined,no-any-return]
+        return self._registry.create(
             action_uuid,
             context,
             initial_settings,

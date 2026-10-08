@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from concurrent.futures import Future
+from typing import cast
 
 
 class OutboundCommandBusError(RuntimeError):
@@ -62,7 +63,8 @@ class CommandFuture:
         """Wait for completion and return the recorded failure, if any."""
 
         try:
-            return self._future.exception(timeout)
+            # Only _finish() writes failures, and it accepts Exception instances.
+            return cast(Exception | None, self._future.exception(timeout))
         except TimeoutError as exc:
             raise TimeoutError("Outbound command did not complete before the timeout") from exc
 

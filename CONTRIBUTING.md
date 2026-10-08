@@ -68,13 +68,22 @@ PYTHONPATH=examples/counter_plugin/src \
 python -m compileall -q src tests scripts examples
 ruff check src tests scripts examples
 ruff format --check src tests scripts examples
+python -m mypy
 python -m build
 python scripts/verify_distribution.py dist
+python scripts/verify_wheel_typing.py dist
 python -m twine check dist/*
 ```
 
 The Windows CI jobs exercise platform-specific path and packaging assumptions;
 the tests themselves do not require a running Stream Dock instance.
+
+`verify_wheel_typing.py` installs the wheel and pinned mypy in a temporary
+environment outside the checkout, so it needs package-index access. Its
+consumer fixtures include invalid calls guarded by `warn_unused_ignores` and
+expressions guarded by `disallow_any_expr`. Keep `json_types.pyi` consistent
+with its runtime module; the same check runs `mypy.stubtest` and resolves public
+annotations with `get_type_hints()`.
 
 ## Pull requests
 

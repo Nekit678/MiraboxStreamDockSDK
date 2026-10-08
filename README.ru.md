@@ -958,14 +958,24 @@ PYTHONPATH=examples/counter_plugin/src \
 python -m compileall -q src tests scripts examples
 ruff check src tests scripts examples
 ruff format --check src tests scripts examples
+python -m mypy
 python -m build
 python scripts/verify_distribution.py dist
+python scripts/verify_wheel_typing.py dist
 python -m twine check dist/*
 ```
 
 Тесты используют имитации соединения и сообщений протокола — запущенный Stream
 Dock не требуется. CI проверяет SDK в Linux и Windows на всех поддерживаемых
 версиях Python.
+
+Mypy следует по импортам исходников SDK и Counter example. Проверка типов wheel
+устанавливает собранный пакет и закреплённую версию mypy во временное виртуальное
+окружение вне репозитория. Она проверяет consumer fixtures, отклоняет неверные
+вызовы, защищает от `Any`, сверяет JSON stubs с runtime и разрешает публичные
+аннотации типов. Проверка реализации закрытых JSON-контейнеров отложена за
+проверяемой границей `json_types.pyi`. Для установки mypy и зависимостей wheel
+этой проверке нужен доступ к индексу пакетов.
 
 Улучшения приветствуются. Перед отправкой изменений прочитайте
 [CONTRIBUTING.md](https://github.com/Nekit678/MiraboxStreamDockSDK/blob/main/CONTRIBUTING.md),

@@ -364,7 +364,7 @@ def create_stream_dock_boundary(
     )
 
     if connector_factory is None:
-        connector = WebSocketClientConnector(
+        connector: WebSocketConnector = WebSocketClientConnector(
             port,
             raw_inbound,
             raw_outbound,

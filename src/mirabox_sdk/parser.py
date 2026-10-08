@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from types import MappingProxyType
-from typing import NoReturn
+from typing import Literal, NoReturn, TypeVar, overload
 
 from .errors import InvalidFieldError, MalformedEventError, UnsupportedEventError
 from .events import (
@@ -40,6 +40,16 @@ from .events import (
     WillDisappearEvent,
 )
 from .json_types import JsonObject, clone_json_object, is_json_value
+
+VisibilityEventT = TypeVar("VisibilityEventT", WillAppearEvent, WillDisappearEvent)
+KeyEventT = TypeVar("KeyEventT", KeyDownEvent, KeyUpEvent, TouchTapEvent)
+DialPressEventT = TypeVar("DialPressEventT", DialDownEvent, DialUpEvent)
+PropertyInspectorEventT = TypeVar(
+    "PropertyInspectorEventT", PropertyInspectorDidAppearEvent, PropertyInspectorDidDisappearEvent
+)
+ApplicationEventT = TypeVar(
+    "ApplicationEventT", ApplicationDidLaunchEvent, ApplicationDidTerminateEvent
+)
 
 
 def _invalid(
@@ -143,6 +153,16 @@ def _require_object(
     if not isinstance(value, dict):
         _invalid(event_name, field_path, "expected object")
     return value
+
+
+@overload
+def _controller(payload: JsonObject, event_name: str, *, required: Literal[True]) -> Controller: ...
+
+
+@overload
+def _controller(
+    payload: JsonObject, event_name: str, *, required: Literal[False]
+) -> Controller | None: ...
 
 
 def _controller(
@@ -259,8 +279,8 @@ def _action_payload(
 def _parse_visibility_event(
     data: JsonObject,
     event_name: str,
-    event_class: type[WillAppearEvent] | type[WillDisappearEvent],
-) -> WillAppearEvent | WillDisappearEvent:
+    event_class: type[VisibilityEventT],
+) -> VisibilityEventT:
     action, context, device, settings, coordinates, payload = _action_payload(data, event_name)
     return event_class(
         action=action,
@@ -312,8 +332,8 @@ def _parse_did_receive_settings(
 def _parse_key_event(
     data: JsonObject,
     event_name: str,
-    event_class: type[KeyDownEvent] | type[KeyUpEvent] | type[TouchTapEvent],
-) -> KeyDownEvent | KeyUpEvent | TouchTapEvent:
+    event_class: type[KeyEventT],
+) -> KeyEventT:
     action, context, device, settings, coordinates, payload = _action_payload(data, event_name)
     return event_class(
         action=action,
@@ -353,8 +373,8 @@ def _parse_touch_tap(data: JsonObject, event_name: str) -> TouchTapEvent:
 def _parse_dial_press_event(
     data: JsonObject,
     event_name: str,
-    event_class: type[DialDownEvent] | type[DialUpEvent],
-) -> DialDownEvent | DialUpEvent:
+    event_class: type[DialPressEventT],
+) -> DialPressEventT:
     action, context, device, settings, coordinates, payload = _action_payload(data, event_name)
     controller = _controller(payload, event_name, required=True)
     if controller is None:  # pragma: no cover - narrowed by required
@@ -412,8 +432,8 @@ def _parse_title_parameters_did_change(
 def _parse_property_inspector_event(
     data: JsonObject,
     event_name: str,
-    event_class: (type[PropertyInspectorDidAppearEvent] | type[PropertyInspectorDidDisappearEvent]),
-) -> PropertyInspectorDidAppearEvent | PropertyInspectorDidDisappearEvent:
+    event_class: type[PropertyInspectorEventT],
+) -> PropertyInspectorEventT:
     action, context, device = _action_identity(data, event_name, require_device=True)
     if device is None:  # pragma: no cover - narrowed by require_device
         raise AssertionError("required device was not parsed")
@@ -481,8 +501,8 @@ def _parse_device_did_disconnect(
 def _parse_application_event(
     data: JsonObject,
     event_name: str,
-    event_class: type[ApplicationDidLaunchEvent] | type[ApplicationDidTerminateEvent],
-) -> ApplicationDidLaunchEvent | ApplicationDidTerminateEvent:
+    event_class: type[ApplicationEventT],
+) -> ApplicationEventT:
     payload = _require_object(data, "payload", event_name)
     application = _require_string(payload, "application", event_name, ("payload",))
     return event_class(application=application)

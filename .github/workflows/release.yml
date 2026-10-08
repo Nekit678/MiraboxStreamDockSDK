@@ -46,6 +46,9 @@ jobs:
       - name: Verify distribution contents
         run: python scripts/verify_distribution.py dist
 
+      - name: Type check installed wheel and resolve public annotations
+        run: python scripts/verify_wheel_typing.py dist
+
       - name: Check package metadata and README rendering
         run: python -m twine check dist/*
 

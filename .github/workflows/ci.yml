@@ -79,8 +79,14 @@ jobs:
       - name: Install SDK and development tools
         run: python -m pip install -e ".[dev]"
 
-      - name: Type check public SDK contracts
+      - name: Type check SDK sources and Counter example
         run: python -m mypy
+
+      - name: Build wheel for consumer typing checks
+        run: python -m build --wheel
+
+      - name: Type check installed wheel and resolve public annotations
+        run: python scripts/verify_wheel_typing.py dist
 
   package:
     name: Build and verify distributions

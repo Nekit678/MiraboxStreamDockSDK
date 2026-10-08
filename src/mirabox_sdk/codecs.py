@@ -217,7 +217,7 @@ def _decode_owned_with_codec(
             assert isinstance(codec, FunctionalJsonCodec)
             return codec.decoder(isolated)
         if type(codec) is JsonObjectCodec:
-            return isolated  # type: ignore[return-value]
+            return isolated
         return codec.decode(isolated)
     except JsonCodecError:
         raise

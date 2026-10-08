@@ -318,7 +318,7 @@ def _create_stream_dock_application(
             plugin = plugin_factory(context)
             if not isinstance(plugin, Plugin):
                 raise TypeError("plugin_factory must return a Plugin")
-        action_dependencies: StreamDockActionDependencies | None = None
+        action_dependencies: ActionDependenciesT | None = None
         if action_dependencies_factory is not None:
             action_dependencies = action_dependencies_factory(context)
         elif legacy_action_dependencies_factory is not None:

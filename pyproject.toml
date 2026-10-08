@@ -63,6 +63,7 @@ where = ["src"]
 [tool.setuptools.package-data]
 mirabox_sdk = [
   "py.typed",
+  "*.pyi",
   "property_inspector/*.js",
 ]
 
@@ -74,7 +75,17 @@ target-version = "py311"
 select = ["E", "F", "I", "UP", "B"]
 
 [tool.mypy]
-files = ["src/mirabox_sdk/runtime", "src/mirabox_sdk/testing.py", "examples/counter_plugin/src", "tests/typing"]
-follow_imports = "skip"
+files = ["src/mirabox_sdk", "examples/counter_plugin/src", "tests/typing"]
+follow_imports = "normal"
 python_version = "3.11"
 warn_unused_ignores = true
+
+[[tool.mypy.overrides]]
+module = ["tests.typing.*"]
+disallow_any_unimported = true
+disallow_subclassing_any = true
+disallow_untyped_defs = true
+
+[[tool.mypy.overrides]]
+module = ["tests.typing.no_any"]
+disallow_any_expr = true

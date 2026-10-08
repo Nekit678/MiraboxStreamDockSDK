@@ -252,9 +252,12 @@ class InboundEventQueue(InboundEventSource, InboundEventSink, InboundEventQueueC
         return True
 
     def _drop_queued_rotation(self) -> bool:
-        indexes = range(len(self._queue))
-        if self._overflow_policy is InboundOverflowPolicy.DROP_NEWEST:
-            indexes = reversed(indexes)
+        queue_indexes = range(len(self._queue))
+        indexes = (
+            reversed(queue_indexes)
+            if self._overflow_policy is InboundOverflowPolicy.DROP_NEWEST
+            else iter(queue_indexes)
+        )
 
         for index in indexes:
             queued = self._queue[index]

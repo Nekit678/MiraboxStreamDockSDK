@@ -37,8 +37,10 @@ long-lived PyPI token is required.
    python -m compileall -q src tests scripts examples
    ruff check src tests scripts examples
    ruff format --check src tests scripts examples
+   python -m mypy
    python -m build
    python scripts/verify_distribution.py dist
+   python scripts/verify_wheel_typing.py dist
    python -m twine check dist/*
    ```
 

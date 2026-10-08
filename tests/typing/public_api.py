@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import TypeVar
+from dataclasses import dataclass
+from typing import TypeVar, assert_type
 
 from mirabox_sdk import (
     Action,
@@ -28,9 +29,9 @@ from mirabox_sdk.testing import FakeStreamDockSender, StreamDockHarness
 SettingsT = TypeVar("SettingsT")
 
 
+@dataclass(frozen=True)
 class Dependencies(StreamDockActionDependencies):
-    def __init__(self, stream_dock: StreamDockSender) -> None:
-        self.stream_dock = stream_dock
+    stream_dock: StreamDockSender
 
 
 class ExampleService(ApplicationService):
@@ -103,6 +104,9 @@ class ApplicationRuntimeFake:
 
 runtime: ApplicationRuntime = ApplicationRuntimeFake()
 application = StreamDockApplication(runtime)
+assert_type(application.global_settings.loaded, bool)
+assert_type(application.global_settings.snapshot(), JsonObject)
+assert_type(application.metrics(), StreamDockRuntimeMetrics)
 
 
 def build_test_harness(arguments: PluginLaunchArguments) -> StreamDockHarness:

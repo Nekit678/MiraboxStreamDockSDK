@@ -26,6 +26,12 @@ change public APIs between minor versions.
 
 ### Fixed
 
+- Check the real typed consumer API (SDK-TYPE-001): follow imports across SDK
+  sources, preserve dependency types through runtime composition, and verify
+  positive, invalid-call and `Any`-guard fixtures against an isolated wheel
+  installation in CI and releases. Ship checked JSON boundary stubs while
+  keeping private copy-on-write container typing separate; verify stub/runtime
+  signatures and public `get_type_hints()` against the installed wheel.
 - Resolve recursive JSON annotations in public API type introspection, with a
   regression check for transitive public types and wheel-installed testing.
 

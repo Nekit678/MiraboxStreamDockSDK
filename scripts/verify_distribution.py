@@ -22,6 +22,7 @@ WHEEL_REQUIRED_SUFFIXES = {
     "mirabox_sdk/_internal/runtime/keyed_scheduler.py",
     "mirabox_sdk/_internal/runtime/metrics.py",
     "mirabox_sdk/completion.py",
+    "mirabox_sdk/json_types.pyi",
     "mirabox_sdk/py.typed",
     "mirabox_sdk/runtime/__init__.py",
     "mirabox_sdk/runtime/application.py",
@@ -55,6 +56,7 @@ SDIST_REQUIRED_SUFFIXES = {
     "examples/counter_plugin/com.example.counter.sdPlugin/manifest.json",
     "examples/counter_plugin/src/counter_plugin/__main__.py",
     "pyproject.toml",
+    "scripts/verify_wheel_typing.py",
     "src/mirabox_sdk/_internal/boundary/composition.py",
     "src/mirabox_sdk/_internal/runtime/adapters/action_registry.py",
     "src/mirabox_sdk/_internal/runtime/composition.py",
@@ -62,6 +64,7 @@ SDIST_REQUIRED_SUFFIXES = {
     "src/mirabox_sdk/_internal/runtime/keyed_scheduler.py",
     "src/mirabox_sdk/_internal/runtime/metrics.py",
     "src/mirabox_sdk/completion.py",
+    "src/mirabox_sdk/json_types.pyi",
     "src/mirabox_sdk/py.typed",
     "src/mirabox_sdk/runtime/__init__.py",
     "src/mirabox_sdk/runtime/application.py",
@@ -70,6 +73,9 @@ SDIST_REQUIRED_SUFFIXES = {
     "src/mirabox_sdk/runtime/ports.py",
     "src/mirabox_sdk/testing.py",
     "src/mirabox_sdk/property_inspector/mirabox-sdk.js",
+    "tests/typing/no_any.py",
+    "tests/typing/public_api.py",
+    "tests/typing/public_api_errors.py",
 }
 SDIST_FORBIDDEN_SUFFIXES = {
     "examples/counter_plugin/src/counter_plugin/plugin.py",

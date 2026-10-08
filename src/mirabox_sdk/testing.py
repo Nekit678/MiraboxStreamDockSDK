@@ -337,11 +337,13 @@ class StreamDockHarness:
 
     def _build_connector(
         self,
-        inbound: RawInboundSink,
-        outbound: RawOutboundSource,
-        session: SessionEventSink,
+        raw_inbound_sink: RawInboundSink,
+        raw_outbound_source: RawOutboundSource,
+        session_event_sink: SessionEventSink,
     ) -> _MemoryConnector:
-        self._connector = _MemoryConnector(inbound, outbound, session)
+        self._connector = _MemoryConnector(
+            raw_inbound_sink, raw_outbound_source, session_event_sink
+        )
         return self._connector
 
 

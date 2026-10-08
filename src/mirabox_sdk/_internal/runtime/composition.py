@@ -39,6 +39,7 @@ from .session import SessionCoordinator, SessionReadinessGate
 logger = logging.getLogger(__name__)
 
 GlobalSettingsT = TypeVar("GlobalSettingsT")
+DependenciesT = TypeVar("DependenciesT", bound=StreamDockActionDependencies)
 
 
 class StreamDockRuntimeLifecycleError(RuntimeError):
@@ -481,8 +482,8 @@ def create_stream_dock_runtime(
     launch_arguments: PluginLaunchArguments,
     *,
     boundary: StreamDockBoundary,
-    action_factory: ActionFactory | DependencyAwareActionRegistry,
-    action_dependencies: StreamDockActionDependencies | None = None,
+    action_factory: ActionFactory | DependencyAwareActionRegistry[DependenciesT],
+    action_dependencies: DependenciesT | None = None,
     global_settings: GlobalSettingsCoordinator | None = None,
     session_readiness: SessionReadinessGate | None = None,
     plugin: Plugin | None = None,
@@ -515,7 +516,7 @@ def create_stream_dock_runtime(
                 "action_dependencies can only be bound to a four-argument action registry"
             )
         resolved_action_factory: ActionFactory = ActionRegistryFactoryAdapter(
-            cast(DependencyAwareActionRegistry, action_factory),
+            cast(DependencyAwareActionRegistry[DependenciesT], action_factory),
             action_dependencies,
         )
     elif _accepts_positional_arguments(create_action, 3):
