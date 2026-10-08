@@ -56,6 +56,39 @@ def will_appear(context: str) -> WillAppearEvent:
 
 
 class InboundEventQueueTests(unittest.TestCase):
+    def test_selection_leaves_deferred_events_queued_and_preserves_coalescing(self) -> None:
+        queue = InboundEventQueue(3, coalesce_dial_rotations=True)
+        cold = key_down("cold")
+        queue.submit(dial("hot", 1))
+        queue.submit(cold)
+        self.assertIs(queue.receive_selected(lambda events: 1, timeout=0), cold)
+        queue.task_done()
+        queue.submit(dial("hot", 2))
+        self.assertEqual(queue.metrics().coalesced, 1)
+        queue.stop_accepting()
+        with self.assertRaises(TimeoutError):
+            queue.receive_selected(lambda events: None, timeout=0)
+        self.assertEqual(queue.metrics().current_depth, 1)
+        self.assertFalse(queue.drain(timeout=0))
+        rotation = queue.receive(timeout=0)
+        self.assertIsInstance(rotation, DialRotateEvent)
+        self.assertEqual(rotation.ticks, 3)
+        queue.task_done()
+        self.assertTrue(queue.drain(timeout=0))
+        with self.assertRaises(InboundEventQueueClosedError):
+            queue.receive_selected(lambda events: None, timeout=0)
+        self.assertEqual(queue.metrics().acknowledged, 2)
+
+    def test_invalid_selection_never_dequeues_or_acknowledges_an_event(self) -> None:
+        queue = InboundEventQueue(1)
+        event = key_down("button")
+        queue.submit(event)
+        for invalid in (-1, 1, True, 0.5):
+            with self.subTest(index=invalid), self.assertRaises(ValueError):
+                queue.receive_selected(lambda events, index=invalid: index, timeout=0)
+        self.assertEqual(queue.metrics().dequeued, 0)
+        self.assertIs(queue.receive(timeout=0), event)
+
     def test_rejects_invalid_configuration(self) -> None:
         for invalid_limit in (0, -1, True, 1.5):
             with self.assertRaisesRegex(ValueError, "positive integer"):

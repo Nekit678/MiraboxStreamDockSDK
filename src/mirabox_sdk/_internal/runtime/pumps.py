@@ -12,7 +12,11 @@ from time import monotonic
 
 from ...events import StreamDockEvent
 from ..lifecycle import RuntimeWorkerError
-from ..messaging.ports import InboundEventSource, InboundEventSourceClosedError
+from ..messaging.ports import (
+    InboundEventSource,
+    InboundEventSourceClosedError,
+    SelectableInboundEventSource,
+)
 from ..transport.ports import SessionEventSource, SessionEventSourceClosedError
 from .metrics import RuntimeEventPumpMetrics, SessionCoordinatorMetrics
 from .models import DispatchOutcome, DispatchResult
@@ -20,6 +24,7 @@ from .ports import (
     DispatchCompletion,
     HandlerScheduler,
     RuntimeEventPumpWorker,
+    SelectiveHandlerScheduler,
     SessionEventCoordinator,
     SessionEventPumpWorker,
     SessionReadiness,
@@ -68,6 +73,12 @@ class RuntimeEventPump(RuntimeEventPumpWorker):
 
         self._source = source
         self._scheduler = scheduler
+        self._receive_event: Callable[..., StreamDockEvent] = source.receive
+        if isinstance(source, SelectableInboundEventSource) and isinstance(
+            scheduler, SelectiveHandlerScheduler
+        ):
+            self._receive_event = partial(source.receive_selected, scheduler.select_event)
+            scheduler.set_admission_wakeup(source.wake_receiver)
         self._poll_interval = poll_interval
         self._readiness_gate = readiness_gate
         self._on_ready = on_ready
@@ -191,7 +202,7 @@ class RuntimeEventPump(RuntimeEventPumpWorker):
                         return
 
                 try:
-                    event = self._source.receive(timeout=self._poll_interval)
+                    event = self._receive_event(timeout=self._poll_interval)
                 except TimeoutError:
                     with self._condition:
                         self._source_poll_timeouts += 1

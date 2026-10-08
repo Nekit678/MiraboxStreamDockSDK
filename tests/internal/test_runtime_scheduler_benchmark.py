@@ -8,6 +8,20 @@ from scripts import benchmark_runtime_scheduler
 
 
 class RuntimeSchedulerBenchmarkTests(unittest.TestCase):
+    def test_skewed_load_reaches_cold_context_with_bounded_source_and_pending_work(self) -> None:
+        for pending_limit in (1, 4, 64):
+            with self.subTest(pending_limit=pending_limit):
+                measurement = benchmark_runtime_scheduler.measure_skewed_load(
+                    pending_limit=pending_limit, hot_event_count=pending_limit + 1
+                )
+                self.assertTrue(measurement.within_budget)
+                self.assertTrue(measurement.cold_started_before_hot_release)
+                self.assertIsNotNone(measurement.cold_callback_start_ms)
+                self.assertGreater(measurement.source_depth_while_hot_blocked, 0)
+                self.assertLessEqual(measurement.peak_source_depth, measurement.source_limit)
+                self.assertLessEqual(measurement.peak_scheduler_pending, pending_limit)
+                self.assertEqual(measurement.acknowledged_events, pending_limit + 3)
+
     def test_scheduler_matrix_reports_bounded_sequential_and_keyed_measurements(self) -> None:
         measurements = benchmark_runtime_scheduler.benchmark_scheduler_matrix(
             event_count=32,

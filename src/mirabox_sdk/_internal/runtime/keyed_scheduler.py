@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from threading import Condition, Thread, current_thread
 from time import monotonic
@@ -36,9 +36,10 @@ class _ScheduledWork:
 class KeyedSerialHandlerScheduler(HandlerScheduler):
     """Run different action contexts concurrently behind global barriers.
 
-    The scheduler owns a fixed worker pool and a bounded pending deque. A full
-    deque blocks the submitting source consumer, preserving boundary
-    backpressure instead of transferring events to an unbounded executor.
+    The scheduler owns a fixed worker pool and a bounded pending deque.
+    Admission-aware sources leave excess work for busy contexts at the boundary,
+    selecting independent contexts only before the next global barrier.
+    Direct submissions block when the pending deque is full.
     """
 
     def __init__(
@@ -58,8 +59,12 @@ class KeyedSerialHandlerScheduler(HandlerScheduler):
         self._dispatcher = dispatcher
         self._worker_count = worker_count
         self._pending_limit = pending_limit
+        self._context_work_limit = max(1, pending_limit // worker_count)
         self._condition = Condition()
         self._pending: deque[_ScheduledWork] = deque()
+        self._pending_by_context: dict[str, int] = {}
+        self._selection_backpressured = False
+        self._admission_wakeup: Callable[[], None] | None = None
         self._terminalizing = 0
         self._workers: tuple[Thread, ...] = ()
         self._live_workers = 0
@@ -169,9 +174,59 @@ class KeyedSerialHandlerScheduler(HandlerScheduler):
                 )
             )
             self._accepted += 1
+            if not is_barrier:
+                assert context is not None
+                self._pending_by_context[context] = self._pending_by_context.get(context, 0) + 1
             self._peak_pending = max(self._peak_pending, len(self._pending))
             self._condition.notify_all()
         return completion
+
+    def select_event(self, events: Iterable[StreamDockEvent]) -> int | None:
+        """Reserve admission opportunity for other contexts without buffering.
+
+        Pending and active work share a per-context budget so even a pending
+        limit smaller than the worker count leaves idle workers reachable.
+        The pump is the sole source consumer; this is an admission hint, while
+        ``submit`` remains the authority for the total pending limit.
+        """
+
+        with self._condition:
+            if not self._accepting:
+                return 0
+            if not self._started:
+                raise HandlerSchedulerLifecycleError("scheduler has not been started")
+            if len(self._pending) < self._pending_limit:
+                for index, event in enumerate(events):
+                    if not isinstance(event, ActionEvent) or _is_global_barrier(event):
+                        if index == 0:
+                            self._selection_backpressured = False
+                            return index
+                        break
+                    context_work = self._pending_by_context.get(event.context, 0)
+                    context_work += int(event.context in self._active_contexts)
+                    if context_work < self._context_work_limit:
+                        self._selection_backpressured = False
+                        return index
+            if not self._selection_backpressured:
+                self._admission_backpressure += 1
+                self._selection_backpressured = True
+            return None
+
+    def set_admission_wakeup(self, callback: Callable[[], None]) -> None:
+        """Attach the single source consumer's capacity notification."""
+
+        if not callable(callback):
+            raise TypeError("callback must be callable")
+        with self._condition:
+            self._admission_wakeup = callback
+
+    def _notify_admission(self) -> None:
+        # Selection takes the source lock before the scheduler lock. Notify
+        # outside the scheduler lock to preserve that lock order.
+        with self._condition:
+            callback = self._admission_wakeup
+        if callback is not None:
+            callback()
 
     def stop_accepting(self) -> None:
         """Reject later submissions while allowing accepted work to drain."""
@@ -181,6 +236,7 @@ class KeyedSerialHandlerScheduler(HandlerScheduler):
             if not self._started or self._live_workers == 0:
                 self._stopped = True
             self._condition.notify_all()
+        self._notify_admission()
 
     def drain(self, *, timeout: float | None = None) -> bool:
         """Wait for accepted work and record every newly timed-out callback."""
@@ -278,6 +334,7 @@ class KeyedSerialHandlerScheduler(HandlerScheduler):
                         self._condition.wait()
                         work = self._take_internal_work()
 
+                self._notify_admission()
                 result: DispatchResult | None = None
                 error: Exception | None = None
                 try:
@@ -311,6 +368,7 @@ class KeyedSerialHandlerScheduler(HandlerScheduler):
                             self._callback_failures += 1
                         self._active_by_thread.pop(current_thread(), None)
                         self._condition.notify_all()
+                    self._notify_admission()
                 if error is not None:
                     self._discard_pending()
         except BaseException as exc:
@@ -342,6 +400,12 @@ class KeyedSerialHandlerScheduler(HandlerScheduler):
                 self._active_contexts.add(work.context)
 
             del self._pending[index]
+            if work.context is not None:
+                remaining = self._pending_by_context[work.context] - 1
+                if remaining:
+                    self._pending_by_context[work.context] = remaining
+                else:
+                    del self._pending_by_context[work.context]
             self._active_by_thread[current_thread()] = work
             self._peak_active_callbacks = max(
                 self._peak_active_callbacks,
@@ -358,9 +422,11 @@ class KeyedSerialHandlerScheduler(HandlerScheduler):
         with self._condition:
             discarded = tuple(self._pending)
             self._pending.clear()
+            self._pending_by_context.clear()
             self._terminalizing += len(discarded)
             self._discarded_during_shutdown += len(discarded)
             self._condition.notify_all()
+        self._notify_admission()
         observer_failure: BaseException | None = None
         for work in discarded:
             try:

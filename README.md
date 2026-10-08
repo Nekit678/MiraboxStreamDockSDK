@@ -747,6 +747,17 @@ earlier context callbacks and completes before later callbacks start. On normal
 shutdown, the queue drains before `StreamDockApplication.run()` returns and
 before the runtime releases actions.
 
+The default runtime keeps excess events for a busy context in this bounded
+source queue and admits other contexts from the segment before the next barrier.
+With pending limit `P` (`scheduler_pending_limit`, default 64) and `W` workers,
+each context may hold at most `max(1, P // W)` pending plus running events
+without a global barrier.
+The total scheduler pending limit still applies. No intermediate event buffer
+is added: source, pending, running, and one pump handoff retain at most
+`inbound_event_limit + P + W + 1` events. A different context already in the
+source can therefore reach an idle worker despite a hot-context burst. Global
+barriers and backpressure before an event enters a full source still apply.
+
 The pool defaults to four workers and the queue defaults to 1,024 events.
 Lifecycle, settings, input, broadcast, unknown, and every other event except
 `dialRotate` are lossless by default. `dialRotate` is explicitly coalescable

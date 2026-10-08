@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import abstractmethod
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import Protocol, runtime_checkable
 
 from ...commands import StreamDockCommand
@@ -423,6 +423,23 @@ class HandlerScheduler(Protocol):
     @abstractmethod
     def metrics(self) -> HandlerSchedulerMetrics:
         """Return an immutable scheduler snapshot."""
+
+        ...
+
+
+@runtime_checkable
+class SelectiveHandlerScheduler(HandlerScheduler, Protocol):
+    """Optional admission selection for a source with bounded lookahead."""
+
+    @abstractmethod
+    def select_event(self, events: Iterable[StreamDockEvent]) -> int | None:
+        """Choose an admissible index while preserving context FIFO and barriers."""
+
+        ...
+
+    @abstractmethod
+    def set_admission_wakeup(self, callback: Callable[[], None]) -> None:
+        """Notify the sole source consumer when admission may make progress."""
 
         ...
 

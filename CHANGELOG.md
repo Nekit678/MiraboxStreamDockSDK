@@ -39,6 +39,10 @@ change public APIs between minor versions.
 
 ### Fixed
 
+- Keep hot-context bursts at the bounded inbound queue and select independent
+  contexts before the next global barrier, with per-context admission budgets
+  and capacity wakeups. Preserve context FIFO and global pending limits; cover
+  skewed-load latency and queue occupancy in the scheduler performance gate (PERF-01).
 - Restore inbound/outbound DEBUG protocol traces and `include_payload=True`,
   reusing decoded/serialized frames and restoring redaction on reconfiguration
   (DX-01).

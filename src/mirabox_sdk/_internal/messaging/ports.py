@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from abc import abstractmethod
+from collections.abc import Callable, Iterable
 from typing import Protocol, runtime_checkable
 
 from ...commands import StreamDockCommand
@@ -53,6 +54,33 @@ class InboundEventSink(Protocol):
     @abstractmethod
     def submit(self, event: StreamDockEvent, *, timeout: float | None = None) -> bool:
         """Submit one event according to the typed queue policy."""
+
+        ...
+
+
+@runtime_checkable
+class SelectableInboundEventSource(InboundEventSource, Protocol):
+    """Optional admission-aware selection within an already bounded source."""
+
+    @abstractmethod
+    def receive_selected(
+        self,
+        selector: Callable[[Iterable[StreamDockEvent]], int | None],
+        *,
+        timeout: float | None = None,
+    ) -> StreamDockEvent:
+        """Receive the selected queue index, or wait when selection returns None.
+
+        The selector runs under the source lock and must not retain the iterable.
+        It owns ordering policy; unselected events remain queued and unacknowledged.
+        Closure is reported only when the queue is empty, even if no event is eligible.
+        """
+
+        ...
+
+    @abstractmethod
+    def wake_receiver(self) -> None:
+        """Recheck admission after scheduler capacity or acceptance changes."""
 
         ...
 

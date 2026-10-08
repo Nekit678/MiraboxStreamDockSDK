@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from math import isfinite
@@ -144,24 +145,55 @@ class InboundEventQueue(InboundEventSource, InboundEventSink, InboundEventQueueC
     def receive(self, *, timeout: float | None = None) -> StreamDockEvent:
         """Return the next event; the consumer must later call ``task_done``."""
 
+        return self._receive(None, timeout=timeout)
+
+    def receive_selected(
+        self,
+        selector: Callable[[Iterable[StreamDockEvent]], int | None],
+        *,
+        timeout: float | None = None,
+    ) -> StreamDockEvent:
+        """Select directly from the bounded queue without a prefetch buffer."""
+
+        if not callable(selector):
+            raise TypeError("selector must be callable")
+        return self._receive(selector, timeout=timeout)
+
+    def wake_receiver(self) -> None:
+        """Wake selection without changing queue contents or ownership."""
+
+        with self._condition:
+            self._condition.notify_all()
+
+    def _receive(
+        self,
+        selector: Callable[[Iterable[StreamDockEvent]], int | None] | None,
+        *,
+        timeout: float | None,
+    ) -> StreamDockEvent:
         timeout = _validate_timeout(timeout)
         deadline = None if timeout is None else monotonic() + timeout
 
         with self._condition:
-            while not self._queue:
-                if not self._accepting:
+            while True:
+                if self._queue:
+                    index = 0 if selector is None else selector(item.event for item in self._queue)
+                    if index is not None:
+                        if type(index) is not int or not 0 <= index < len(self._queue):
+                            raise ValueError("selector must return a valid queue index or None")
+                        queued = self._queue[index]
+                        del self._queue[index]
+                        self._forget_queued_event(queued)
+                        self._dequeued += 1
+                        self._in_flight += 1
+                        self._condition.notify_all()
+                        return queued.event
+                elif not self._accepting:
                     raise InboundEventQueueClosedError("Inbound event queue is closed")
                 remaining = None if deadline is None else deadline - monotonic()
                 if remaining is not None and remaining <= 0:
                     raise TimeoutError("Timed out waiting for inbound event queue")
                 self._condition.wait(remaining)
-
-            queued = self._queue.popleft()
-            self._forget_queued_event(queued)
-            self._dequeued += 1
-            self._in_flight += 1
-            self._condition.notify_all()
-            return queued.event
 
     def task_done(self) -> None:
         """Acknowledge completed handling of one event returned by ``receive``."""

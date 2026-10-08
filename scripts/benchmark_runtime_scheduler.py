@@ -58,6 +58,23 @@ class CoalescingMeasurement:
 
 
 @dataclass(frozen=True, slots=True)
+class SkewedLoadMeasurement:
+    pending_limit: int
+    hot_event_count: int
+    source_limit: int
+    cold_callback_start_ms: float | None
+    max_cold_callback_start_ms: float
+    cold_started_before_hot_release: bool
+    source_depth_while_hot_blocked: int
+    scheduler_pending_while_hot_blocked: int
+    active_callbacks_while_hot_blocked: int
+    peak_source_depth: int
+    peak_scheduler_pending: int
+    acknowledged_events: int
+    within_budget: bool
+
+
+@dataclass(frozen=True, slots=True)
 class SchedulerPerformanceBudget:
     """Accepted keyed throughput relative to the same-run sequential baseline."""
 
@@ -189,6 +206,101 @@ class _CoalescingDispatcher:
             return self._dispatched
 
 
+class _SkewedLoadDispatcher:
+    def __init__(self) -> None:
+        self.hot_started = Event()
+        self.release_hot = Event()
+        self.cold_started = Event()
+        self.cold_started_at: float | None = None
+
+    def dispatch(self, event: StreamDockEvent) -> DispatchResult:
+        if getattr(event, "context", None) == "hot":
+            self.hot_started.set()
+            if not self.release_hot.wait(5):
+                raise TimeoutError("skewed-load benchmark blocker was not released")
+        else:
+            self.cold_started_at = perf_counter()
+            self.cold_started.set()
+        return DispatchResult(DispatchOutcome.HANDLED)
+
+
+def measure_skewed_load(
+    *,
+    pending_limit: int,
+    hot_event_count: int = 512,
+) -> SkewedLoadMeasurement:
+    """Measure cold-context latency through the real source/pump/scheduler path.
+
+    Hold A active, enqueue a burst larger than the pending limit, then enqueue B.
+    B must start within 100 ms while A stays blocked. The source itself is the
+    bounded lookahead window; both queue occupancies are reported before release.
+    """
+
+    _require_positive_integer("pending_limit", pending_limit)
+    _require_positive_integer("hot_event_count", hot_event_count)
+    if hot_event_count <= pending_limit:
+        raise ValueError("hot_event_count must be greater than pending_limit")
+
+    source_limit = hot_event_count + 1
+    source = InboundEventQueue(source_limit)
+    dispatcher = _SkewedLoadDispatcher()
+    scheduler = KeyedSerialHandlerScheduler(dispatcher, worker_count=4, pending_limit=pending_limit)
+    pump = RuntimeEventPump(source, scheduler)
+    scheduler.start()
+    pump.start()
+    try:
+        source.submit(_key_down("hot"))
+        if not dispatcher.hot_started.wait(2):
+            raise TimeoutError("skewed-load benchmark callback did not start")
+        for _ in range(hot_event_count):
+            if not source.submit(_key_down("hot"), timeout=0):
+                raise RuntimeError("skewed-load benchmark source rejected the hot burst")
+        submitted_at = perf_counter()
+        if not source.submit(_key_down("cold"), timeout=0):
+            raise RuntimeError("skewed-load benchmark source rejected the cold event")
+        cold_started = dispatcher.cold_started.wait(0.1)
+        latency_ms = (
+            (dispatcher.cold_started_at - submitted_at) * 1000
+            if cold_started and dispatcher.cold_started_at is not None
+            else None
+        )
+        source_blocked = source.metrics()
+        scheduler_blocked = scheduler.metrics()
+        source.stop_accepting()
+        dispatcher.release_hot.set()
+        if not pump.drain(timeout=5) or not scheduler.drain(timeout=5):
+            raise TimeoutError("skewed-load benchmark did not drain")
+        source_final = source.metrics()
+        scheduler_final = scheduler.metrics()
+        return SkewedLoadMeasurement(
+            pending_limit=pending_limit,
+            hot_event_count=hot_event_count,
+            source_limit=source_limit,
+            cold_callback_start_ms=latency_ms,
+            max_cold_callback_start_ms=100.0,
+            cold_started_before_hot_release=cold_started,
+            source_depth_while_hot_blocked=source_blocked.current_depth,
+            scheduler_pending_while_hot_blocked=scheduler_blocked.current_pending,
+            active_callbacks_while_hot_blocked=scheduler_blocked.current_active_callbacks,
+            peak_source_depth=source_final.peak_depth,
+            peak_scheduler_pending=scheduler_final.peak_pending,
+            acknowledged_events=source_final.acknowledged,
+            within_budget=(
+                cold_started
+                and latency_ms is not None
+                and latency_ms <= 100.0
+                and source_final.peak_depth <= source_limit
+                and scheduler_final.peak_pending <= pending_limit
+                and source_final.acknowledged == hot_event_count + 2
+            ),
+        )
+    finally:
+        source.stop_accepting()
+        dispatcher.release_hot.set()
+        scheduler.stop(timeout=1)
+        pump.stop(timeout=1)
+
+
 def benchmark_scheduler_matrix(
     *,
     event_count: int,
@@ -237,7 +349,7 @@ def measure_prefetch_coalescing(
     """Measure how many same-context rotations remain in the boundary queue.
 
     One callback is held active while exactly ``pending_limit`` rotations are
-    prefetched into the scheduler and one more blocks on admission. The fixed
+    prefetched into the scheduler and one more remains queued at the boundary. The fixed
     remaining burst can then coalesce only while it stays at the boundary.
     """
 
@@ -272,10 +384,14 @@ def measure_prefetch_coalescing(
             )
 
         source.submit(_dial_rotate("dial", pending_limit + 1))
-        expected_in_flight = pending_limit + 2
+        expected_in_flight = pending_limit + 1
         _wait_until(
-            lambda: source.metrics().in_flight >= expected_in_flight,
-            message="event pump did not block on scheduler admission",
+            lambda: (
+                source.metrics().in_flight == expected_in_flight
+                and source.metrics().current_depth == 1
+                and scheduler.metrics().admission_backpressure > 0
+            ),
+            message="event pump did not defer the rotation at the boundary",
         )
 
         remaining = rotation_count - pending_limit - 1
@@ -562,7 +678,7 @@ def main() -> int:
     parser.add_argument(
         "--check",
         action="store_true",
-        help="exit unsuccessfully when a scheduler or coalescing budget is exceeded",
+        help="exit unsuccessfully when a scheduler, skewed-load or coalescing budget is exceeded",
     )
     arguments = parser.parse_args()
     if arguments.check and set(arguments.coalescing_pending_limits) != set(
@@ -584,6 +700,13 @@ def main() -> int:
         )
         for pending_limit in arguments.coalescing_pending_limits
     )
+    skewed_measurements = tuple(
+        measure_skewed_load(
+            pending_limit=pending_limit,
+            hot_event_count=max(512, pending_limit + 1),
+        )
+        for pending_limit in arguments.coalescing_pending_limits
+    )
     scheduler_comparisons = evaluate_scheduler_performance(
         scheduler_measurements,
         pending_limit=arguments.pending_limit,
@@ -598,6 +721,12 @@ def main() -> int:
         for comparison in (*scheduler_comparisons, *coalescing_comparisons)
         for violation in comparison.violations
     )
+    violations += tuple(
+        f"skewed load at pending limit {value.pending_limit}: cold context did not start "
+        "within 100ms before hot release, or queue/acknowledgement bounds were violated"
+        for value in skewed_measurements
+        if not value.within_budget
+    )
 
     if arguments.json:
         print(
@@ -609,10 +738,12 @@ def main() -> int:
                     },
                     "scheduler": [asdict(value) for value in scheduler_measurements],
                     "coalescing": [asdict(value) for value in coalescing_measurements],
+                    "skewed_load": [asdict(value) for value in skewed_measurements],
                     "performance_gate": {
                         "passed": not violations,
                         "scheduler": [asdict(value) for value in scheduler_comparisons],
                         "coalescing": [asdict(value) for value in coalescing_comparisons],
+                        "skewed_load": [asdict(value) for value in skewed_measurements],
                     },
                 },
                 indent=2,
@@ -637,6 +768,16 @@ def main() -> int:
                 f"coalesced={value.coalesced_rotations:4}/{value.submitted_rotations} "
                 f"ratio={value.coalescing_ratio:.3f} "
                 f"peak_scheduler_pending={value.peak_scheduler_pending}"
+            )
+        print("\nCold-context latency behind a blocked hot-context burst")
+        for value in skewed_measurements:
+            print(
+                f"pending_limit={value.pending_limit:4} "
+                f"cold_start_ms={value.cold_callback_start_ms} "
+                f"source_depth={value.source_depth_while_hot_blocked}/{value.source_limit} "
+                f"scheduler_pending={value.scheduler_pending_while_hot_blocked} "
+                f"peak_pending={value.peak_scheduler_pending} "
+                f"passed={value.within_budget}"
             )
         print("\nPerformance gate")
         for value in scheduler_comparisons:

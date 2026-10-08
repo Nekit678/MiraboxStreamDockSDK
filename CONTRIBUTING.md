@@ -102,7 +102,10 @@ python scripts/benchmark_runtime_scheduler.py --check
 ```
 
 It compares sequential and keyed scheduling in the current runtime and measures
-dial-rotation coalescing at different pending limits. All scenarios use typed
+dial-rotation coalescing at different pending limits. Its skewed-load scenario
+holds one hot context blocked behind a burst and requires another context to
+start within 100 ms, reporting source and scheduler occupancy and checking
+their configured bounds. All scenarios use typed
 events and in-process fakes; they do not require Stream Dock or a device.
 
 ## Pull requests
