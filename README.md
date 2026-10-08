@@ -219,6 +219,12 @@ The exact same action UUID must appear in the plugin's `manifest.json`. Stream
 Dock creates and removes action contexts through `willAppear` and
 `willDisappear`; the runtime manages the corresponding Python instances.
 
+`ActionRegistry[Dependencies].register()` checks that the action constructor
+accepts the registry's dependency type and preserves the concrete action class,
+including its own methods and settings type. Its return annotation is the
+public `ActionRegistration[Dependencies]` protocol. Incompatible dependency
+containers are reported by the type checker when the action is registered.
+
 ### Action callbacks
 
 Override only the callbacks an action needs:

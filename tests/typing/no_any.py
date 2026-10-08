@@ -17,6 +17,17 @@ from mirabox_sdk import (
 )
 from mirabox_sdk.testing import FakeStreamDockSender, StreamDockHarness
 
+registry = ActionRegistry[ApplicationContext]()
+
+
+@registry.register("com.example.strict.action")
+class StrictAction(Action[JsonObject, ApplicationContext]):
+    def read_context(self) -> str:
+        return self.context
+
+
+assert_type(registry.register("com.example.strict.alias")(StrictAction), type[StrictAction])
+
 
 def check_contract(
     context: ApplicationContext,
@@ -32,6 +43,9 @@ def check_contract(
     assert_type(context.session_readiness.wait(0), bool)
     assert_type(action.settings, JsonObject)
     assert_type(action.dependencies, ApplicationContext)
+    strict_action = StrictAction("com.example.strict.action", "button", {}, context)
+    assert_type(strict_action, StrictAction)
+    assert_type(strict_action.read_context(), str)
     assert_type(application.metrics().event_pump.events_received, int)
     assert_type(harness.application, StreamDockApplication)
     assert_type(harness.context, ApplicationContext)

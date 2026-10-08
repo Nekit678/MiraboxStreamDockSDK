@@ -11,6 +11,7 @@ from mirabox_sdk import (
     ApplicationContext,
     ApplicationRuntime,
     ApplicationService,
+    FunctionalJsonCodec,
     GlobalSettings,
     JsonCodec,
     JsonObject,
@@ -61,7 +62,48 @@ registry = ActionRegistry[Dependencies]()
 
 @registry.register("com.example.typed.action")
 class ExampleAction(Action[JsonObject, Dependencies]):
-    pass
+    def read_context(self) -> str:
+        return self.context
+
+
+assert_type(registry.register("com.example.typed.alias")(ExampleAction), type[ExampleAction])
+
+
+@dataclass(frozen=True)
+class CustomSettings:
+    label: str
+
+
+def decode_settings(settings: JsonObject) -> CustomSettings:
+    label = settings.get("label", "")
+    if not isinstance(label, str):
+        raise ValueError("label must be a string")
+    return CustomSettings(label)
+
+
+def encode_settings(settings: CustomSettings) -> JsonObject:
+    return {"label": settings.label}
+
+
+@registry.register("com.example.typed.settings")
+class CustomSettingsAction(Action[CustomSettings, Dependencies]):
+    settings_codec = FunctionalJsonCodec[CustomSettings](decode_settings, encode_settings)
+
+    def read_label(self) -> str:
+        return self.settings.label
+
+
+def check_registered_classes(dependencies: Dependencies) -> None:
+    action = ExampleAction("com.example.typed.action", "button", {}, dependencies)
+    assert_type(action, ExampleAction)
+    assert_type(action.read_context(), str)
+    assert_type(action.dependencies, Dependencies)
+    typed_action = CustomSettingsAction(
+        "com.example.typed.settings", "button", CustomSettings("label"), dependencies
+    )
+    assert_type(typed_action, CustomSettingsAction)
+    assert_type(typed_action.settings, CustomSettings)
+    assert_type(typed_action.read_label(), str)
 
 
 def build_application(arguments: PluginLaunchArguments) -> StreamDockApplication:

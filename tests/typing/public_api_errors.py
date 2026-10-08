@@ -1,6 +1,10 @@
 """Invalid consumer calls: unused-ignore errors detect a weakened or Any API."""
 
+from dataclasses import dataclass
+
 from mirabox_sdk import (
+    Action,
+    ActionRegistry,
     ApplicationContext,
     JsonObject,
     LogMessageCommand,
@@ -9,6 +13,29 @@ from mirabox_sdk import (
     StreamDockSender,
 )
 from mirabox_sdk.testing import StreamDockHarness
+
+
+@dataclass(frozen=True)
+class SuppliedDependencies:
+    stream_dock: StreamDockSender
+
+
+@dataclass(frozen=True)
+class ExpectedDependencies:
+    stream_dock: StreamDockSender
+    label: str
+
+
+registry = ActionRegistry[SuppliedDependencies]()
+
+
+@registry.register("com.example.incompatible")  # type: ignore[arg-type]
+class NeedsLabel(Action[JsonObject, ExpectedDependencies]):
+    def read_label(self) -> str:
+        return self.dependencies.label
+
+
+registry.register("com.example.incompatible.direct")(NeedsLabel)  # type: ignore[arg-type]
 
 
 def reject_invalid_calls(

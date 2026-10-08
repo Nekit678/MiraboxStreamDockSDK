@@ -32,6 +32,10 @@ change public APIs between minor versions.
 
 ### Fixed
 
+- Reject incompatible action dependencies at registration (SDK-TYPE-002)
+  through the public `ActionRegistration` decorator protocol, preserving the
+  concrete action class and settings type. Cover registration with strict
+  consumer checks and negative fixtures against source and installed wheels.
 - Align developer documentation with the current implementation (SDK-DOC-001):
   replace retired architecture/parity guidance with source and test links in
   the protocol map, document the current scheduler benchmark, and confirm

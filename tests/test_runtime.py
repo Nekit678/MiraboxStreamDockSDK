@@ -304,6 +304,34 @@ class ActionTests(unittest.TestCase):
 
 
 class ActionRegistryTests(unittest.TestCase):
+    def test_registration_preserves_the_original_action_class(self) -> None:
+        registry = ActionRegistry[ExampleDependencies]()
+
+        registered = registry.register(ACTION_UUID)(RecordingAction)
+
+        self.assertIs(registered, RecordingAction)
+        dependencies = ExampleDependencies(Mock())
+        action = registered(ACTION_UUID, "button", {}, dependencies)
+        self.assertIs(action.dependencies, dependencies)
+        self.assertEqual(action.received_events, [])
+
+    def test_rejects_non_action_classes_and_factory_functions(self) -> None:
+        registry = ActionRegistry[ExampleDependencies]()
+
+        def factory(
+            action: str,
+            context: str,
+            settings: JsonObject,
+            dependencies: ExampleDependencies,
+        ) -> RecordingAction:
+            return RecordingAction(action, context, settings, dependencies)
+
+        for candidate in (object, factory):
+            with self.subTest(candidate=candidate):
+                with self.assertRaisesRegex(TypeError, "must inherit from Action"):
+                    registry.register(ACTION_UUID)(candidate)
+                self.assertEqual(registry.action_uuids, frozenset())
+
     def test_registrations_are_isolated_per_plugin(self) -> None:
         first: ActionRegistry[ExampleDependencies] = ActionRegistry()
         second: ActionRegistry[ExampleDependencies] = ActionRegistry()

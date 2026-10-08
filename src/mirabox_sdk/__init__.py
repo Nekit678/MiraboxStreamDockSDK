@@ -17,7 +17,7 @@ transport or event-dispatch diagnostics are required.
 __version__ = "0.5.0"
 
 from .action import Action
-from .action_registry import ActionRegistry
+from .action_registry import ActionRegistration, ActionRegistry
 from .cli import build_plugin_argument_parser, parse_plugin_cli_arguments, run_plugin_cli
 from .codecs import (
     JSON_OBJECT_CODEC,
@@ -163,6 +163,7 @@ __all__ = [
     "ApplicationRuntime",
     "ApplicationService",
     "ApplicationServiceFactory",
+    "ActionRegistration",
     "ActionRegistry",
     "ActionEvent",
     "ActionPayloadEvent",
