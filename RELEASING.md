@@ -28,9 +28,10 @@ long-lived PyPI token is required.
    `src/mirabox_sdk/__init__.py`.
 3. Move the relevant entries from `[Unreleased]` into a dated version section
    in `CHANGELOG.md` and add comparison links.
-4. Run the complete verification suite:
+4. Install Node.js 22 and run the complete verification suite:
 
    ```bash
+   node --test tests/property_inspector.test.js
    python -m unittest discover -s tests -v
    PYTHONPATH=examples/counter_plugin/src \
      python -m unittest discover -s examples/counter_plugin/tests -v

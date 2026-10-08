@@ -335,20 +335,38 @@ const client = window.MiraBoxPropertyInspector;
 
 client.on("connected", ({ settings }) => {
   console.log("Current settings", settings);
+  client.sendToPlugin({ event: "refresh" });
+  client.updateSettings({ mode: "toggle" });
 });
 
 client.on("didReceiveSettings", ({ payload }) => {
   console.log("Updated settings", payload.settings);
 });
-
-client.sendToPlugin({ event: "refresh" });
-client.updateSettings({ mode: "toggle" });
 ```
 
 Клиент предоставляет `on()`, `off()`, `send()`, `sendToPlugin()`,
 `setSettings()`, `updateSettings()` и `getSettings()`, а также состояние
 соединения и регистрации. Сообщения, отправленные во время подключения
 WebSocket, помещаются в очередь до открытия соединения.
+Запускайте операции приложения в `connected`: вызовы до callback-функции
+подключения от хоста или после начала закрытия сокета выбрасывают `Error`.
+Методы отправки возвращают `true` при немедленной отправке и `false` только
+при принятии сообщения в очередь. Несериализуемые данные (включая циклы и
+`BigInt`) отклоняются исключением до принятия; ошибки немедленного вызова
+`WebSocket.send()` передаются вызывающему коду.
+
+Очередь хранит собственные сериализованные JSON-снимки. Ошибки отложенной
+отправки вызывают `sendError` с `{ message, error }` для каждого неотправленного
+сообщения, в том числе при закрытии сокета до отправки очереди. Ошибка одного
+сообщения не мешает попытке отправить следующие; ошибка регистрации закрывает
+сокет без события `connected`. Автоматических повторов отправки нет.
+
+`settings` возвращает глубокую JSON-копию. Локальные настройки меняются только
+при принятии отправки и остаются оптимистичными до обновления через
+`didReceiveSettings`; принятие и событие `connected` не подтверждают сохранение
+на хосте. Ошибка отложенной отправки не откатывает принятые локальные настройки.
+Для согласования состояния обрабатывайте `sendError` и при открытом соединении
+запрашивайте актуальный снимок через `getSettings()`.
 
 Перед установкой проверьте собранный пакет:
 
@@ -1022,9 +1040,11 @@ MiraboxStreamDockSDK/
 
 ## Разработка
 
-Установите зависимости для разработки и запустите те же проверки, что и CI:
+Установите зависимости для разработки и Node.js 22, затем запустите те же
+проверки, что и CI:
 
 ```bash
+node --test tests/property_inspector.test.js
 python -m unittest discover -s tests -v
 PYTHONPATH=examples/counter_plugin/src \
   python -m unittest discover -s examples/counter_plugin/tests -v

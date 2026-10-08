@@ -64,9 +64,10 @@ in a test.
 ## Checks
 
 Run the narrowest relevant tests while developing. Before opening a pull
-request, run the complete local suite:
+request, install Node.js 22 and run the complete local suite:
 
 ```bash
+node --test tests/property_inspector.test.js
 python -m unittest discover -s tests -v
 PYTHONPATH=examples/counter_plugin/src \
   python -m unittest discover -s examples/counter_plugin/tests -v

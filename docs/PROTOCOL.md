@@ -311,6 +311,24 @@ defines that compatibility callback and exposes a higher-level singleton as
 | `action`, `context`, `settings`, `info`, `actionInfo` | Read current registration state |
 | `isConnected` | Check whether the WebSocket is open |
 
+Start application sends from `connected`, after registration and the initial
+queue flush. Send helpers return `true` when sent immediately and `false` when
+accepted into the connecting socket's queue. Calls before the host callback or
+while closing/closed throw `Error`; invalid JSON data and immediate send failures
+also throw. The queue owns serialized JSON snapshots, so subsequent mutation
+cannot change a pending message.
+
+Observe `sendError` for `{ message, error }` when registration or a deferred send
+fails. Every unsent queued message receives this event on close, and a failed
+send does not suppress later queued attempts. Failed registration closes the
+socket and suppresses `connected`; `connected` otherwise fires after the queue
+has been attempted if the socket remains open. There are no automatic retries.
+
+`settings` returns a deep JSON snapshot. Settings writes update local optimistic
+state only after acceptance; a rejected write leaves it intact. Deferred failures
+do not roll back accepted writes. Only `didReceiveSettings` refreshes this state
+from the host; sending or connecting does not acknowledge persistence.
+
 Run `mirabox-sdk copy-property-inspector DESTINATION` to copy the version that
 matches the installed Python package into a `.sdPlugin` bundle.
 

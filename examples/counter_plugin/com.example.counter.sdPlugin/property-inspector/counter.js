@@ -8,6 +8,10 @@
     reset.disabled = false;
   });
 
+  client.on("disconnected", () => {
+    reset.disabled = true;
+  });
+
   reset.addEventListener("click", () => {
     client.sendToPlugin({ event: "reset" });
   });

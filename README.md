@@ -335,19 +335,35 @@ const client = window.MiraBoxPropertyInspector;
 
 client.on("connected", ({ settings }) => {
   console.log("Current settings", settings);
+  client.sendToPlugin({ event: "refresh" });
+  client.updateSettings({ mode: "toggle" });
 });
 
 client.on("didReceiveSettings", ({ payload }) => {
   console.log("Updated settings", payload.settings);
 });
-
-client.sendToPlugin({ event: "refresh" });
-client.updateSettings({ mode: "toggle" });
 ```
 
 The client exposes `on()`, `off()`, `send()`, `sendToPlugin()`, `setSettings()`,
 `updateSettings()`, and `getSettings()`, plus connection and registration state.
 Messages sent while the WebSocket is connecting are queued until it opens.
+Start application work in `connected`: calls before the host invokes the
+connection callback or after the socket starts closing throw an `Error`.
+Send methods return `true` for an immediate send and `false` only for an
+accepted queued message. Invalid JSON data (including cycles and `BigInt`)
+throws before acceptance; immediate `WebSocket.send()` errors propagate.
+
+Queued messages own serialized JSON snapshots. Deferred send failures emit
+`sendError` with `{ message, error }` for each unsent message, including when
+the socket closes before flushing. A failed message does not prevent later
+messages from being attempted; failed registration closes the socket without
+emitting `connected`. Sends are not retried automatically.
+
+`settings` returns a deep JSON copy. Local settings change only when a send is
+accepted and remain optimistic until `didReceiveSettings` refreshes them;
+neither acceptance nor `connected` confirms host persistence. Deferred failures
+do not roll back accepted local settings. Listen for `sendError` and request a
+fresh snapshot with `getSettings()` while connected if reconciliation is needed.
 
 Validate the assembled bundle before installing it:
 
@@ -1015,9 +1031,10 @@ MiraboxStreamDockSDK/
 
 ## Development
 
-Install the development dependencies, then run the same checks as CI:
+Install the development dependencies and Node.js 22, then run the same checks as CI:
 
 ```bash
+node --test tests/property_inspector.test.js
 python -m unittest discover -s tests -v
 PYTHONPATH=examples/counter_plugin/src \
   python -m unittest discover -s examples/counter_plugin/tests -v

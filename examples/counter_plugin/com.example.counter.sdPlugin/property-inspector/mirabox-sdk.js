@@ -34,14 +34,19 @@
     return parsed;
   }
 
+  /** Return an owned snapshot using the same JSON rules as wire messages. */
+  function snapshotObject(value, name) {
+    return parseObject(JSON.stringify(value), name);
+  }
+
   /**
    * Browser-side client shared by a Stream Dock Property Inspector.
    *
    * Stream Dock initializes the singleton through
    * {@link window.connectElgatoStreamDeckSocket}. Consumers normally use the
    * {@link window.MiraBoxPropertyInspector} instance instead of constructing a
-   * client. Messages sent while the WebSocket is connecting are queued and
-   * flushed after registration.
+   * client. Start application work in `connected`. Messages sent while the
+   * WebSocket is connecting are queued as JSON and flushed after registration.
    */
   class MiraBoxPropertyInspectorClient {
     /** Initialize disconnected client state and an empty settings snapshot. */
@@ -75,15 +80,16 @@
     }
 
     /**
-     * Return a shallow snapshot of the latest action settings.
+     * Return a deeply isolated JSON snapshot of the latest action settings.
      *
      * The snapshot is initialized from `actionInfo` and refreshed on every
-     * `didReceiveSettings` message or local settings update.
+     * `didReceiveSettings` message or accepted local settings update. Accepted
+     * updates are optimistic; they do not acknowledge persistence by the host.
      *
      * @returns {Object<string, *>} Current settings snapshot.
      */
     get settings() {
-      return { ...this._settings };
+      return snapshotObject(this._settings, "settings");
     }
 
     /**
@@ -117,9 +123,10 @@
      * Subscribe to a client lifecycle or Stream Dock protocol event.
      *
      * Built-in lifecycle names are `connected`, `disconnected`, `error`,
-     * `protocolError`, and `message`. Every incoming message with a string
-     * `event` field is also emitted under that field's value, for example
-     * `didReceiveSettings`.
+     * `protocolError`, `sendError`, and `message`. `sendError` receives
+     * `{ message, error }` for a failed registration or deferred send. Every
+     * incoming message with a string `event` field is also emitted under that
+     * field's value, for example `didReceiveSettings`.
      *
      * @param {string} eventName Non-empty lifecycle or wire event name.
      * @param {function(*): void} listener Callback receiving the event payload.
@@ -169,7 +176,8 @@
      * This method is called by {@link window.connectElgatoStreamDeckSocket};
      * Property Inspector application code rarely needs to call it directly.
      * The `connected` event fires after registration and queued messages have
-     * been sent.
+     * been attempted, provided the socket remains open. Deferred failures emit
+     * `sendError` individually and do not prevent later queued sends.
      *
      * @param {number|string} port Loopback WebSocket port from 1 through 65535.
      * @param {string} propertyInspectorUUID Opaque context used for registration.
@@ -199,16 +207,34 @@
       }
       this._context = propertyInspectorUUID;
       this._settings = isObject(this._actionInfo.payload?.settings)
-        ? { ...this._actionInfo.payload.settings }
+        ? snapshotObject(this._actionInfo.payload.settings, "settings")
         : {};
 
       const websocket = new WebSocket(`ws://127.0.0.1:${portNumber}`);
       this._websocket = websocket;
       websocket.addEventListener("open", () => {
-        this.send({ event: registerEvent, uuid: propertyInspectorUUID });
+        const registration = { event: registerEvent, uuid: propertyInspectorUUID };
+        try {
+          websocket.send(JSON.stringify(registration));
+        } catch (error) {
+          websocket.close();
+          this._emit("sendError", { message: registration, error });
+          this._rejectPendingMessages(error);
+          return;
+        }
         const pendingMessages = this._pendingMessages.splice(0);
-        for (const message of pendingMessages) {
-          this.send(message);
+        for (const data of pendingMessages) {
+          try {
+            if (websocket.readyState !== WebSocket.OPEN) {
+              throw new Error("Property Inspector WebSocket is closing or closed");
+            }
+            websocket.send(data);
+          } catch (error) {
+            this._emit("sendError", { message: JSON.parse(data), error });
+          }
+        }
+        if (websocket.readyState !== WebSocket.OPEN) {
+          return;
         }
         this._emit("connected", {
           action: this._action,
@@ -220,30 +246,42 @@
       });
       websocket.addEventListener("message", (event) => this._receive(event));
       websocket.addEventListener("error", (event) => this._emit("error", event));
-      websocket.addEventListener("close", (event) => this._emit("disconnected", event));
+      websocket.addEventListener("close", (event) => {
+        this._rejectPendingMessages(new Error("Property Inspector WebSocket is closing or closed"));
+        this._emit("disconnected", event);
+      });
     }
 
     /**
      * Send a raw protocol message or queue it while the socket is connecting.
      *
-     * Messages submitted after the socket has closed are not retained.
+     * Calls before the host's connection callback or after close are rejected.
+     * Deferred failures emit `sendError` with the owned message and error.
      * Prefer the typed convenience methods for ordinary plugin communication.
      *
      * @param {Object<string, *>} message JSON-compatible protocol envelope.
-     * @returns {boolean} `true` if sent immediately; `false` if queued or not sent.
-     * @throws {TypeError} If `message` is not an object.
+     * @returns {boolean} `true` if sent immediately; `false` if accepted into the queue.
+     * @throws {TypeError} If `message` is not an object or JSON serialization fails.
+     * @throws {Error} If uninitialized, closing, closed, or an immediate send fails.
      */
     send(message) {
       if (!isObject(message)) {
         throw new TypeError("message must be an object");
       }
-      if (this._websocket?.readyState === WebSocket.OPEN) {
-        this._websocket.send(JSON.stringify(message));
+      const websocket = this._websocket;
+      if (websocket === undefined) {
+        throw new Error("Property Inspector is not initialized; wait for the connected event");
+      }
+      if (websocket.readyState !== WebSocket.OPEN && websocket.readyState !== WebSocket.CONNECTING) {
+        throw new Error("Property Inspector WebSocket is closing or closed");
+      }
+      const data = JSON.stringify(message);
+      parseObject(data, "message");
+      if (websocket.readyState === WebSocket.OPEN) {
+        websocket.send(data);
         return true;
       }
-      if (this._websocket?.readyState === WebSocket.CONNECTING) {
-        this._pendingMessages.push(message);
-      }
+      this._pendingMessages.push(data);
       return false;
     }
 
@@ -251,8 +289,9 @@
      * Send a plugin-defined object to the active Python action context.
      *
      * @param {Object<string, *>} payload Plugin-defined message body.
-     * @returns {boolean} `true` if sent immediately; `false` if queued or not sent.
-     * @throws {TypeError} If `payload` is not an object.
+     * @returns {boolean} `true` if sent immediately; `false` if accepted into the queue.
+     * @throws {TypeError} If `payload` is not an object or JSON serialization fails.
+     * @throws {Error} If uninitialized, closing, closed, or an immediate send fails.
      */
     sendToPlugin(payload) {
       if (!isObject(payload)) {
@@ -269,30 +308,36 @@
     /**
      * Replace and persist all settings for the active action context.
      *
-     * The local settings snapshot changes before the message is sent or queued.
+     * The isolated local snapshot changes only after the message is sent or
+     * accepted into the queue. This optimistic state is not a host acknowledgment
+     * and is not rolled back on deferred failure; `didReceiveSettings` refreshes it.
      *
      * @param {Object<string, *>} settings Complete new settings object.
-     * @returns {boolean} `true` if sent immediately; `false` if queued or not sent.
-     * @throws {TypeError} If `settings` is not an object.
+     * @returns {boolean} `true` if sent immediately; `false` if accepted into the queue.
+     * @throws {TypeError} If `settings` is not an object or JSON serialization fails.
+     * @throws {Error} If uninitialized, closing, closed, or an immediate send fails.
      */
     setSettings(settings) {
       if (!isObject(settings)) {
         throw new TypeError("settings must be an object");
       }
-      this._settings = { ...settings };
-      return this.send({
+      const snapshot = snapshotObject(settings, "settings");
+      const sent = this.send({
         event: "setSettings",
         context: this._context,
-        payload: this._settings,
+        payload: snapshot,
       });
+      this._settings = snapshot;
+      return sent;
     }
 
     /**
      * Shallow-merge selected fields into the current settings and persist them.
      *
      * @param {Object<string, *>} patch Top-level setting fields to add or replace.
-     * @returns {boolean} `true` if sent immediately; `false` if queued or not sent.
-     * @throws {TypeError} If `patch` is not an object.
+     * @returns {boolean} `true` if sent immediately; `false` if accepted into the queue.
+     * @throws {TypeError} If `patch` is not an object or JSON serialization fails.
+     * @throws {Error} If uninitialized, closing, closed, or an immediate send fails.
      */
     updateSettings(patch) {
       if (!isObject(patch)) {
@@ -306,10 +351,18 @@
      *
      * Listen for `didReceiveSettings` to observe the asynchronous response.
      *
-     * @returns {boolean} `true` if sent immediately; `false` if queued or not sent.
+     * @returns {boolean} `true` if sent immediately; `false` if accepted into the queue.
+     * @throws {Error} If uninitialized, closing, closed, or an immediate send fails.
      */
     getSettings() {
       return this.send({ event: "getSettings", context: this._context });
+    }
+
+    _rejectPendingMessages(error) {
+      const pendingMessages = this._pendingMessages.splice(0);
+      for (const data of pendingMessages) {
+        this._emit("sendError", { message: JSON.parse(data), error });
+      }
     }
 
     _receive(event) {
@@ -324,7 +377,7 @@
 
       if (message.event === "didReceiveSettings") {
         this._settings = isObject(message.payload?.settings)
-          ? { ...message.payload.settings }
+          ? snapshotObject(message.payload.settings, "settings")
           : {};
       }
       if (typeof message.event === "string") {

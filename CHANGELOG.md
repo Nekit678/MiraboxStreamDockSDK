@@ -35,6 +35,12 @@ change public APIs between minor versions.
 
 ### Fixed
 
+- Reject Property Inspector sends before initialization or after close explicitly,
+  and run documented startup operations from `connected` (PI-01).
+- Snapshot deferred PI messages and nested settings as JSON on acceptance,
+  preserve local state on rejected writes, and report individual deferred send
+  failures through `sendError` without losing later messages (PI-02).
+- Run executable Property Inspector regression tests with Node.js in CI and releases.
 - Terminalize scheduler events after `BaseException`, preserve the fatal cause
   and supervise unexpected reader/writer exits, including partial pool startup
   (RT-01).
