@@ -8,6 +8,12 @@ change public APIs between minor versions.
 
 ### Added
 
+- Add `mirabox-sdk validate-plugin PATH` and public `validate_plugin()`
+  (SDK-DX-001) for offline manifest, code/resource path, local HTML dependency
+  and bundled Property Inspector client checks. The explicit
+  `--registry MODULE:OBJECT` option compares action UUIDs in both directions.
+- Load Counter action decorators in its bootstrap so source validation and
+  executable startup see the same populated registry without test imports.
 - Add `mirabox_sdk.testing.StreamDockHarness` and `FakeStreamDockSender` for
   public in-memory integration and action tests (SDK-TEST-001). The harness
   exercises production registration, settings, routing and command serialization

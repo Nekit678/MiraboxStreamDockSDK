@@ -317,11 +317,27 @@ matches the installed Python package into a `.sdPlugin` bundle.
 ## Manifest scope
 
 The SDK consumes action UUIDs and runtime metadata declared by `manifest.json`,
-but it does not currently generate or validate a manifest. Use the upstream
+and validates assembled bundles with `mirabox-sdk validate-plugin PATH`.
+Use the upstream
 [`manifest.json` reference](https://sdk.key123.vip/en/guide/manifest.html) and
 the complete local
 [`counter_plugin` manifest](../examples/counter_plugin/com.example.counter.sdPlugin/manifest.json)
 when creating a plugin bundle.
+
+Validation checks required fields and known optional types, unique action UUIDs,
+declared executable/resource paths, and local HTML script/link/image references.
+Paths must resolve inside the bundle. Unknown manifest members are accepted;
+image dimensions, executable contents, remote resources, dynamic JavaScript
+imports and host compatibility still require separate verification. All
+bundled `mirabox-sdk.js` copies must match the installed SDK's bytes.
+
+Pass `--registry MODULE:OBJECT` to import a populated `ActionRegistry` instance
+and compare registered and manifest UUIDs in both directions. The module must
+load every action decorator without starting the plugin. Without this option,
+registry comparison is explicitly skipped. The public Python function
+`validate_plugin(path, action_uuids=registry.action_uuids)` returns a tuple of
+field/file diagnostics; an empty tuple means success. The CLI returns `0` on
+success and `1` on validation or registry import errors.
 
 The UUID supplied to `ActionRegistry.register()` must exactly match an action
 UUID in the manifest. `CodePath` must point to the packaged executable, and

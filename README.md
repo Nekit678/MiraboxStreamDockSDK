@@ -343,6 +343,34 @@ The client exposes `on()`, `off()`, `send()`, `sendToPlugin()`, `setSettings()`,
 `updateSettings()`, and `getSettings()`, plus connection and registration state.
 Messages sent while the WebSocket is connecting are queued until it opens.
 
+Validate the assembled bundle before installing it:
+
+```bash
+mirabox-sdk validate-plugin com.example.counter.sdPlugin \
+  --registry counter_plugin.bootstrap:ACTION_REGISTRY
+```
+
+The registry module must be importable in the current Python environment and
+load every action registration without starting the plugin. `--registry`
+imports that module and compares the UUID sets in both directions. Without it,
+the command checks manifest UUID syntax and duplicates and reports that the
+registry comparison was skipped.
+
+Validation checks required manifest fields and known optional field types,
+`CodePath`/platform variants, icons, state images, Property Inspector pages and
+their local script/link/image references. Files must stay inside the bundle.
+Every bundled `mirabox-sdk.js` must match the installed SDK byte for byte;
+refresh stale or modified copies with `copy-property-inspector --force`.
+Errors include a field or file path and return exit code `1`; success returns
+`0`. The Python equivalent is
+`validate_plugin(bundle_path, action_uuids=registry.action_uuids)`, exported from
+`mirabox_sdk`, which returns a tuple of diagnostics (empty on success).
+
+Unknown manifest fields are accepted. Validation does not run the executable,
+check image dimensions, fetch remote resources, resolve dynamic JavaScript
+imports or prove compatibility with Stream Dock. Validate after packaging:
+the Counter source bundle intentionally lacks `CounterPlugin.exe`.
+
 ## Counter example plugin
 
 [`examples/counter_plugin`](https://github.com/Nekit678/MiraboxStreamDockSDK/tree/main/examples/counter_plugin)
@@ -404,7 +432,7 @@ behavior implemented by this SDK.
 | Input events | Typed immutable event models and `InboundOverflowPolicy` |
 | Output commands | Registration, settings, title, image, state, feedback, URL, log, and Property Inspector command models; `ValidatedWireMessage` |
 | Application data | `JsonCodec`, `FunctionalJsonCodec`, `JsonObjectCodec`, `ValidatedJsonObject`, `OwnedJsonPayload`, typed encode/decode helpers |
-| Resources | `copy_property_inspector_client`, `property_inspector_client_bytes`, `mirabox-sdk` CLI |
+| Resources and bundles | `copy_property_inspector_client`, `property_inspector_client_bytes`, `validate_plugin`, `mirabox-sdk` CLI |
 | Parsing | `parse_stream_dock_event`, `parse_registration_info`, typed protocol errors |
 | Logging | `configure_logging` with isolated console, file, and disable controls |
 

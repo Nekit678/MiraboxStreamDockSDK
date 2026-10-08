@@ -102,6 +102,7 @@ from .global_settings import GlobalSettings
 from .json_types import JsonObject, JsonValue, OwnedJsonPayload, ValidatedJsonObject
 from .logging_config import LoggingOverflowPolicy, configure_logging, dropped_log_records
 from .parser import parse_stream_dock_event
+from .plugin_validation import validate_plugin
 from .protocols import (
     PluginApplication,
     StreamDockActionDependencies,
@@ -281,5 +282,6 @@ __all__ = [
     "parse_registration_info",
     "parse_stream_dock_event",
     "property_inspector_client_bytes",
+    "validate_plugin",
     "run_plugin_cli",
 ]

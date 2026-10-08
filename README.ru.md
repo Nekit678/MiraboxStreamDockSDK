@@ -344,6 +344,35 @@ client.updateSettings({ mode: "toggle" });
 соединения и регистрации. Сообщения, отправленные во время подключения
 WebSocket, помещаются в очередь до открытия соединения.
 
+Перед установкой проверьте собранный пакет:
+
+```bash
+mirabox-sdk validate-plugin com.example.counter.sdPlugin \
+  --registry counter_plugin.bootstrap:ACTION_REGISTRY
+```
+
+Модуль реестра должен импортироваться в текущем Python-окружении и загружать
+регистрации всех действий без запуска плагина. `--registry` импортирует этот
+модуль и сравнивает наборы UUID в обе стороны. Без этого параметра команда
+проверяет синтаксис и дубликаты UUID в manifest и сообщает, что сравнение с
+реестром пропущено.
+
+Проверяются обязательные поля manifest и типы известных необязательных полей,
+`CodePath` и его платформенные варианты, иконки, изображения состояний,
+страницы Property Inspector и их локальные ссылки на скрипты, стили и
+изображения. Файлы должны находиться внутри пакета. Каждая встроенная копия
+`mirabox-sdk.js` должна побайтово совпадать с установленным SDK; устаревшую или
+изменённую копию обновите через `copy-property-inspector --force`.
+Ошибки содержат путь к полю или файлу и возвращают код `1`, успешная проверка —
+код `0`. Python-эквивалент:
+`validate_plugin(bundle_path, action_uuids=registry.action_uuids)` из
+`mirabox_sdk`; результат — кортеж диагностик, пустой при успехе.
+
+Неизвестные поля manifest допускаются. Проверка не запускает исполняемый файл,
+не проверяет размеры изображений, удалённые ресурсы, динамические импорты
+JavaScript или совместимость со Stream Dock. Проверяйте пакет после сборки:
+в исходном пакете Counter намеренно отсутствует `CounterPlugin.exe`.
+
 ## Пример плагина Counter
 
 [`examples/counter_plugin`](https://github.com/Nekit678/MiraboxStreamDockSDK/tree/main/examples/counter_plugin)
@@ -405,7 +434,7 @@ wire-событие и команду с Python-моделью или вспом
 | Входящие события | Типизированные immutable-модели и `InboundOverflowPolicy` |
 | Исходящие команды | Модели регистрации, настроек, заголовка, изображения, состояния, обратной связи, URL, логов и Property Inspector; `ValidatedWireMessage` |
 | Данные приложения | `JsonCodec`, `FunctionalJsonCodec`, `JsonObjectCodec`, `ValidatedJsonObject`, `OwnedJsonPayload`, типизированные функции кодирования и декодирования |
-| Ресурсы | `copy_property_inspector_client`, `property_inspector_client_bytes`, CLI `mirabox-sdk` |
+| Ресурсы и пакеты | `copy_property_inspector_client`, `property_inspector_client_bytes`, `validate_plugin`, CLI `mirabox-sdk` |
 | Разбор протокола | `parse_stream_dock_event`, `parse_registration_info`, типизированные ошибки протокола |
 | Логирование | `configure_logging` с управлением консолью, файлом и отключением |
 

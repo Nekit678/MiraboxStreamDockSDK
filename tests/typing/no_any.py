@@ -13,6 +13,7 @@ from mirabox_sdk import (
     StreamDockApplication,
     StreamDockSender,
     ValidatedJsonObject,
+    validate_plugin,
 )
 from mirabox_sdk.testing import FakeStreamDockSender, StreamDockHarness
 
@@ -37,6 +38,9 @@ def check_contract(
     assert_type(harness.receive(), JsonObject)
     assert_type(harness.messages, tuple[JsonObject, ...])
     assert_type(ActionRegistry[ApplicationContext]().action_uuids, frozenset[str])
+    assert_type(
+        validate_plugin("plugin.sdPlugin", action_uuids={"com.example.action"}), tuple[str, ...]
+    )
     snapshot = ValidatedJsonObject({"count": 1})
     assert_type(snapshot.owned_payload(), OwnedJsonPayload)
     assert_type(snapshot.isolated_copy(), JsonObject)

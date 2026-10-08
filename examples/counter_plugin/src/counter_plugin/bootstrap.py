@@ -9,6 +9,7 @@ from mirabox_sdk import (
     create_stream_dock_application,
 )
 
+from . import actions as actions  # Load decorators before exposing the populated registry.
 from .action_registry import ACTION_REGISTRY
 from .contracts import ActionDependencies
 

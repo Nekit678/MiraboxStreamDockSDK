@@ -91,6 +91,31 @@ Copy-Item dist\CounterPlugin.exe `
 The final bundle must contain `CounterPlugin.exe` at its root because
 `manifest.json` declares `"CodePath": "CounterPlugin.exe"`.
 
+## Validate before installing
+
+After copying the executable, validate the complete bundle and compare the
+manifest's action UUIDs with the registry loaded by the real bootstrap:
+
+```powershell
+$env:PYTHONPATH = "examples/counter_plugin/src"
+mirabox-sdk validate-plugin examples/counter_plugin/com.example.counter.sdPlugin `
+  --registry counter_plugin.bootstrap:ACTION_REGISTRY
+```
+
+From a POSIX shell with an already assembled bundle:
+
+```bash
+PYTHONPATH=examples/counter_plugin/src mirabox-sdk validate-plugin \
+  examples/counter_plugin/com.example.counter.sdPlugin \
+  --registry counter_plugin.bootstrap:ACTION_REGISTRY
+```
+
+The command checks manifest fields, declared files, local HTML resources and
+the bundled Property Inspector client against the installed SDK, and returns
+`1` with diagnostics on errors. The source bundle fails on missing
+`CounterPlugin.exe` until built. The validator does not execute or inspect the
+binary. Without `--registry`, the UUID comparison with Python is skipped.
+
 ## Install locally
 
 Copy the complete `com.example.counter.sdPlugin` directory to:
