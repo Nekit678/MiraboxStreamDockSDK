@@ -452,6 +452,12 @@ class RuntimeFactoryIntegrationTests(unittest.TestCase):
 
     def test_hung_boundary_close_consumes_one_deadline_and_defers_resources(self) -> None:
         release = Event()
+        readiness_wait_started = Event()
+
+        class ObservedReadinessGate(SessionReadinessGate):
+            def wait(self, timeout: float | None = None) -> bool:
+                readiness_wait_started.set()
+                return super().wait(timeout)
 
         class HungBoundary(_FakeBoundary):
             def close(self) -> None:
@@ -460,17 +466,21 @@ class RuntimeFactoryIntegrationTests(unittest.TestCase):
                 super().close()
 
         boundary = HungBoundary(block_run_until_close=True)
+        readiness = ObservedReadinessGate()
         runtime = create_stream_dock_runtime(
             _launch_arguments(),
             boundary=boundary,
             action_factory=RecordingActionFactory(boundary.commands),
+            session_readiness=readiness,
             config=RuntimeDispatcherConfig(shutdown_timeout=0.05, event_poll_interval=10),
         )
         errors: list[Exception] = []
         runner = Thread(target=lambda: _capture_error(runtime.run_forever, errors))
+        self.addCleanup(readiness.close)
         self.addCleanup(release.set)
         runner.start()
         self.assertTrue(boundary.run_started.wait(1))
+        self.assertTrue(readiness_wait_started.wait(1))
         start = monotonic()
         runtime.close()
         runner.join(0.3)
@@ -480,9 +490,12 @@ class RuntimeFactoryIntegrationTests(unittest.TestCase):
         self.assertFalse(runtime.shutdown_outcome.complete)
         self.assertFalse(runtime.shutdown_outcome.workers_stopped)
         self.assertIn("Boundary close", runtime.shutdown_outcome.pending_cleanup)
+        # Force the session pump to stop before closing its source can wake readiness.
+        self.assertTrue(runtime._session_pump.drain(timeout=1))
         release.set()
         self.assertTrue(runtime._cleanup_complete.wait(1))
         self.assertTrue(runtime.shutdown_outcome.complete)
+        self.assertTrue(readiness.terminal)
 
     def test_factory_selects_bounded_keyed_scheduler_from_config(self) -> None:
         boundary = _FakeBoundary()

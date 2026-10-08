@@ -504,6 +504,9 @@ class ComposedStreamDockRuntime(RuntimeLifecycle):
                 self._session_pump.stop,
                 timeout=self._shutdown.remaining(self._config.worker_stop_timeout),
             )
+            if session_stopped:
+                # Stopping can skip source closure; wake readiness after initialization exits.
+                self._close_session_readiness()
 
         scheduler_stopped = True
         if scheduler_attempted:
@@ -550,14 +553,15 @@ class ComposedStreamDockRuntime(RuntimeLifecycle):
                 "Runtime scheduler stop", self._scheduler.stop, timeout=None
             ):
                 return
-        if event_pump_started and not event_stopped:
-            if not self._safe_bool_cleanup(
-                "Runtime event pump stop", self._event_pump.stop, timeout=None
-            ):
-                return
         if session_pump_started and not session_stopped:
             if not self._safe_bool_cleanup(
                 "Runtime session pump stop", self._session_pump.stop, timeout=None
+            ):
+                return
+            self._close_session_readiness()
+        if event_pump_started and not event_stopped:
+            if not self._safe_bool_cleanup(
+                "Runtime event pump stop", self._event_pump.stop, timeout=None
             ):
                 return
 
