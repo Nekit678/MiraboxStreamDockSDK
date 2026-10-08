@@ -433,6 +433,29 @@ class RuntimeEventDispatchTests(unittest.TestCase):
         replay = factory.instances[0].events[-1]
         self.assertEqual(replay, DidReceiveGlobalSettingsEvent(settings={}))
 
+    def test_global_settings_snapshots_cannot_mutate_state_or_replay(self) -> None:
+        router, _factory, _state, sender = build_router()
+        router.dispatch(DidReceiveGlobalSettingsEvent(settings={"nested": {"items": [1]}}))
+        global_settings = router.global_settings
+        first = global_settings.snapshot()
+        second = global_settings.snapshot()
+        metrics_before = router.action_metrics()
+
+        nested = first["nested"]
+        assert isinstance(nested, dict)
+        items = nested["items"]
+        assert isinstance(items, list)
+        items.append(2)
+        nested["bypassed"] = True
+
+        expected = {"nested": {"items": [1]}}
+        self.assertTrue(global_settings.loaded)
+        self.assertEqual(second, expected)
+        self.assertEqual(global_settings.snapshot(), expected)
+        self.assertEqual(global_settings.new_event().settings, expected)
+        self.assertEqual(router.action_metrics(), metrics_before)
+        sender.send.assert_not_called()
+
     def test_unknown_event_is_delivered_once_and_hook_failure_isolated(self) -> None:
         hooks = RecordingPluginHooks()
         router, _factory, _state, _sender = build_router(hooks=hooks)

@@ -399,6 +399,25 @@ class ApplicationServiceLifecycleTests(unittest.TestCase):
         application.stop()
         self.assertTrue(connector.closed)
 
+    def test_global_settings_facade_does_not_expose_mutable_settings(self) -> None:
+        application = create_stream_dock_application(
+            _launch_arguments(),
+            action_factory=_NoopActionFactory(),
+            shutdown_config=_shutdown_config(),
+        )
+        self.addCleanup(application.stop)
+        global_settings = application.global_settings
+        metrics_before = application.metrics()
+
+        with self.assertRaises(AttributeError):
+            global_settings.settings["bypassed"] = True  # type: ignore[attr-defined]
+        snapshot = global_settings.snapshot()
+        snapshot["bypassed"] = True
+
+        self.assertFalse(global_settings.loaded)
+        self.assertEqual(global_settings.snapshot(), {})
+        self.assertEqual(application.metrics(), metrics_before)
+
     def test_context_factories_receive_shared_runtime_dependencies(self) -> None:
         connector = _UnstartedConnector()
         dependencies_holder: dict[str, _ContextDependencies] = {}

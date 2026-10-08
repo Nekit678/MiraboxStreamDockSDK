@@ -299,7 +299,8 @@ application.global_settings.update(append_items)
 одной командой `setGlobalSettings`. Ошибка callback, валидации или отправки
 оставляет прежнее локальное состояние без изменений. `snapshot()` возвращает
 изолированную копию, поэтому её мутация не меняет runtime state. Для полной
-замены используйте `set()` или `set_typed()`.
+замены используйте `set()` или `set_typed()`. У фасада нет изменяемого свойства
+`settings`; текущее значение читайте через `snapshot()`.
 
 ## Клиент Property Inspector
 

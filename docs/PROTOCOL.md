@@ -166,8 +166,9 @@ context-aware action-dependency and service factories. Incoming global-settings
 events replace its state before callbacks; a successfully sent local write also
 replaces its state and becomes the value replayed to actions that appear later.
 
-`snapshot()` returns an isolated copy. Mutating that return value never changes
-runtime state and must not be used as a write mechanism. The permitted writes
+The facade exposes no mutable `settings` property; use `snapshot()` to read an
+isolated copy. Mutating that return value never changes runtime state and must
+not be used as a write mechanism. The permitted writes
 are `global_settings.update(callback)` for one rollback-safe mutation of an
 isolated draft, `global_settings.set(settings)` for a complete raw JSON object,
 and `global_settings.set_typed(settings, codec)` for a complete typed value. If

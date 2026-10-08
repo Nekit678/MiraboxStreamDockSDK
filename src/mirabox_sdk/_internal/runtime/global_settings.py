@@ -28,7 +28,10 @@ class GlobalSettingsState(Protocol):
 
     @property
     @abstractmethod
-    def settings(self) -> JsonObject: ...
+    def settings(self) -> JsonObject:
+        """Return an isolated copy of the current settings object."""
+
+        ...
 
     @property
     @abstractmethod
@@ -79,12 +82,6 @@ class GlobalSettingsCoordinator(GlobalSettings):
         if self._metrics is not None and self._metrics is not metrics:
             raise RuntimeError("global settings metrics are already bound")
         self._metrics = metrics
-
-    @property
-    def settings(self) -> JsonObject:
-        """Return the backend's internal current settings view."""
-
-        return self._state.settings
 
     @property
     def loaded(self) -> bool:
@@ -173,8 +170,10 @@ class DefaultGlobalSettingsState(GlobalSettingsState):
 
     @property
     def settings(self) -> JsonObject:
+        """Return an isolated copy without exposing backend-owned containers."""
+
         with self._lock:
-            return self._settings
+            return clone_json_object(self._settings)
 
     @property
     def loaded(self) -> bool:

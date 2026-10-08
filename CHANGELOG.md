@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file. The project
 uses [Semantic Versioning](https://semver.org/); releases before `1.0.0` may
 change public APIs between minor versions.
 
+## [Unreleased]
+
+### Fixed
+
+- Close the global-settings mutable escape (SDK-SETTINGS-002): remove the
+  facade's `settings` property and return isolated copies from the state
+  backend, preserving rollback-safe writes and isolated snapshots.
+
 ## [0.5.0] - 2026-08-15
 
 ### Added

@@ -298,7 +298,8 @@ After the callback succeeds, the transaction validates the complete draft and
 persists it with one `setGlobalSettings` command. Callback, validation, and send
 failures leave the previous local state unchanged. `snapshot()` returns an
 isolated copy, so changing it never changes the runtime state. Use `set()` or
-`set_typed()` for complete replacements.
+`set_typed()` for complete replacements. The facade exposes no mutable
+`settings` property; read the current value through `snapshot()`.
 
 ## Property Inspector client
 
