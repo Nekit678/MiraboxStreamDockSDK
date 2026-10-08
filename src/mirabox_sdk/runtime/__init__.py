@@ -6,10 +6,6 @@ by ``run_plugin_cli()``.
 """
 
 from .._internal.messaging.inbound import InboundOverflowPolicy
-from .._internal.runtime.composition import (
-    StreamDockRuntime,
-    StreamDockRuntimeLifecycleError,
-)
 from .application import StreamDockApplication, create_stream_dock_application
 from .config import (
     RuntimeDispatcherConfig,
@@ -19,42 +15,47 @@ from .config import (
 )
 from .metrics import (
     ActionContextMetrics,
+    CommandWriterMetrics,
+    EventReaderMetrics,
     HandlerSchedulerMetrics,
+    InboundEventQueueMetrics,
+    OutboundCommandQueueMetrics,
     RuntimeEventPumpMetrics,
     RuntimeRouterMetrics,
     SessionCoordinatorMetrics,
     StreamDockBoundaryMetrics,
     StreamDockRuntimeMetrics,
+    TransportQueueMetrics,
+    WebSocketConnectorMetrics,
 )
 from .ports import (
-    ActionFactory,
     ApplicationContext,
     ApplicationRuntime,
     ApplicationService,
     ApplicationServiceFactory,
     DependencyAwareActionRegistry,
     GlobalSettings,
-    HandlerSchedulerFactory,
     Plugin,
     PluginHooks,
     RuntimeLifecycle,
     SessionReadiness,
     StreamDockSender,
-    WebSocketConnectorFactory,
 )
 
 __all__ = [
     "ActionContextMetrics",
-    "ActionFactory",
     "ApplicationContext",
     "ApplicationRuntime",
     "ApplicationService",
     "ApplicationServiceFactory",
+    "CommandWriterMetrics",
     "DependencyAwareActionRegistry",
+    "EventReaderMetrics",
     "GlobalSettings",
-    "HandlerSchedulerFactory",
     "HandlerSchedulerMetrics",
+    "InboundEventQueueMetrics",
     "InboundOverflowPolicy",
+    "OutboundCommandQueueMetrics",
     "Plugin",
     "PluginHooks",
     "RuntimeDispatcherConfig",
@@ -67,11 +68,10 @@ __all__ = [
     "StreamDockApplication",
     "StreamDockBoundaryMetrics",
     "StreamDockQueueConfig",
-    "StreamDockRuntime",
-    "StreamDockRuntimeLifecycleError",
     "StreamDockRuntimeMetrics",
     "StreamDockSender",
     "StreamDockShutdownConfig",
-    "WebSocketConnectorFactory",
+    "TransportQueueMetrics",
+    "WebSocketConnectorMetrics",
     "create_stream_dock_application",
 ]

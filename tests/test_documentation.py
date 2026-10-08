@@ -8,8 +8,6 @@ import re
 import unittest
 from pathlib import Path
 
-import mirabox_sdk
-
 ROOT = Path(__file__).resolve().parents[1]
 DOCUMENTS = (ROOT / "README.md", ROOT / "README.ru.md", ROOT / "docs" / "PROTOCOL.md")
 _PYTHON_BLOCK = re.compile(r"^```python\n(.*?)^```$", re.MULTILINE | re.DOTALL)
@@ -46,12 +44,25 @@ class DocumentationTests(unittest.TestCase):
                     tree = ast.parse(block, filename=str(document))
                     compile(tree, str(document), "exec")
                     for node in ast.walk(tree):
-                        if not isinstance(node, ast.ImportFrom) or node.module != "mirabox_sdk":
+                        if not isinstance(node, ast.ImportFrom) or node.module not in (
+                            "mirabox_sdk",
+                            "mirabox_sdk.runtime",
+                            "mirabox_sdk.testing",
+                        ):
                             continue
                         module = importlib.import_module(node.module)
                         for imported_name in node.names:
-                            self.assertIn(imported_name.name, mirabox_sdk.__all__)
+                            self.assertIn(imported_name.name, module.__all__)
                             self.assertIsNotNone(getattr(module, imported_name.name))
+
+    def test_readme_testing_example_runs_with_the_public_harness(self) -> None:
+        from tests.test_testing import _launch_arguments
+
+        document = ROOT / "README.md"
+        example = next(block for block in _python_blocks(document) if "StreamDockHarness" in block)
+        namespace: dict[str, object] = {"__name__": __name__}
+        exec(compile(example, str(document), "exec"), namespace)
+        namespace["test_application"](_launch_arguments())
 
     def test_readmes_share_the_same_python_api_examples(self) -> None:
         self.assertEqual(

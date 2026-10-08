@@ -8,6 +8,7 @@ from typing import Protocol, TypeVar, runtime_checkable
 
 from .codecs import JsonCodec
 from .json_types import JsonObject
+from .json_types import JsonValue as JsonValue  # Resolve recursive JSON type hints.
 
 GlobalSettingsT = TypeVar("GlobalSettingsT")
 

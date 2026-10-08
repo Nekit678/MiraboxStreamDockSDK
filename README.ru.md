@@ -399,7 +399,7 @@ wire-событие и команду с Python-моделью или вспом
 
 | Область | Публичный API |
 |---|---|
-| Среда выполнения | `StreamDockApplication`, `ApplicationRuntime`, `StreamDockRuntime`, `ApplicationContext`, `ApplicationService`, `SessionReadiness`, `create_stream_dock_application`, `RuntimeDispatcherConfig`, runtime metrics и ports |
+| Среда выполнения | `StreamDockApplication`, `ApplicationRuntime`, `ApplicationContext`, `ApplicationService`, `SessionReadiness`, `create_stream_dock_application`, `RuntimeDispatcherConfig`, runtime metrics и ports |
 | Actions | `Action`, `ActionRegistry`, `StreamDockSender` |
 | Запуск и регистрация | `PluginLaunchArguments`, модели регистрации, `parse_plugin_cli_arguments`, `run_plugin_cli` |
 | Входящие события | Типизированные immutable-модели и `InboundOverflowPolicy` |
@@ -411,20 +411,101 @@ wire-событие и команду с Python-моделью или вспом
 
 Поддерживаемый публичный интерфейс экспортируется из `mirabox_sdk`. Объекты из
 отдельных модулей считаются деталями реализации, если они дополнительно не
-экспортированы на верхнем уровне.
+экспортированы на верхнем уровне. Тестовые helpers экспортируются отдельно
+из `mirabox_sdk.testing`.
 
 Поддерживаемые import paths: `mirabox_sdk` и, для документированного runtime
-namespace, `mirabox_sdk.runtime`. В несовместимом pre-1.0 релизе `0.5.0` из
-дистрибутивов удалены неподдерживаемые legacy-модули (`connection`, `inbound`,
+namespace, `mirabox_sdk.runtime`; для тестов — `mirabox_sdk.testing`.
+В несовместимом pre-1.0 релизе `0.5.0` из дистрибутивов удалены неподдерживаемые legacy-модули (`connection`, `inbound`,
 `outbound`, `plugin`, `stores`) и временный namespace `mirabox_sdk._next`.
 
 `ApplicationRuntime` — полный контракт, используемый
 `StreamDockApplication.runtime`; более узкий `RuntimeLifecycle` намеренно не
-подходит для передачи в `StreamDockApplication`. Advanced composition points,
-принимаемые `create_stream_dock_application()` — `ActionFactory`,
-`DependencyAwareActionRegistry`, `HandlerSchedulerFactory` и
-`WebSocketConnectorFactory` — поддерживаются как top-level imports. Не
-импортируйте объекты из `mirabox_sdk._internal`: это внутренний namespace.
+подходит для передачи в `StreamDockApplication`. Сборка приложения принимает
+`ActionRegistry` или публичный протокол `DependencyAwareActionRegistry`.
+Scheduler выбирается через `RuntimeDispatcherConfig`; адаптеры транспорта,
+scheduler и конкретная реализация runtime остаются внутренними деталями SDK.
+
+В unreleased API удалены экспорты `ActionFactory`, `HandlerSchedulerFactory`,
+`WebSocketConnectorFactory`, `StreamDockRuntime`,
+`StreamDockRuntimeLifecycleError` и параметры приложения `connector_factory` /
+`scheduler_factory`. Тестовые connectors следует заменить на
+`mirabox_sdk.testing.StreamDockHarness`, а для runtime facade использовать
+`ApplicationRuntime`. Импорты из `mirabox_sdk._internal` не поддерживаются.
+
+Все типы snapshots метрик, включая `CommandWriterMetrics`, `EventReaderMetrics`,
+`InboundEventQueueMetrics`, `OutboundCommandQueueMetrics`, `TransportQueueMetrics`
+и `WebSocketConnectorMetrics`, доступны из `mirabox_sdk` и `mirabox_sdk.runtime`.
+
+## Тестирование плагинов
+
+`StreamDockHarness` заменяет socket I/O кадрами в памяти, используя production
+registration, settings, codecs, queues и action dispatcher. Передайте те же
+launch arguments и factories, что используются в приложении:
+
+```python
+from mirabox_sdk import (
+    Action,
+    ActionRegistry,
+    ApplicationContext,
+    JsonObject,
+    PluginLaunchArguments,
+    WillAppearEvent,
+)
+from mirabox_sdk.testing import StreamDockHarness
+
+registry = ActionRegistry[ApplicationContext]()
+
+
+@registry.register("com.example.test.action")
+class TestAction(Action[JsonObject, ApplicationContext]):
+    def on_will_appear(self, event: WillAppearEvent) -> None:
+        self.set_title("ready")
+
+
+def test_application(arguments: PluginLaunchArguments) -> None:
+    with StreamDockHarness(
+        arguments,
+        action_factory=registry,
+        action_dependencies_factory=lambda ctx: ctx,
+    ) as harness:
+        harness.assert_registration()
+        harness.send_event(
+            "willAppear",
+            action="com.example.test.action",
+            context="button",
+            device="device",
+            payload={
+                "settings": {},
+                "coordinates": {"column": 0, "row": 0},
+                "isInMultiAction": False,
+                "controller": "Keypad",
+            },
+        )
+        harness.wait_for_events(1)
+        harness.assert_command(
+            "setTitle", context="button", payload={"title": "ready", "target": 0}
+        )
+```
+
+Вход в контекст запускает приложение, подключает сессию и ожидает registration и
+initial global-settings request. Он не ожидает ответа с настройками или фоновой
+работы, запущенной в `Plugin.on_ready()`. `wait_for_events(n)` ожидает `n`
+подтверждённых событий с начала запуска. Выход из контекста завершает потоки
+harness и сообщает об ошибках runtime/services; ошибки plugin callbacks
+сохраняют штатную изоляцию runtime.
+
+Для тестов до readiness используйте `start(connect=False)`, `connect()` и
+`wait_ready()`. `send_json()` принимает JSON objects или raw text, в том числе
+ошибочный вход; `receive()` получает следующее исходящее сообщение, а `messages`
+и `frames` сохраняют полную историю. Ожидания и `stop()` имеют конечные timeout;
+истечение timeout сообщает о незавершённой работе и не прерывает код callbacks.
+
+Для unit tests actions передайте `FakeStreamDockSender` из `mirabox_sdk.testing`
+как `stream_dock` в зависимостях. Его `messages` возвращает isolated wire
+snapshots; `send_async()` возвращает завершённый публичный `CommandFuture`,
+включая ошибки сериализации. Оба варианта показаны в
+[тестах Counter](examples/counter_plugin/tests/test_counter_plugin.py).
 
 ## Сервисы приложения
 

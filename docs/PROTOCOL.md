@@ -148,6 +148,12 @@ Events” page.
 Known events are parsed into typed immutable models before the runtime dispatches
 them. `parse_stream_dock_event()` remains available for tests and advanced input
 validation, but a normal plugin does not call it for WebSocket traffic.
+For application integration tests, `mirabox_sdk.testing.StreamDockHarness`
+provides in-memory session initialization, JSON/event injection and outbound
+wire assertions using the production pipeline. Its context manager waits for
+readiness and shuts down the application; `FakeStreamDockSender` supports
+isolated action tests. See [Testing plugins](../README.md#testing-plugins).
+Transport and scheduler injection are private SDK implementation details.
 
 An unknown event is preserved as `UnknownStreamDockEvent` by default and
 delivered once to `Plugin.on_unhandled_event()`. Subclass `Plugin` and pass an

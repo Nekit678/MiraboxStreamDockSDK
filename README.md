@@ -398,7 +398,7 @@ behavior implemented by this SDK.
 
 | Area | Public API |
 |---|---|
-| Runtime | `StreamDockApplication`, `ApplicationRuntime`, `StreamDockRuntime`, `ApplicationContext`, `ApplicationService`, `SessionReadiness`, `create_stream_dock_application`, `RuntimeDispatcherConfig`, runtime metrics and ports |
+| Runtime | `StreamDockApplication`, `ApplicationRuntime`, `ApplicationContext`, `ApplicationService`, `SessionReadiness`, `create_stream_dock_application`, `RuntimeDispatcherConfig`, runtime metrics and ports |
 | Actions | `Action`, `ActionRegistry`, `StreamDockSender` |
 | Launch and registration | `PluginLaunchArguments`, registration dataclasses, `parse_plugin_cli_arguments`, `run_plugin_cli` |
 | Input events | Typed immutable event models and `InboundOverflowPolicy` |
@@ -410,20 +410,103 @@ behavior implemented by this SDK.
 
 The supported public surface is exported from `mirabox_sdk`. Objects from
 individual modules should be treated as implementation details unless they are
-also exported there.
+also exported there. The testing helpers are exported separately from
+`mirabox_sdk.testing`.
 
 Supported imports are `mirabox_sdk` and, for the documented runtime namespace,
-`mirabox_sdk.runtime`. In the breaking `0.5.0` release, the unsupported direct
-legacy modules (`connection`, `inbound`, `outbound`, `plugin`, and `stores`) and
+`mirabox_sdk.runtime`; tests can use `mirabox_sdk.testing`. In the breaking
+`0.5.0` release, the unsupported direct legacy modules (`connection`, `inbound`, `outbound`, `plugin`, and `stores`) and
 the temporary `mirabox_sdk._next` namespace were removed from distributions.
 
 `ApplicationRuntime` is the complete contract used by
 `StreamDockApplication.runtime`; `RuntimeLifecycle` is deliberately narrower
-and cannot be passed to `StreamDockApplication`. Advanced composition points
-accepted by `create_stream_dock_application()`—`ActionFactory`,
-`DependencyAwareActionRegistry`, `HandlerSchedulerFactory`, and
-`WebSocketConnectorFactory`—are supported top-level imports. Do not import
-from `mirabox_sdk._internal`; that namespace is internal.
+and cannot be passed to `StreamDockApplication`. Application composition accepts
+`ActionRegistry` or the public `DependencyAwareActionRegistry` protocol. Scheduler
+selection uses `RuntimeDispatcherConfig`; transport and scheduler adapters and the
+concrete runtime are internal implementation details.
+
+The unreleased API removes the `ActionFactory`, `HandlerSchedulerFactory`,
+`WebSocketConnectorFactory`, `StreamDockRuntime`, and
+`StreamDockRuntimeLifecycleError` exports, and the `connector_factory` /
+`scheduler_factory` application parameters. Replace test connectors with
+`mirabox_sdk.testing.StreamDockHarness`, and use `ApplicationRuntime` for runtime
+facades. Imports from `mirabox_sdk._internal` remain unsupported.
+
+All metric snapshot types, including `CommandWriterMetrics`, `EventReaderMetrics`,
+`InboundEventQueueMetrics`, `OutboundCommandQueueMetrics`, `TransportQueueMetrics`,
+and `WebSocketConnectorMetrics`, are importable from `mirabox_sdk` and
+`mirabox_sdk.runtime`.
+
+## Testing plugins
+
+`StreamDockHarness` replaces socket I/O with in-memory frames while exercising
+the production registration, settings, codecs, queues and action dispatcher.
+Pass the same launch arguments and factories used by your application:
+
+```python
+from mirabox_sdk import (
+    Action,
+    ActionRegistry,
+    ApplicationContext,
+    JsonObject,
+    PluginLaunchArguments,
+    WillAppearEvent,
+)
+from mirabox_sdk.testing import StreamDockHarness
+
+registry = ActionRegistry[ApplicationContext]()
+
+
+@registry.register("com.example.test.action")
+class TestAction(Action[JsonObject, ApplicationContext]):
+    def on_will_appear(self, event: WillAppearEvent) -> None:
+        self.set_title("ready")
+
+
+def test_application(arguments: PluginLaunchArguments) -> None:
+    with StreamDockHarness(
+        arguments,
+        action_factory=registry,
+        action_dependencies_factory=lambda ctx: ctx,
+    ) as harness:
+        harness.assert_registration()
+        harness.send_event(
+            "willAppear",
+            action="com.example.test.action",
+            context="button",
+            device="device",
+            payload={
+                "settings": {},
+                "coordinates": {"column": 0, "row": 0},
+                "isInMultiAction": False,
+                "controller": "Keypad",
+            },
+        )
+        harness.wait_for_events(1)
+        harness.assert_command(
+            "setTitle", context="button", payload={"title": "ready", "target": 0}
+        )
+```
+
+Context entry starts the application, connects, and waits for registration and
+the initial global-settings request. It does not wait for a settings response or
+for background work started by `Plugin.on_ready()`. `wait_for_events(n)` waits
+for `n` acknowledged events since startup. Context exit joins the harness
+threads and reports runtime/service failures; plugin callback failures retain
+the runtime's normal isolation behavior.
+
+Use `start(connect=False)`, `connect()`, and `wait_ready()` for pre-ready tests.
+`send_json()` accepts JSON objects or raw text, including malformed input;
+`receive()` consumes the next outbound message, while `messages` and `frames`
+retain the complete output history. Waits and `stop()` have finite timeouts;
+a timeout reports incomplete work and cannot interrupt user callback code.
+
+For isolated action tests, inject `FakeStreamDockSender` from
+`mirabox_sdk.testing` as the dependency's `stream_dock`. Its `messages` property
+returns isolated wire snapshots; `send_async()` returns a completed public
+`CommandFuture`, including serialization failures. See the
+[Counter tests](examples/counter_plugin/tests/test_counter_plugin.py) for both
+unit and application examples.
 
 ## Application services
 

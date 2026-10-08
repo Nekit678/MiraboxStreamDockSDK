@@ -42,6 +42,7 @@ from .events import (
     WillDisappearEvent,
 )
 from .json_types import JsonObject
+from .json_types import JsonValue as JsonValue  # Resolve recursive JSON type hints.
 from .protocols import StreamDockActionDependencies
 
 SettingsT = TypeVar("SettingsT")

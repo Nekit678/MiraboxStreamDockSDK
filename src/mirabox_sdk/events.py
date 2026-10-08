@@ -10,6 +10,7 @@ from typing import ClassVar, TypeVar
 from .codecs import JsonCodec, decode_with_codec
 from .errors import JsonCodecDecodeError
 from .json_types import JsonObject
+from .json_types import JsonValue as JsonValue  # Resolve recursive JSON type hints.
 
 DecodedT = TypeVar("DecodedT")
 

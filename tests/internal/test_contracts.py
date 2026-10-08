@@ -510,28 +510,28 @@ class PackageIsolationTests(unittest.TestCase):
 
     def test_internal_contracts_are_not_part_of_the_stable_public_api(self) -> None:
         private_contracts = {
+            "ActionFactory",
+            "HandlerSchedulerFactory",
+            "WebSocketConnectorFactory",
+            "StreamDockRuntime",
             "BoundaryQueueConfig",
             "BoundaryShutdownConfig",
             "ComposedStreamDockBoundary",
             "CommandSubmission",
             "CommandWriter",
-            "CommandWriterMetrics",
             "CommandWriterWorker",
             "Connected",
             "EventReader",
-            "EventReaderMetrics",
             "EventReaderWorker",
             "InboundEventQueue",
             "InboundEventSourceClosedError",
             "InboundEventSource",
             "InboundEventQueueControl",
-            "InboundEventQueueMetrics",
             "JsonStreamDockCommandEncoder",
             "JsonStreamDockEventDecoder",
             "OutboundCommandSink",
             "OutboundCommandQueue",
             "OutboundCommandQueueControl",
-            "OutboundCommandQueueMetrics",
             "OutboundFrame",
             "QueueAcceptanceControl",
             "RawInboundQueue",
@@ -544,9 +544,7 @@ class PackageIsolationTests(unittest.TestCase):
             "StreamDockEventDecoder",
             "TransportReceipt",
             "TransportQueueControl",
-            "TransportQueueMetrics",
             "WebSocketConnector",
-            "WebSocketConnectorMetrics",
         }
 
         self.assertTrue(private_contracts.isdisjoint(mirabox_sdk.__all__))

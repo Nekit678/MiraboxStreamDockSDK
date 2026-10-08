@@ -19,7 +19,7 @@ The example demonstrates:
 counter_plugin/
 ├── build.spec                         # PyInstaller configuration
 ├── src/counter_plugin/                # Python plugin package
-├── tests/test_counter_plugin.py       # Behavior tests with a fake connection
+├── tests/test_counter_plugin.py       # Tests with public SDK testing helpers
 └── com.example.counter.sdPlugin/
     ├── manifest.json                  # Plugin and action metadata
     ├── assets/icon.svg
@@ -62,13 +62,15 @@ Stream Dock `3.10.203.0701`. Registration, `willAppear`, physical `keyDown`,
 `sendToPlugin`, settings/title commands, the `0 → 2 → 0` Counter sequence, and
 bounded process/WebSocket shutdown were confirmed.
 
-The fake-connector integration test additionally covers registration,
+The public `mirabox_sdk.testing.StreamDockHarness` integration test additionally covers registration,
 global-settings, action, outbound-command, acknowledgement, and shutdown flows
 deterministically.
 
 ## Test
 
-The example tests use a fake connection and do not require Stream Dock:
+The example tests use `FakeStreamDockSender` for actions and `StreamDockHarness`
+for the full application. They require neither Stream Dock nor private SDK
+imports:
 
 ```bash
 PYTHONPATH=examples/counter_plugin/src \

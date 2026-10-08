@@ -4,10 +4,7 @@ from __future__ import annotations
 
 import json
 import unittest
-from collections.abc import Callable
 from pathlib import Path
-from threading import Event, Lock, Thread
-from time import monotonic, sleep
 from unittest.mock import Mock, patch
 
 from counter_plugin import bootstrap
@@ -34,28 +31,10 @@ from mirabox_sdk import (
     StreamDockQueueConfig,
     StreamDockShutdownConfig,
     WillAppearEvent,
-    create_stream_dock_application,
 )
-from mirabox_sdk._internal.transport.frames import OutboundFrame
-from mirabox_sdk._internal.transport.metrics import WebSocketConnectorMetrics
-from mirabox_sdk._internal.transport.ports import (
-    RawInboundSink,
-    RawOutboundSource,
-    SessionEventSink,
-    WebSocketConnector,
-)
-from mirabox_sdk._internal.transport.queues import TransportQueueClosedError
-from mirabox_sdk._internal.transport.session import Connected, Disconnected
+from mirabox_sdk.testing import FakeStreamDockSender, StreamDockHarness
 
 EXAMPLE_ROOT = Path(__file__).resolve().parents[1]
-
-
-def _wait_until(predicate: Callable[[], bool], *, timeout: float = 1.0) -> None:
-    deadline = monotonic() + timeout
-    while not predicate():
-        if monotonic() >= deadline:
-            raise AssertionError("condition was not reached before test timeout")
-        sleep(0.005)
 
 
 def _launch_arguments() -> PluginLaunchArguments:
@@ -116,94 +95,6 @@ def _counter_frames() -> tuple[str, ...]:
     )
 
 
-class _CounterConnector(WebSocketConnector):
-    def __init__(
-        self,
-        raw_inbound: RawInboundSink,
-        raw_outbound: RawOutboundSource,
-        session_events: SessionEventSink,
-    ) -> None:
-        self._raw_inbound = raw_inbound
-        self._raw_outbound = raw_outbound
-        self._session_events = session_events
-        self._stop_requested = Event()
-        self._lock = Lock()
-        self.started = Event()
-        self.sent: list[str] = []
-        self.close_calls = 0
-        self._outbound_received = 0
-
-    def run_forever(self) -> None:
-        self._session_events.submit(Connected(), timeout=0)
-        for frame in _counter_frames():
-            self._raw_inbound.submit(frame, timeout=0)
-        self.started.set()
-
-        try:
-            while not self._stop_requested.is_set():
-                try:
-                    frame = self._raw_outbound.receive(timeout=0.01)
-                except TimeoutError:
-                    continue
-                except TransportQueueClosedError:
-                    self._stop_requested.wait(0.01)
-                    continue
-                self._send(frame)
-        finally:
-            self._session_events.submit(
-                Disconnected(status_code=1000, reason="test connector closed"),
-                timeout=0,
-            )
-
-    def close(self) -> None:
-        with self._lock:
-            self.close_calls += 1
-        self._stop_requested.set()
-
-    def metrics(self) -> WebSocketConnectorMetrics:
-        with self._lock:
-            return WebSocketConnectorMetrics(
-                connect_count=1 if self.started.is_set() else 0,
-                disconnect_count=1 if self._stop_requested.is_set() else 0,
-                last_close_code=1000 if self._stop_requested.is_set() else None,
-                transport_error_count=0,
-                session_events_rejected=0,
-                inbound_frames_received=4,
-                inbound_frames_forwarded=4,
-                inbound_frames_rejected=0,
-                binary_frames_rejected=0,
-                outbound_frames_received=self._outbound_received,
-                outbound_frames_sent=len(self.sent),
-                outbound_send_failures=0,
-                outbound_drain_timeouts=0,
-                outbound_discarded_during_shutdown=0,
-            )
-
-    def _send(self, frame: OutboundFrame) -> None:
-        with self._lock:
-            self._outbound_received += 1
-            self.sent.append(frame.payload)
-        frame.receipt._finish()
-
-
-class _CounterConnectorFactory:
-    def __init__(self) -> None:
-        self.connector: _CounterConnector | None = None
-
-    def __call__(
-        self,
-        raw_inbound_sink: RawInboundSink,
-        raw_outbound_source: RawOutboundSource,
-        session_event_sink: SessionEventSink,
-    ) -> WebSocketConnector:
-        self.connector = _CounterConnector(
-            raw_inbound_sink,
-            raw_outbound_source,
-            session_event_sink,
-        )
-        return self.connector
-
-
 class _CounterService:
     def __init__(self) -> None:
         self.started = False
@@ -221,7 +112,7 @@ class _CounterService:
 
 class CounterActionTests(unittest.TestCase):
     def test_increments_and_resets_persisted_count(self) -> None:
-        stream_dock = Mock()
+        stream_dock = FakeStreamDockSender()
         action = CounterAction(
             ACTION_UUID,
             "button",
@@ -243,7 +134,7 @@ class CounterActionTests(unittest.TestCase):
         )
 
         self.assertEqual(action.settings, {"count": 0})
-        wires = [call.args[0].to_wire() for call in stream_dock.send.call_args_list]
+        wires = stream_dock.messages
         self.assertIn(
             {"event": "setSettings", "context": "button", "payload": {"count": 1}},
             wires,
@@ -253,7 +144,6 @@ class CounterActionTests(unittest.TestCase):
 
 class CounterRuntimeIntegrationTests(unittest.TestCase):
     def test_plugin_factory_shares_context_and_manages_session_lifecycle(self) -> None:
-        connector_factory = _CounterConnectorFactory()
         contexts: list[ApplicationContext] = []
         action_contexts: list[ApplicationContext] = []
         history: list[str] = []
@@ -306,32 +196,19 @@ class CounterRuntimeIntegrationTests(unittest.TestCase):
             def on_will_disappear(self) -> None:
                 history.append("action.stop")
 
-        application = create_stream_dock_application(
+        harness = StreamDockHarness(
             _launch_arguments(),
             action_factory=registry,
             action_dependencies_factory=build_dependencies,
             plugin_factory=SessionPlugin,
             service_factories=(build_service,),
-            connector_factory=connector_factory,
         )
-        errors: list[Exception] = []
+        application = harness.application
+        with harness:
+            for frame in _counter_frames():
+                harness.send_json(frame)
+            harness.wait_for_events(4)
 
-        def run() -> None:
-            try:
-                application.run()
-            except Exception as exc:
-                errors.append(exc)
-
-        runner = Thread(target=run)
-        runner.start()
-        try:
-            _wait_until(lambda: application.metrics().event_pump.events_acknowledged == 4)
-        finally:
-            application.stop()
-            runner.join(1)
-
-        self.assertFalse(runner.is_alive())
-        self.assertEqual(errors, [])
         self.assertEqual(len(contexts), 3)
         self.assertEqual(len(action_contexts), 1)
         self.assertTrue(all(context is contexts[0] for context in (*contexts, *action_contexts)))
@@ -350,16 +227,14 @@ class CounterRuntimeIntegrationTests(unittest.TestCase):
                 "service.stop",
             ],
         )
-        assert connector_factory.connector is not None
         self.assertEqual(
-            [json.loads(frame)["event"] for frame in connector_factory.connector.sent],
+            [message["event"] for message in harness.messages],
             ["registerPlugin", "getGlobalSettings", "logMessage", "setGlobalSettings"],
         )
 
     def test_registration_global_settings_actions_outbound_and_shutdown(self) -> None:
-        connector_factory = _CounterConnectorFactory()
         service = _CounterService()
-        application = create_stream_dock_application(
+        harness = StreamDockHarness(
             _launch_arguments(),
             action_factory=ACTION_REGISTRY,
             action_dependencies_factory=bootstrap.build_dependencies,
@@ -384,36 +259,21 @@ class CounterRuntimeIntegrationTests(unittest.TestCase):
                 session_poll_interval=0.005,
             ),
             services=(service,),
-            connector_factory=connector_factory,
         )
-        assert connector_factory.connector is not None
-        connector = connector_factory.connector
-        errors: list[Exception] = []
-
-        def run() -> None:
-            try:
-                application.run()
-            except Exception as exc:
-                errors.append(exc)
-
-        runtime_thread = Thread(target=run, name="test-counter-next-runtime")
-        runtime_thread.start()
-        try:
-            self.assertTrue(connector.started.wait(1))
+        application = harness.application
+        with harness:
             self.assertTrue(service.started)
-            _wait_until(lambda: len(connector.sent) == 7)
-        finally:
-            application.stop()
-            runtime_thread.join(1)
+            harness.assert_registration()
+            for frame in _counter_frames():
+                harness.send_json(frame)
+            harness.wait_for_events(4)
+            harness.assert_command("setSettings", context="button", payload={"count": 0})
 
-        self.assertFalse(runtime_thread.is_alive())
-        self.assertEqual(errors, [])
-        self.assertEqual(connector.close_calls, 1)
         self.assertEqual(service.start_calls, 1)
         self.assertEqual(service.stop_calls, 1)
         self.assertFalse(service.started)
         self.assertEqual(
-            [json.loads(frame) for frame in connector.sent],
+            list(harness.messages),
             [
                 {"event": "registerPlugin", "uuid": "com.example.counter"},
                 {"event": "getGlobalSettings", "context": "com.example.counter"},

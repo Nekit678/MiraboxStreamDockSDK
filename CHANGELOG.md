@@ -6,7 +6,28 @@ change public APIs between minor versions.
 
 ## [Unreleased]
 
+### Added
+
+- Add `mirabox_sdk.testing.StreamDockHarness` and `FakeStreamDockSender` for
+  public in-memory integration and action tests (SDK-TEST-001). The harness
+  exercises production registration, settings, routing and command serialization
+  with bounded waits, joined shutdown, and runtime/service error propagation.
+- Export every immutable leaf metric type referenced by runtime snapshots.
+
+### Changed
+
+- Adopt a facade-first API (SDK-API-001): remove `ActionFactory`,
+  `HandlerSchedulerFactory`, `WebSocketConnectorFactory`, `StreamDockRuntime`
+  and `StreamDockRuntimeLifecycleError` from supported exports. Remove the
+  `scheduler_factory` and `connector_factory` application parameters; use
+  `RuntimeDispatcherConfig` for scheduler selection and `StreamDockHarness`
+  for tests. Internal SDK injection seams remain private.
+- Migrate Counter unit and integration tests to public testing helpers.
+
 ### Fixed
+
+- Resolve recursive JSON annotations in public API type introspection, with a
+  regression check for transitive public types and wheel-installed testing.
 
 - Share canonical application dependencies with plugins (SDK-PLUGIN-CTX-001)
   through `plugin_factory(ApplicationContext)`, mutually exclusive with

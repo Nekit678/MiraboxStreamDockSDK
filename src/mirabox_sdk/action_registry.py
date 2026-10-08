@@ -7,6 +7,7 @@ from typing import Any, Generic, TypeVar
 
 from .action import Action
 from .json_types import JsonObject
+from .json_types import JsonValue as JsonValue  # Resolve recursive JSON type hints.
 from .protocols import StreamDockActionDependencies
 
 DependenciesT = TypeVar("DependenciesT", bound=StreamDockActionDependencies)

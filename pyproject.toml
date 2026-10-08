@@ -74,7 +74,7 @@ target-version = "py311"
 select = ["E", "F", "I", "UP", "B"]
 
 [tool.mypy]
-files = ["src/mirabox_sdk/runtime", "examples/counter_plugin/src", "tests/typing"]
+files = ["src/mirabox_sdk/runtime", "src/mirabox_sdk/testing.py", "examples/counter_plugin/src", "tests/typing"]
 follow_imports = "skip"
 python_version = "3.11"
 warn_unused_ignores = true

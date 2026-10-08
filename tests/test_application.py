@@ -17,14 +17,12 @@ from unittest.mock import patch
 import mirabox_sdk
 import mirabox_sdk.runtime as runtime
 from mirabox_sdk import (
-    ActionFactory,
     ApplicationContext,
     ApplicationRuntime,
     ApplicationService,
     CommandFuture,
     DependencyAwareActionRegistry,
     GlobalSettings,
-    HandlerSchedulerFactory,
     LogMessageCommand,
     OutboundCommandBusClosedError,
     OutboundCommandBusNotReadyError,
@@ -41,8 +39,9 @@ from mirabox_sdk import (
     SessionReadiness,
     StreamDockApplication,
     StreamDockShutdownConfig,
-    WebSocketConnectorFactory,
-    create_stream_dock_application,
+)
+from mirabox_sdk import (
+    create_stream_dock_application as public_create_stream_dock_application,
 )
 from mirabox_sdk._internal.messaging.models import CommandFuture as BoundaryCommandFuture
 from mirabox_sdk._internal.messaging.outbound import (
@@ -50,6 +49,9 @@ from mirabox_sdk._internal.messaging.outbound import (
 )
 from mirabox_sdk._internal.messaging.outbound import (
     OutboundQueueFullError as BoundaryQueueFullError,
+)
+from mirabox_sdk.runtime.application import (
+    _create_stream_dock_application as create_stream_dock_application,
 )
 
 
@@ -230,14 +232,18 @@ class StableRuntimeApiTests(unittest.TestCase):
     def test_runtime_package_exports_only_stable_application_capabilities(self) -> None:
         expected = {
             "ActionContextMetrics",
-            "ActionFactory",
+            "CommandWriterMetrics",
+            "EventReaderMetrics",
+            "InboundEventQueueMetrics",
+            "OutboundCommandQueueMetrics",
+            "TransportQueueMetrics",
+            "WebSocketConnectorMetrics",
             "ApplicationContext",
             "ApplicationRuntime",
             "ApplicationService",
             "ApplicationServiceFactory",
             "DependencyAwareActionRegistry",
             "GlobalSettings",
-            "HandlerSchedulerFactory",
             "HandlerSchedulerMetrics",
             "InboundOverflowPolicy",
             "Plugin",
@@ -252,12 +258,9 @@ class StableRuntimeApiTests(unittest.TestCase):
             "StreamDockApplication",
             "StreamDockBoundaryMetrics",
             "StreamDockQueueConfig",
-            "StreamDockRuntime",
-            "StreamDockRuntimeLifecycleError",
             "StreamDockRuntimeMetrics",
             "StreamDockSender",
             "StreamDockShutdownConfig",
-            "WebSocketConnectorFactory",
             "create_stream_dock_application",
         }
 
@@ -271,11 +274,11 @@ class StableRuntimeApiTests(unittest.TestCase):
 
     def test_application_annotations_use_supported_public_types(self) -> None:
         application_hints = get_type_hints(StreamDockApplication.__init__)
-        factory_hints = get_type_hints(create_stream_dock_application)
+        factory_hints = get_type_hints(public_create_stream_dock_application)
 
         self.assertIs(application_hints["runtime"], ApplicationRuntime)
-        self.assertEqual(factory_hints["scheduler_factory"], HandlerSchedulerFactory | None)
-        self.assertEqual(factory_hints["connector_factory"], WebSocketConnectorFactory | None)
+        self.assertNotIn("scheduler_factory", factory_hints)
+        self.assertNotIn("connector_factory", factory_hints)
         self.assertEqual(factory_hints["plugin"], mirabox_sdk.Plugin | None)
         self.assertEqual(factory_hints["plugin_hooks"], mirabox_sdk.PluginHooks | None)
         self.assertEqual(factory_hints["queue_config"], mirabox_sdk.StreamDockQueueConfig | None)
@@ -283,9 +286,7 @@ class StableRuntimeApiTests(unittest.TestCase):
             factory_hints["shutdown_config"], mirabox_sdk.StreamDockShutdownConfig | None
         )
         self.assertEqual(factory_hints["runtime_config"], RuntimeDispatcherConfig | None)
-        action_factory_types = get_args(factory_hints["action_factory"])
-        self.assertIs(action_factory_types[0], ActionFactory)
-        self.assertIs(get_origin(action_factory_types[1]), DependencyAwareActionRegistry)
+        self.assertIs(get_origin(factory_hints["action_factory"]), DependencyAwareActionRegistry)
         for parameter, argument_type in (
             ("action_dependencies_factory", ApplicationContext),
             ("legacy_action_dependencies_factory", mirabox_sdk.StreamDockSender),
@@ -301,6 +302,11 @@ class StableRuntimeApiTests(unittest.TestCase):
     def test_legacy_and_experimental_runtime_surfaces_are_not_public(self) -> None:
         removed = {
             "EVENT_REGISTRY",
+            "ActionFactory",
+            "HandlerSchedulerFactory",
+            "WebSocketConnectorFactory",
+            "StreamDockRuntime",
+            "StreamDockRuntimeLifecycleError",
             "StreamDockConnection",
             "StreamDockListener",
             "StreamDockPlugin",

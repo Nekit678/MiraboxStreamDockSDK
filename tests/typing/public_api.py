@@ -23,6 +23,7 @@ from mirabox_sdk import (
     SystemDidWakeUpEvent,
     create_stream_dock_application,
 )
+from mirabox_sdk.testing import FakeStreamDockSender, StreamDockHarness
 
 SettingsT = TypeVar("SettingsT")
 
@@ -102,3 +103,14 @@ class ApplicationRuntimeFake:
 
 runtime: ApplicationRuntime = ApplicationRuntimeFake()
 application = StreamDockApplication(runtime)
+
+
+def build_test_harness(arguments: PluginLaunchArguments) -> StreamDockHarness:
+    sender: StreamDockSender = FakeStreamDockSender()
+    sender.send(LogMessageCommand("unit test"))
+    return StreamDockHarness(
+        arguments,
+        action_factory=registry,
+        action_dependencies_factory=lambda ctx: Dependencies(ctx.stream_dock),
+        plugin_factory=ExamplePlugin,
+    )

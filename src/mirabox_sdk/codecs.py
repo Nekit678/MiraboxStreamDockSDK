@@ -14,6 +14,9 @@ from .json_types import (
     _CopyOnWriteJsonSource,
     clone_json_object,
 )
+from .json_types import (
+    JsonValue as JsonValue,  # Resolve recursive JSON type hints.
+)
 
 DecodedT = TypeVar("DecodedT")
 

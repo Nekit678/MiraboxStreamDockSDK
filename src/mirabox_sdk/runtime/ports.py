@@ -5,15 +5,14 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Protocol, TypeAlias, TypeVar, runtime_checkable
 
-from .._internal.boundary.ports import WebSocketConnectorFactory
 from .._internal.messaging.inbound import InboundOverflowPolicy
-from .._internal.runtime.composition import HandlerSchedulerFactory
 from .._internal.runtime.plugin import Plugin
-from .._internal.runtime.ports import ActionFactory, PluginHooks, RuntimeLifecycle
+from .._internal.runtime.ports import PluginHooks, RuntimeLifecycle
 from ..action import Action
 from ..codecs import JsonCodec
 from ..global_settings import GlobalSettings
 from ..json_types import JsonObject
+from ..json_types import JsonValue as JsonValue  # Resolve recursive JSON type hints.
 from ..protocols import StreamDockActionDependencies, StreamDockSender
 from .metrics import StreamDockRuntimeMetrics
 
@@ -181,19 +180,16 @@ ApplicationServiceFactory: TypeAlias = Callable[[ApplicationContext], Applicatio
 
 
 __all__ = [
-    "ActionFactory",
     "ApplicationRuntime",
     "ApplicationContext",
     "ApplicationService",
     "ApplicationServiceFactory",
     "DependencyAwareActionRegistry",
     "GlobalSettings",
-    "HandlerSchedulerFactory",
     "InboundOverflowPolicy",
     "Plugin",
     "PluginHooks",
     "RuntimeLifecycle",
     "SessionReadiness",
     "StreamDockSender",
-    "WebSocketConnectorFactory",
 ]

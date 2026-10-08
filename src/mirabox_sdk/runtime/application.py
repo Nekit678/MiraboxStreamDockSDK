@@ -8,33 +8,34 @@ from collections.abc import Callable, Iterable
 from threading import Lock
 from typing import TypeVar
 
+from .._internal.boundary.ports import WebSocketConnectorFactory
 from .._internal.runtime.composition import (
+    HandlerSchedulerFactory,
     create_stream_dock_runtime,
 )
 from .._internal.runtime.global_settings import (
     DefaultGlobalSettingsState,
     GlobalSettingsCoordinator,
 )
+from .._internal.runtime.ports import ActionFactory
 from .._internal.runtime.session import SessionReadinessGate
 from ..codecs import JsonCodec
 from ..global_settings import GlobalSettings
 from ..json_types import JsonObject
+from ..json_types import JsonValue as JsonValue  # Resolve recursive JSON type hints.
 from ..protocols import StreamDockActionDependencies, StreamDockSender
 from ..registration import PluginLaunchArguments
 from .config import RuntimeDispatcherConfig, StreamDockQueueConfig, StreamDockShutdownConfig
 from .metrics import StreamDockRuntimeMetrics
 from .ports import (
-    ActionFactory,
     ApplicationContext,
     ApplicationRuntime,
     ApplicationService,
     ApplicationServiceFactory,
     DependencyAwareActionRegistry,
-    HandlerSchedulerFactory,
     InboundOverflowPolicy,
     Plugin,
     PluginHooks,
-    WebSocketConnectorFactory,
 )
 
 _DEFAULT_QUEUE_LIMIT = 1024
@@ -171,6 +172,63 @@ class StreamDockApplication:
 def create_stream_dock_application(
     launch_arguments: PluginLaunchArguments,
     *,
+    action_factory: DependencyAwareActionRegistry[ActionDependenciesT],
+    action_dependencies_factory: Callable[[ApplicationContext], ActionDependenciesT] | None = None,
+    legacy_action_dependencies_factory: (
+        Callable[[StreamDockSender], ActionDependenciesT] | None
+    ) = None,
+    plugin: Plugin | None = None,
+    plugin_factory: Callable[[ApplicationContext], Plugin] | None = None,
+    plugin_hooks: PluginHooks | None = None,
+    queue_config: StreamDockQueueConfig | None = None,
+    shutdown_config: StreamDockShutdownConfig | None = None,
+    runtime_config: RuntimeDispatcherConfig | None = None,
+    services: Iterable[ApplicationService] = (),
+    service_factories: Iterable[ApplicationServiceFactory] = (),
+    inbound_overflow_policy: InboundOverflowPolicy = InboundOverflowPolicy.DROP_NEWEST,
+    coalesce_dial_rotations: bool = False,
+    coalesce_commands: bool = False,
+) -> StreamDockApplication:
+    """Build one unstarted application over the production runtime stack.
+
+    ``ActionRegistry`` users may provide ``action_dependencies_factory``, which
+    always receives one :class:`ApplicationContext`, exposing the canonical
+    sender and global-settings facade. Sender-only factories must use the
+    deprecated ``legacy_action_dependencies_factory`` parameter instead. The
+    two dependency-factory parameters are mutually exclusive.
+    ``service_factories`` likewise receive that context; objects in
+    ``services`` remain supported for already-constructed services. Services
+    start before the runtime connects and stop in reverse order after it ends.
+    ``plugin_factory`` receives the same context and must return a ``Plugin``;
+    an already-constructed ``plugin`` remains supported. These parameters and
+    ``plugin_hooks`` are mutually exclusive. Plugin ``on_ready()`` runs after
+    mandatory session initialization; ``on_stop()`` releases its resources
+    during runtime cleanup, including when ``on_ready()`` raises.
+    ``plugin_hooks`` remains the legacy unknown-event-only adapter.
+    """
+
+    return _create_stream_dock_application(
+        launch_arguments,
+        action_factory=action_factory,
+        action_dependencies_factory=action_dependencies_factory,
+        legacy_action_dependencies_factory=legacy_action_dependencies_factory,
+        plugin=plugin,
+        plugin_factory=plugin_factory,
+        plugin_hooks=plugin_hooks,
+        queue_config=queue_config,
+        shutdown_config=shutdown_config,
+        runtime_config=runtime_config,
+        services=services,
+        service_factories=service_factories,
+        inbound_overflow_policy=inbound_overflow_policy,
+        coalesce_dial_rotations=coalesce_dial_rotations,
+        coalesce_commands=coalesce_commands,
+    )
+
+
+def _create_stream_dock_application(
+    launch_arguments: PluginLaunchArguments,
+    *,
     action_factory: ActionFactory | DependencyAwareActionRegistry[ActionDependenciesT],
     action_dependencies_factory: Callable[[ApplicationContext], ActionDependenciesT] | None = None,
     legacy_action_dependencies_factory: (
@@ -189,26 +247,9 @@ def create_stream_dock_application(
     coalesce_dial_rotations: bool = False,
     coalesce_commands: bool = False,
     connector_factory: WebSocketConnectorFactory | None = None,
+    _context_callback: Callable[[ApplicationContext], None] | None = None,
 ) -> StreamDockApplication:
-    """Build one unstarted application over the production runtime stack.
-
-    ``ActionRegistry`` users may provide ``action_dependencies_factory``, which
-    always receives one :class:`ApplicationContext`, exposing the canonical
-    sender and global-settings facade. Sender-only factories must use the
-    deprecated ``legacy_action_dependencies_factory`` parameter instead. The
-    two dependency-factory parameters are mutually exclusive.
-    ``service_factories`` likewise receive that context; objects in
-    ``services`` remain supported for already-constructed services. Services
-    start before the runtime connects and stop in reverse order after it ends.
-    ``plugin_factory`` receives the same context and must return a ``Plugin``;
-    an already-constructed ``plugin`` remains supported. These parameters and
-    ``plugin_hooks`` are mutually exclusive. Plugin ``on_ready()`` runs after
-    mandatory session initialization; ``on_stop()`` releases its resources
-    during runtime cleanup, including when ``on_ready()`` raises.
-    ``plugin_hooks`` remains the legacy unknown-event-only adapter. Native
-    three-argument :class:`ActionFactory` implementations leave the dependency
-    factory unset.
-    """
+    """Internal composition seam for SDK tests and the public testing harness."""
 
     if not isinstance(launch_arguments, PluginLaunchArguments):
         raise TypeError("launch_arguments must be PluginLaunchArguments")
@@ -271,6 +312,8 @@ def create_stream_dock_application(
         session_readiness=session_readiness,
     )
     try:
+        if _context_callback is not None:
+            _context_callback(context)
         if plugin_factory is not None:
             plugin = plugin_factory(context)
             if not isinstance(plugin, Plugin):

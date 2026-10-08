@@ -28,6 +28,7 @@ WHEEL_REQUIRED_SUFFIXES = {
     "mirabox_sdk/runtime/config.py",
     "mirabox_sdk/runtime/metrics.py",
     "mirabox_sdk/runtime/ports.py",
+    "mirabox_sdk/testing.py",
     "mirabox_sdk/property_inspector/mirabox-sdk.js",
 }
 WHEEL_FORBIDDEN_SUFFIXES = {
@@ -67,6 +68,7 @@ SDIST_REQUIRED_SUFFIXES = {
     "src/mirabox_sdk/runtime/config.py",
     "src/mirabox_sdk/runtime/metrics.py",
     "src/mirabox_sdk/runtime/ports.py",
+    "src/mirabox_sdk/testing.py",
     "src/mirabox_sdk/property_inspector/mirabox-sdk.js",
 }
 SDIST_FORBIDDEN_SUFFIXES = {
