@@ -365,6 +365,10 @@ registry comparison was skipped.
 Validation checks required manifest fields and known optional field types,
 `CodePath`/platform variants, icons, state images, Property Inspector pages and
 their local script/link/image references. Files must stay inside the bundle.
+Internal directory symlinks are supported; each resolved directory is scanned
+once, including when links form cycles. Symlinks outside the bundle are errors
+and their targets are not inspected. Unresolvable links and directory read
+errors are reported as diagnostics.
 Every bundled `mirabox-sdk.js` must match the installed SDK byte for byte;
 refresh stale or modified copies with `copy-property-inspector --force`.
 Errors include a field or file path and return exit code `1`; success returns

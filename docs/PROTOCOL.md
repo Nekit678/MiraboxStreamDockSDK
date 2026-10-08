@@ -330,6 +330,10 @@ Paths must resolve inside the bundle. Unknown manifest members are accepted;
 image dimensions, executable contents, remote resources, dynamic JavaScript
 imports and host compatibility still require separate verification. All
 bundled `mirabox-sdk.js` copies must match the installed SDK's bytes.
+Traversal follows internal directory symlinks and scans each resolved directory
+once to avoid cycles. Symlinks escaping the bundle are rejected without
+inspecting their targets; unresolvable links and directory read failures are
+diagnostics.
 
 Pass `--registry MODULE:OBJECT` to import a populated `ActionRegistry` instance
 and compare registered and manifest UUIDs in both directions. The module must

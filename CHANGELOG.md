@@ -32,6 +32,10 @@ change public APIs between minor versions.
 
 ### Fixed
 
+- Inspect internal directory symlinks when validating bundled Property Inspector
+  clients (SDK-DX-002), scanning each resolved directory once to avoid cycles.
+  Reject symlinks outside the bundle without inspecting their targets and report
+  unresolvable links and directory read failures as diagnostics.
 - Reject incompatible action dependencies at registration (SDK-TYPE-002)
   through the public `ActionRegistration` decorator protocol, preserving the
   concrete action class and settings type. Cover registration with strict

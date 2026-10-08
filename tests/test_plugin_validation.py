@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from collections.abc import Iterator
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
@@ -210,6 +211,108 @@ class PluginValidationTests(unittest.TestCase):
         client.write_text("// outdated SDK", encoding="utf-8")
 
         self.assertIn("unused", "\n".join(self._validate()))
+
+    def test_rejects_unreferenced_external_directory_symlinks_without_reading_targets(self) -> None:
+        external = self.bundle.parent / "external"
+        external.mkdir()
+        (external / "mirabox-sdk.js").write_text("// outdated SDK", encoding="utf-8")
+        link = self.bundle / "unused"
+        try:
+            link.symlink_to(external, target_is_directory=True)
+        except OSError as exc:
+            self.skipTest(f"Symlinks unavailable: {exc}")
+
+        original_iterdir = Path.iterdir
+        original_read_bytes = Path.read_bytes
+
+        def iterdir(path: Path) -> Iterator[Path]:
+            self.assertFalse(path.resolve().is_relative_to(external))
+            return original_iterdir(path)
+
+        def read_bytes(path: Path) -> bytes:
+            self.assertFalse(path.resolve().is_relative_to(external))
+            return original_read_bytes(path)
+
+        with patch.object(Path, "iterdir", iterdir), patch.object(Path, "read_bytes", read_bytes):
+            self.assertIn("unused: path resolves outside the bundle", self._validate())
+
+    def test_accepts_internal_directory_symlinks_and_checks_unused_clients_once(self) -> None:
+        target = self.bundle / "unused"
+        client = copy_property_inspector_client(target)
+        link = self.bundle / "alias"
+        try:
+            link.symlink_to(target, target_is_directory=True)
+        except OSError as exc:
+            self.skipTest(f"Symlinks unavailable: {exc}")
+
+        self.assertEqual(self._validate(), ())
+        client.write_text("// outdated SDK", encoding="utf-8")
+
+        issues = self._validate()
+        self.assertEqual(len(issues), 1, issues)
+        self.assertIn("mirabox-sdk.js: client differs", issues[0])
+
+    def test_internal_directory_symlink_cycles_are_not_traversed_repeatedly(self) -> None:
+        unused = self.bundle / "unused"
+        unused.mkdir()
+        (unused / "mirabox-sdk.js").write_text("// outdated SDK", encoding="utf-8")
+        try:
+            (unused / "parent").symlink_to(self.bundle, target_is_directory=True)
+            (unused / "self").symlink_to(unused, target_is_directory=True)
+        except OSError as exc:
+            self.skipTest(f"Symlinks unavailable: {exc}")
+
+        issues = self._validate()
+        self.assertEqual(len(issues), 1, issues)
+        self.assertIn(f"{Path('unused/mirabox-sdk.js')}: client differs", issues[0])
+
+    def test_unresolvable_symlink_cycles_are_diagnostics(self) -> None:
+        first = self.bundle / "first"
+        second = self.bundle / "second"
+        try:
+            first.symlink_to(second, target_is_directory=True)
+            second.symlink_to(first, target_is_directory=True)
+        except OSError as exc:
+            self.skipTest(f"Symlinks unavailable: {exc}")
+
+        issues = "\n".join(self._validate())
+        self.assertIn("first: cannot inspect Property Inspector clients", issues)
+        self.assertIn("second: cannot inspect Property Inspector clients", issues)
+
+    def test_unreadable_directory_is_a_diagnostic_and_other_clients_are_checked(self) -> None:
+        unreadable = self.bundle / "unreadable"
+        unreadable.mkdir()
+        unused = self.bundle / "unused"
+        unused.mkdir()
+        (unused / "mirabox-sdk.js").write_text("// outdated SDK", encoding="utf-8")
+        original_iterdir = Path.iterdir
+
+        def iterdir(path: Path) -> Iterator[Path]:
+            if path == unreadable:
+                raise PermissionError("permission denied")
+            return original_iterdir(path)
+
+        with patch.object(Path, "iterdir", iterdir):
+            issues = "\n".join(self._validate())
+
+        self.assertIn(
+            "unreadable: cannot inspect Property Inspector clients: permission denied", issues
+        )
+        self.assertIn(f"{Path('unused/mirabox-sdk.js')}: client differs", issues)
+
+    def test_cli_rejects_external_directory_symlinks(self) -> None:
+        external = self.bundle.parent / "external"
+        external.mkdir()
+        try:
+            (self.bundle / "unused").symlink_to(external, target_is_directory=True)
+        except OSError as exc:
+            self.skipTest(f"Symlinks unavailable: {exc}")
+
+        with redirect_stderr(StringIO()) as stderr:
+            self.assertEqual(main(["validate-plugin", str(self.bundle)]), 1)
+
+        self.assertIn("unused", stderr.getvalue())
+        self.assertIn("outside the bundle", stderr.getvalue())
 
     def test_manifest_symlink_cannot_escape_bundle(self) -> None:
         target = self.bundle.parent / "outside.json"

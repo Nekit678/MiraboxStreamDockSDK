@@ -136,6 +136,25 @@ class _PluginValidator:
                 f"mirabox-sdk copy-property-inspector {target.parent} --force",
             )
 
+    def bundled_clients(self) -> None:
+        pending = [self.root]
+        checked_directories: set[Path] = set()
+        while pending:
+            source = pending.pop()
+            path = str(source.relative_to(self.root))
+            try:
+                target = source.resolve(strict=True)
+                if not target.is_relative_to(self.root):
+                    self.error(path, "path resolves outside the bundle")
+                    continue
+                if source != self.root and source.name == PROPERTY_INSPECTOR_CLIENT_FILENAME:
+                    self.file(path, path)
+                if target.is_dir() and target not in checked_directories:
+                    checked_directories.add(target)
+                    pending.extend(sorted(source.iterdir(), reverse=True))
+            except (OSError, ValueError, RuntimeError) as exc:
+                self.error(path, f"cannot inspect Property Inspector clients: {exc}")
+
     def html(self, target: Path) -> None:
         if target in self._checked_html:
             return
@@ -281,6 +300,9 @@ def validate_plugin(
     script/link/image references, and every bundled ``mirabox-sdk.js`` against
     the installed SDK's bytes. Unknown manifest members are accepted. Paths
     must resolve to files inside the bundle, including through symlinks.
+    Bundle traversal follows internal directory symlinks, checking each
+    resolved directory once. Symlinks outside the bundle are diagnostics;
+    their targets are not inspected.
 
     Args:
         path: Plugin directory containing ``manifest.json``.
@@ -321,9 +343,5 @@ def validate_plugin(
             validator.error("Actions", f"manifest action UUID is not registered: {uuid}")
         for uuid in sorted(registered - validator.action_uuids):
             validator.error("Actions", f"registered action UUID is missing from manifest: {uuid}")
-    try:
-        for client in sorted(root.rglob(PROPERTY_INSPECTOR_CLIENT_FILENAME)):
-            validator.file(str(client.relative_to(root)), str(client.relative_to(root)))
-    except OSError as exc:
-        validator.error("bundle", f"cannot inspect Property Inspector clients: {exc}")
+    validator.bundled_clients()
     return tuple(validator.issues)
