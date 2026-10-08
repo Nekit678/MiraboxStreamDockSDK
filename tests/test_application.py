@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import sys
 import unittest
+from collections.abc import Callable
 from concurrent.futures import InvalidStateError
+from contextlib import nullcontext
+from functools import partial
 from importlib import import_module
 from threading import Event, Thread
 from threading import enumerate as enumerate_threads
@@ -281,6 +284,16 @@ class StableRuntimeApiTests(unittest.TestCase):
         action_factory_types = get_args(factory_hints["action_factory"])
         self.assertIs(action_factory_types[0], ActionFactory)
         self.assertIs(get_origin(action_factory_types[1]), DependencyAwareActionRegistry)
+        for parameter, argument_type in (
+            ("action_dependencies_factory", ApplicationContext),
+            ("legacy_action_dependencies_factory", mirabox_sdk.StreamDockSender),
+        ):
+            with self.subTest(parameter=parameter):
+                factory_types = get_args(factory_hints[parameter])
+                self.assertEqual(len(factory_types), 2)
+                self.assertIs(get_origin(factory_types[0]), Callable)
+                self.assertEqual(get_args(factory_types[0])[0], [argument_type])
+                self.assertIs(factory_types[1], type(None))
 
     def test_legacy_and_experimental_runtime_surfaces_are_not_public(self) -> None:
         removed = {
@@ -324,6 +337,156 @@ class StableRuntimeApiTests(unittest.TestCase):
         self.assertEqual(config.scheduler_pending_limit, 64)
 
 
+class ApplicationDependencyFactoryTests(unittest.TestCase):
+    def test_context_factory_forms_receive_the_shared_application_context(self) -> None:
+        received: list[ApplicationContext] = []
+        service_contexts: list[ApplicationContext] = []
+
+        def capture(ctx: ApplicationContext) -> _ContextDependencies:
+            received.append(ctx)
+            return _ContextDependencies(ctx.stream_dock, ctx.global_settings, ctx.session_readiness)
+
+        def postponed(ctx: ApplicationContext) -> _ContextDependencies:
+            return capture(ctx)
+
+        def qualified(ctx: runtime.ApplicationContext) -> _ContextDependencies:
+            return capture(ctx)
+
+        # Explicit quotes exercise nested strings with postponed annotations.
+        def quoted(ctx: "runtime.ApplicationContext") -> _ContextDependencies:  # noqa: UP037
+            return capture(ctx)
+
+        def prefixed(_prefix: str, ctx) -> _ContextDependencies:
+            return capture(ctx)
+
+        class ContextFactory:
+            def __call__(self, ctx) -> _ContextDependencies:
+                return capture(ctx)
+
+        def build_service(ctx: ApplicationContext) -> _RecordingService:
+            service_contexts.append(ctx)
+            return _RecordingService("factory", [])
+
+        factories = {
+            "lambda ctx": lambda ctx: capture(ctx),
+            "lambda sender": lambda sender: capture(sender),
+            "callable object": ContextFactory(),
+            "partial": partial(prefixed, "dependencies"),
+            "postponed annotation": postponed,
+            "qualified annotation": qualified,
+            "quoted qualified annotation": quoted,
+        }
+        for name, factory in factories.items():
+            with self.subTest(factory=name):
+                received.clear()
+                service_contexts.clear()
+
+                application = create_stream_dock_application(
+                    _launch_arguments(),
+                    action_factory=_SenderCapturingActionRegistry(),
+                    action_dependencies_factory=factory,
+                    service_factories=(build_service,),
+                    shutdown_config=_shutdown_config(),
+                    connector_factory=lambda *_: _UnstartedConnector(),
+                )
+                self.addCleanup(application.stop)
+
+                self.assertEqual(len(received), 1)
+                self.assertIsInstance(received[0], ApplicationContext)
+                self.assertIs(received[0], service_contexts[0])
+                self.assertIs(received[0].global_settings, application.global_settings)
+
+    def test_legacy_factory_receives_sender_regardless_of_parameter_name(self) -> None:
+        received: list[object] = []
+        service_contexts: list[ApplicationContext] = []
+
+        def capture(sender: object) -> _SenderDependencies:
+            received.append(sender)
+            return _SenderDependencies(sender)
+
+        def build_service(ctx: ApplicationContext) -> _RecordingService:
+            service_contexts.append(ctx)
+            return _RecordingService("factory", [])
+
+        factories = {
+            "context": lambda context: capture(context),
+            "application_context": lambda application_context: capture(application_context),
+            "arbitrary": lambda value: capture(value),
+        }
+        for name, factory in factories.items():
+            with self.subTest(parameter=name):
+                received.clear()
+                service_contexts.clear()
+
+                with self.assertWarnsRegex(DeprecationWarning, "action_dependencies_factory"):
+                    application = create_stream_dock_application(
+                        _launch_arguments(),
+                        action_factory=_SenderCapturingActionRegistry(),
+                        legacy_action_dependencies_factory=factory,
+                        service_factories=(build_service,),
+                        shutdown_config=_shutdown_config(),
+                        connector_factory=lambda *_: _UnstartedConnector(),
+                    )
+                self.addCleanup(application.stop)
+
+                self.assertEqual(len(received), 1)
+                self.assertIs(received[0], service_contexts[0].stream_dock)
+                self.assertNotIsInstance(received[0], ApplicationContext)
+
+    def test_rejects_conflicting_factories_before_creating_boundary(self) -> None:
+        def unexpected_connector(*_args: object) -> _UnstartedConnector:
+            self.fail("invalid factories must be rejected before creating the boundary")
+
+        with self.assertRaisesRegex(TypeError, "mutually exclusive"):
+            create_stream_dock_application(
+                _launch_arguments(),
+                action_factory=_SenderCapturingActionRegistry(),
+                action_dependencies_factory=lambda ctx: _SenderDependencies(ctx.stream_dock),
+                legacy_action_dependencies_factory=_SenderDependencies,
+                connector_factory=unexpected_connector,
+            )
+
+    def test_rejects_non_callable_factories(self) -> None:
+        for keyword in ("action_dependencies_factory", "legacy_action_dependencies_factory"):
+            with self.subTest(parameter=keyword), self.assertRaisesRegex(TypeError, keyword):
+                create_stream_dock_application(
+                    _launch_arguments(),
+                    action_factory=_SenderCapturingActionRegistry(),
+                    **{keyword: object()},
+                )
+
+    def test_factory_failure_closes_boundary_and_preserves_error(self) -> None:
+        failure = TypeError("dependency construction failed")
+        received: list[object] = []
+
+        def fail(value: object) -> _SenderDependencies:
+            received.append(value)
+            raise failure
+
+        for keyword in ("action_dependencies_factory", "legacy_action_dependencies_factory"):
+            with self.subTest(parameter=keyword):
+                connector = _UnstartedConnector()
+                received.clear()
+
+                warning_check = (
+                    self.assertWarns(DeprecationWarning)
+                    if keyword == "legacy_action_dependencies_factory"
+                    else nullcontext()
+                )
+                with warning_check, self.assertRaises(TypeError) as raised:
+                    create_stream_dock_application(
+                        _launch_arguments(),
+                        action_factory=_SenderCapturingActionRegistry(),
+                        connector_factory=lambda *_, result=connector: result,
+                        shutdown_config=_shutdown_config(),
+                        **{keyword: fail},
+                    )
+
+                self.assertIs(raised.exception, failure)
+                self.assertEqual(len(received), 1)
+                self.assertTrue(connector.closed)
+
+
 class ApplicationServiceLifecycleTests(unittest.TestCase):
     def test_sender_in_service_start_fails_before_runtime_without_external_stop(self) -> None:
         connector = _UnstartedConnector()
@@ -348,9 +511,9 @@ class ApplicationServiceLifecycleTests(unittest.TestCase):
 
         service = SenderUsingService()
 
-        def capture_sender(sender: object) -> _SenderDependencies:
-            sender_holder["sender"] = sender
-            return _SenderDependencies(sender)
+        def capture_sender(ctx: ApplicationContext) -> _SenderDependencies:
+            sender_holder["sender"] = ctx.stream_dock
+            return _SenderDependencies(ctx.stream_dock)
 
         application = create_stream_dock_application(
             _launch_arguments(),

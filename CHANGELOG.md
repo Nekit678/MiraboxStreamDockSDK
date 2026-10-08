@@ -8,6 +8,11 @@ change public APIs between minor versions.
 
 ### Fixed
 
+- Remove dependency-factory guessing (SDK-FACTORY-001):
+  `action_dependencies_factory` always receives `ApplicationContext`.
+  Sender-only factories can use `lambda ctx: factory(ctx.stream_dock)` or the
+  deprecated `legacy_action_dependencies_factory` parameter; passing both
+  factory parameters is rejected before boundary creation.
 - Close the global-settings mutable escape (SDK-SETTINGS-002): remove the
   facade's `settings` property and return isolated copies from the state
   backend, preserving rollback-safe writes and isolated snapshots.

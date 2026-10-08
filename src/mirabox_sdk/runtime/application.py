@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import logging
+import warnings
 from collections.abc import Callable, Iterable
-from inspect import Parameter, signature
 from threading import Lock
-from typing import TypeVar, cast
+from typing import TypeVar
 
 from .._internal.runtime.composition import (
     create_stream_dock_runtime,
@@ -172,10 +172,9 @@ def create_stream_dock_application(
     launch_arguments: PluginLaunchArguments,
     *,
     action_factory: ActionFactory | DependencyAwareActionRegistry[ActionDependenciesT],
-    action_dependencies_factory: (
-        Callable[[ApplicationContext], ActionDependenciesT]
-        | Callable[[StreamDockSender], ActionDependenciesT]
-        | None
+    action_dependencies_factory: Callable[[ApplicationContext], ActionDependenciesT] | None = None,
+    legacy_action_dependencies_factory: (
+        Callable[[StreamDockSender], ActionDependenciesT] | None
     ) = None,
     plugin: Plugin | None = None,
     plugin_hooks: PluginHooks | None = None,
@@ -192,10 +191,12 @@ def create_stream_dock_application(
 ) -> StreamDockApplication:
     """Build one unstarted application over the production runtime stack.
 
-    ``ActionRegistry`` users may provide ``action_dependencies_factory``. New
-    factories receive one :class:`ApplicationContext`, exposing the canonical
-    sender and global-settings facade. Existing sender-only factories remain
-    supported. ``service_factories`` likewise receive that context; objects in
+    ``ActionRegistry`` users may provide ``action_dependencies_factory``, which
+    always receives one :class:`ApplicationContext`, exposing the canonical
+    sender and global-settings facade. Sender-only factories must use the
+    deprecated ``legacy_action_dependencies_factory`` parameter instead. The
+    two dependency-factory parameters are mutually exclusive.
+    ``service_factories`` likewise receive that context; objects in
     ``services`` remain supported for already-constructed services. Services
     start before the runtime connects and stop in reverse order after it ends.
     ``plugin`` receives known plugin-wide broadcast callbacks; ``plugin_hooks``
@@ -207,6 +208,22 @@ def create_stream_dock_application(
         raise TypeError("launch_arguments must be PluginLaunchArguments")
     if action_dependencies_factory is not None and not callable(action_dependencies_factory):
         raise TypeError("action_dependencies_factory must be callable or None")
+    if legacy_action_dependencies_factory is not None and not callable(
+        legacy_action_dependencies_factory
+    ):
+        raise TypeError("legacy_action_dependencies_factory must be callable or None")
+    if action_dependencies_factory is not None and legacy_action_dependencies_factory is not None:
+        raise TypeError(
+            "action_dependencies_factory and legacy_action_dependencies_factory "
+            "are mutually exclusive"
+        )
+    if legacy_action_dependencies_factory is not None:
+        warnings.warn(
+            "legacy_action_dependencies_factory is deprecated; use "
+            "action_dependencies_factory=lambda ctx: factory(ctx.stream_dock) instead",
+            DeprecationWarning,
+            stacklevel=2,
+        )
     if plugin is not None and not isinstance(plugin, Plugin):
         raise TypeError("plugin must extend Plugin or be None")
     if plugin is not None and plugin_hooks is not None:
@@ -242,11 +259,11 @@ def create_stream_dock_application(
         session_readiness=session_readiness,
     )
     try:
-        action_dependencies = (
-            _create_action_dependencies(action_dependencies_factory, context)
-            if action_dependencies_factory is not None
-            else None
-        )
+        action_dependencies: StreamDockActionDependencies | None = None
+        if action_dependencies_factory is not None:
+            action_dependencies = action_dependencies_factory(context)
+        elif legacy_action_dependencies_factory is not None:
+            action_dependencies = legacy_action_dependencies_factory(context.stream_dock)
         factory_services = tuple(factory(context) for factory in resolved_service_factories)
         all_services = _resolve_services((*resolved_services, *factory_services))
         runtime = create_stream_dock_runtime(
@@ -295,46 +312,6 @@ def _resolve_service_factories(
         if not callable(factory):
             raise TypeError(f"service_factories[{index}] must be callable")
     return resolved
-
-
-def _create_action_dependencies(
-    factory: (
-        Callable[[ApplicationContext], StreamDockActionDependencies]
-        | Callable[[StreamDockSender], StreamDockActionDependencies]
-    ),
-    context: ApplicationContext,
-) -> StreamDockActionDependencies:
-    if _accepts_application_context(factory):
-        context_factory = cast(
-            Callable[[ApplicationContext], StreamDockActionDependencies],
-            factory,
-        )
-        return context_factory(context)
-    sender_factory = cast(
-        Callable[[StreamDockSender], StreamDockActionDependencies],
-        factory,
-    )
-    return sender_factory(context.stream_dock)
-
-
-def _accepts_application_context(factory: Callable[..., object]) -> bool:
-    try:
-        parameters = tuple(signature(factory).parameters.values())
-    except (TypeError, ValueError):
-        return False
-    positional = tuple(
-        parameter
-        for parameter in parameters
-        if parameter.kind in (Parameter.POSITIONAL_ONLY, Parameter.POSITIONAL_OR_KEYWORD)
-    )
-    if not positional:
-        return False
-    parameter = positional[0]
-    if parameter.annotation is ApplicationContext:
-        return True
-    if parameter.annotation == "ApplicationContext":
-        return True
-    return parameter.name in {"application_context", "context"}
 
 
 __all__ = [

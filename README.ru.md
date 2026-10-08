@@ -207,7 +207,7 @@ def build_application(arguments: PluginLaunchArguments) -> StreamDockApplication
     return create_stream_dock_application(
         arguments,
         action_factory=registry,
-        action_dependencies_factory=Dependencies,
+        action_dependencies_factory=lambda ctx: Dependencies(ctx.stream_dock),
     )
 
 
@@ -485,6 +485,13 @@ service-factory. Он передаёт каждому участнику одн�
 `stream_dock`, `global_settings` и `session_readiness` без mutable wiring и
 импортов внутренних модулей.
 
+`action_dependencies_factory` всегда получает `ApplicationContext`, независимо
+от имён параметров и аннотаций. Существующую фабрику, принимающую только sender,
+оберните как `action_dependencies_factory=lambda ctx: old_factory(ctx.stream_dock)`.
+Для миграции доступен `legacy_action_dependencies_factory=old_factory`: он
+передаёт только `StreamDockSender` и выдаёт `DeprecationWarning`. Эти два
+параметра фабрики взаимоисключающие.
+
 Сервисы запускаются в порядке объявления до подключения WebSocket runtime и
 останавливаются в обратном порядке после его завершения. При ошибке startup
 останавливаются только успешно запущенные сервисы. Cleanup пытается остановить
@@ -591,7 +598,7 @@ from mirabox_sdk import (
 application = create_stream_dock_application(
     arguments,
     action_factory=registry,
-    action_dependencies_factory=Dependencies,
+    action_dependencies_factory=build_dependencies,
     queue_config=StreamDockQueueConfig(
         raw_inbound_limit=512,
         inbound_event_limit=512,
@@ -659,7 +666,7 @@ from mirabox_sdk import StreamDockQueueConfig, create_stream_dock_application
 application = create_stream_dock_application(
     arguments,
     action_factory=registry,
-    action_dependencies_factory=Dependencies,
+    action_dependencies_factory=build_dependencies,
     queue_config=StreamDockQueueConfig(
         raw_inbound_limit=512,
         inbound_event_limit=512,

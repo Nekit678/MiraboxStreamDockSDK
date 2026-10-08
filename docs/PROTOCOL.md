@@ -98,13 +98,20 @@ def build_application(arguments: PluginLaunchArguments) -> StreamDockApplication
     return create_stream_dock_application(
         arguments,
         action_factory=registry,
-        action_dependencies_factory=Dependencies,
+        action_dependencies_factory=lambda ctx: Dependencies(ctx.stream_dock),
     )
 
 
 if __name__ == "__main__":
     raise SystemExit(run_plugin_cli(build_application))
 ```
+
+`action_dependencies_factory` always receives the shared `ApplicationContext`;
+parameter names and annotations do not affect dispatch. Sender-only factories
+can be wrapped as shown above or temporarily passed through the deprecated
+`legacy_action_dependencies_factory` parameter, which emits
+`DeprecationWarning`. The two dependency-factory parameters are mutually
+exclusive.
 
 ## Events received by a plugin
 

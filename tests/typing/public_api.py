@@ -55,7 +55,7 @@ def build_application(arguments: PluginLaunchArguments) -> StreamDockApplication
     return create_stream_dock_application(
         arguments,
         action_factory=registry,
-        action_dependencies_factory=Dependencies,
+        action_dependencies_factory=lambda ctx: Dependencies(ctx.stream_dock),
         plugin=ExamplePlugin(),
         service_factories=(lambda _context: ExampleService(),),
     )

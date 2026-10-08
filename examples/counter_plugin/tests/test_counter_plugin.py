@@ -251,7 +251,7 @@ class CounterRuntimeIntegrationTests(unittest.TestCase):
         application = create_stream_dock_application(
             _launch_arguments(),
             action_factory=ACTION_REGISTRY,
-            action_dependencies_factory=ActionDependencies,
+            action_dependencies_factory=bootstrap.build_dependencies,
             queue_config=StreamDockQueueConfig(
                 raw_inbound_limit=16,
                 inbound_event_limit=16,
@@ -383,7 +383,7 @@ class CounterBootstrapTests(unittest.TestCase):
         application_factory.assert_called_once_with(
             arguments,
             action_factory=bootstrap.ACTION_REGISTRY,
-            action_dependencies_factory=ActionDependencies,
+            action_dependencies_factory=bootstrap.build_dependencies,
         )
 
 
