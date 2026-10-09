@@ -358,6 +358,11 @@ class BoundaryContractTests(unittest.TestCase):
             "outbound_command_limit",
             "raw_outbound_limit",
             "session_event_limit",
+            "max_message_bytes",
+            "raw_inbound_byte_limit",
+            "inbound_event_byte_limit",
+            "outbound_command_byte_limit",
+            "raw_outbound_byte_limit",
         )
         valid_limits = dict.fromkeys(field_names, 1)
         config = BoundaryQueueConfig(**valid_limits)

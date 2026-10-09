@@ -17,6 +17,7 @@ from ...events import (
     WillAppearEvent,
     WillDisappearEvent,
 )
+from ..transport.buffer_limits import DEFAULT_QUEUE_BYTE_LIMIT, retained_size, validate_byte_limit
 from .metrics import InboundEventQueueMetrics
 from .ports import (
     InboundEventQueueControl,
@@ -36,6 +37,7 @@ class InboundOverflowPolicy(StrEnum):
 @dataclass(slots=True)
 class _QueuedEvent:
     event: StreamDockEvent
+    size: int = 0
 
 
 class InboundEventQueue(InboundEventSource, InboundEventSink, InboundEventQueueControl):
@@ -47,8 +49,10 @@ class InboundEventQueue(InboundEventSource, InboundEventSink, InboundEventQueueC
         *,
         overflow_policy: InboundOverflowPolicy = InboundOverflowPolicy.DROP_NEWEST,
         coalesce_dial_rotations: bool = False,
+        byte_limit: int = DEFAULT_QUEUE_BYTE_LIMIT,
     ) -> None:
         _validate_queue_limit(queue_limit)
+        validate_byte_limit("byte_limit", byte_limit)
         if not isinstance(overflow_policy, InboundOverflowPolicy):
             raise ValueError("overflow_policy must be an InboundOverflowPolicy")
         if type(coalesce_dial_rotations) is not bool:
@@ -57,6 +61,7 @@ class InboundEventQueue(InboundEventSource, InboundEventSink, InboundEventQueueC
         self._queue_limit = queue_limit
         self._overflow_policy = overflow_policy
         self._coalesce_dial_rotations = coalesce_dial_rotations
+        self._byte_limit = byte_limit
         self._condition = Condition()
         self._queue: deque[_QueuedEvent] = deque()
         self._last_queued_by_context: dict[str, _QueuedEvent] = {}
@@ -75,6 +80,9 @@ class InboundEventQueue(InboundEventSource, InboundEventSink, InboundEventQueueC
         self._rejected_full = 0
         self._rejected_after_shutdown = 0
         self._discarded_during_shutdown = 0
+        self._current_bytes = 0
+        self._peak_bytes = 0
+        self._rejected_oversized = 0
 
     def submit(
         self,
@@ -95,26 +103,34 @@ class InboundEventQueue(InboundEventSource, InboundEventSink, InboundEventQueueC
                 self._rejected_after_shutdown += 1
                 return False
 
+            size = retained_size(event, self._byte_limit)
+            if size > self._byte_limit:
+                self._rejected_oversized += 1
+                self._break_context_coalescing(event)
+                return False
             if self._coalesce(event):
                 self._coalesced += 1
                 return True
 
             discardable = isinstance(event, DialRotateEvent)
             backpressured = False
-            while len(self._queue) >= self._queue_limit:
+            while (
+                len(self._queue) >= self._queue_limit
+                or self._current_bytes + size > self._byte_limit
+            ):
                 if discardable:
                     if self._overflow_policy is InboundOverflowPolicy.DROP_NEWEST:
                         self._dropped_newest += 1
                         self._break_context_coalescing(event)
                         return False
                     if self._drop_queued_rotation():
-                        break
+                        continue
                     self._dropped_newest += 1
                     self._break_context_coalescing(event)
                     return False
 
                 if self._drop_queued_rotation():
-                    break
+                    continue
 
                 remaining = None if deadline is None else deadline - monotonic()
                 if remaining is not None and remaining <= 0:
@@ -130,8 +146,10 @@ class InboundEventQueue(InboundEventSource, InboundEventSink, InboundEventQueueC
                     self._break_context_coalescing(event)
                     return False
 
-            queued = _QueuedEvent(event)
+            queued = _QueuedEvent(event, size)
             self._queue.append(queued)
+            self._current_bytes += size
+            self._peak_bytes = max(self._peak_bytes, self._current_bytes)
             context = self._coalescing_context(event)
             if context is None:
                 self._last_queued_by_context.clear()
@@ -183,6 +201,7 @@ class InboundEventQueue(InboundEventSource, InboundEventSink, InboundEventQueueC
                             raise ValueError("selector must return a valid queue index or None")
                         queued = self._queue[index]
                         del self._queue[index]
+                        self._current_bytes -= queued.size
                         self._forget_queued_event(queued)
                         self._dequeued += 1
                         self._in_flight += 1
@@ -236,6 +255,7 @@ class InboundEventQueue(InboundEventSource, InboundEventSink, InboundEventQueueC
         with self._condition:
             self._discarded_during_shutdown += len(self._queue)
             self._queue.clear()
+            self._current_bytes = 0
             self._last_queued_by_context.clear()
             self._condition.notify_all()
         return False
@@ -260,6 +280,10 @@ class InboundEventQueue(InboundEventSource, InboundEventSink, InboundEventQueueC
                 rejected_full=self._rejected_full,
                 rejected_after_shutdown=self._rejected_after_shutdown,
                 discarded_during_shutdown=self._discarded_during_shutdown,
+                byte_limit=self._byte_limit,
+                current_bytes=self._current_bytes,
+                peak_bytes=self._peak_bytes,
+                rejected_oversized=self._rejected_oversized,
             )
 
     def _coalesce(self, event: StreamDockEvent) -> bool:
@@ -280,7 +304,15 @@ class InboundEventQueue(InboundEventSource, InboundEventSink, InboundEventQueueC
         ):
             return False
 
-        queued.event = replace(event, ticks=previous.ticks + event.ticks)
+        replacement = replace(event, ticks=previous.ticks + event.ticks)
+        size = retained_size(replacement, self._byte_limit)
+        replacement_bytes = self._current_bytes - queued.size + size
+        if replacement_bytes > self._byte_limit:
+            return False
+        queued.event = replacement
+        queued.size = size
+        self._current_bytes = replacement_bytes
+        self._peak_bytes = max(self._peak_bytes, self._current_bytes)
         return True
 
     def _drop_queued_rotation(self) -> bool:
@@ -293,6 +325,7 @@ class InboundEventQueue(InboundEventSource, InboundEventSink, InboundEventQueueC
                 continue
             index = len(self._queue) - offset - 1 if drop_newest else offset
             del self._queue[index]
+            self._current_bytes -= queued.size
             self._forget_queued_event(queued)
             if drop_newest:
                 self._dropped_newest += 1

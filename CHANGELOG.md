@@ -43,6 +43,11 @@ change public APIs between minor versions.
 
 ### Fixed
 
+- Bound UTF-8 frames to 8 MiB and raw/typed queues plus keyed scheduler pending
+  work to 16 MiB per buffer by default, with byte metrics and explicit rejection
+  outcomes. Limit the PI connecting queue to 1,024 messages / 16 MiB, preserve
+  accepted FIFO messages and settings on rejection, and release bytes on
+  dequeue, replacement, flush and shutdown (PERF-03).
 - Preserve recorded command failures, including `TimeoutError` and its original
   cause, in `CommandFuture.result()`. Only an expired completion wait raises
   `TimeoutError("Outbound command did not complete before the timeout")` (API-01).

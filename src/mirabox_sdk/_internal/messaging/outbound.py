@@ -23,6 +23,7 @@ from ...completion import (
     OutboundCommandBusNotReadyError,
     OutboundQueueFullError,
 )
+from ..transport.buffer_limits import DEFAULT_QUEUE_BYTE_LIMIT, retained_size, validate_byte_limit
 from .metrics import OutboundCommandQueueMetrics
 from .models import CommandFuture, CommandSubmission
 from .ports import OutboundCommandQueueControl, OutboundCommandSink, OutboundCommandSource
@@ -108,6 +109,7 @@ class WriterReadyOutboundCommandSink(OutboundCommandSink):
 class _QueuedCommand:
     command: StreamDockCommand
     completion: CommandFuture
+    size: int
 
 
 class OutboundCommandQueue(
@@ -117,13 +119,21 @@ class OutboundCommandQueue(
 ):
     """Accept commands without I/O and expose one FIFO writer source."""
 
-    def __init__(self, queue_limit: int, *, coalesce_commands: bool = False) -> None:
+    def __init__(
+        self,
+        queue_limit: int,
+        *,
+        coalesce_commands: bool = False,
+        byte_limit: int = DEFAULT_QUEUE_BYTE_LIMIT,
+    ) -> None:
         _validate_queue_limit(queue_limit)
+        validate_byte_limit("byte_limit", byte_limit)
         if type(coalesce_commands) is not bool:
             raise ValueError("coalesce_commands must be a boolean")
 
         self._queue_limit = queue_limit
         self._coalesce_commands = coalesce_commands
+        self._byte_limit = byte_limit
         self._condition = Condition()
         self._queue: deque[_QueuedCommand] = deque()
         self._accepting = True
@@ -136,6 +146,9 @@ class OutboundCommandQueue(
         self._rejected_full = 0
         self._rejected_after_shutdown = 0
         self._discarded_during_shutdown = 0
+        self._current_bytes = 0
+        self._peak_bytes = 0
+        self._rejected_oversized = 0
 
     def send(self, command: StreamDockCommand) -> None:
         """Submit a command and wait for writer-side terminal completion."""
@@ -155,19 +168,31 @@ class OutboundCommandQueue(
                 raise OutboundCommandQueueClosedError(
                     "Outbound command queue is no longer accepting commands"
                 )
-            completion = self._coalesce(command)
+            size = retained_size(command, self._byte_limit)
+            if size > self._byte_limit:
+                self._rejected_oversized += 1
+                raise OutboundQueueFullError(
+                    f"Outbound command exceeds byte limit (byte_limit={self._byte_limit})"
+                )
+            completion = self._coalesce(command, size)
             if completion is not None:
                 self._coalesced += 1
                 self._condition.notify_all()
                 return completion
-            if len(self._queue) >= self._queue_limit:
+            if (
+                len(self._queue) >= self._queue_limit
+                or self._current_bytes + size > self._byte_limit
+            ):
                 self._rejected_full += 1
                 raise OutboundQueueFullError(
-                    f"Outbound command queue is full (limit={self._queue_limit})"
+                    f"Outbound command queue is full "
+                    f"(limit={self._queue_limit}, byte_limit={self._byte_limit})"
                 )
 
             completion = CommandFuture()
-            self._queue.append(_QueuedCommand(command, completion))
+            self._queue.append(_QueuedCommand(command, completion, size))
+            self._current_bytes += size
+            self._peak_bytes = max(self._peak_bytes, self._current_bytes)
             self._enqueued += 1
             self._peak_depth = max(self._peak_depth, len(self._queue))
             self._condition.notify_all()
@@ -189,6 +214,7 @@ class OutboundCommandQueue(
                 self._condition.wait(remaining)
 
             queued = self._queue.popleft()
+            self._current_bytes -= queued.size
             self._dequeued += 1
             self._condition.notify_all()
 
@@ -233,6 +259,7 @@ class OutboundCommandQueue(
                 queued = self._queue.popleft()
                 completions.append(queued.completion)
             discarded = tuple(completions)
+            self._current_bytes = 0
             self._condition.notify_all()
 
         for completion in discarded:
@@ -254,9 +281,13 @@ class OutboundCommandQueue(
                 rejected_full=self._rejected_full,
                 rejected_after_shutdown=self._rejected_after_shutdown,
                 discarded_during_shutdown=self._discarded_during_shutdown,
+                byte_limit=self._byte_limit,
+                current_bytes=self._current_bytes,
+                peak_bytes=self._peak_bytes,
+                rejected_oversized=self._rejected_oversized,
             )
 
-    def _coalesce(self, command: StreamDockCommand) -> CommandFuture | None:
+    def _coalesce(self, command: StreamDockCommand, size: int) -> CommandFuture | None:
         if not self._coalesce_commands or not self._queue:
             return None
 
@@ -264,7 +295,13 @@ class OutboundCommandQueue(
         key = self._coalescing_key(command)
         if key is None or key != self._coalescing_key(queued.command):
             return None
+        replacement_bytes = self._current_bytes - queued.size + size
+        if replacement_bytes > self._byte_limit:
+            return None
         queued.command = command
+        queued.size = size
+        self._current_bytes = replacement_bytes
+        self._peak_bytes = max(self._peak_bytes, self._current_bytes)
         return queued.completion._share()
 
     @staticmethod

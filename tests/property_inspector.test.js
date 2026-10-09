@@ -85,6 +85,104 @@ const operations = {
   getSettings: (client) => client.getSettings(),
 };
 
+test("a socket stuck in CONNECTING explicitly rejects a 10,000 message burst", () => {
+  const { client, connect } = createInspector();
+  const socket = connect();
+  const errors = [];
+  client.on("sendError", (event) => {
+    errors.push(event);
+    assert.equal(client.queueMetrics.currentBytes, 0);
+  });
+  let accepted = 0;
+  let rejected = 0;
+  for (let index = 0; index < 10000; index += 1) {
+    try {
+      assert.equal(client.sendToPlugin({ index }), false);
+      accepted += 1;
+    } catch (error) {
+      assert.equal(error.name, "RangeError");
+      assert.match(error.message, /queue is full/);
+      rejected += 1;
+    }
+  }
+  const metrics = client.queueMetrics;
+  assert.equal(accepted, 1024);
+  assert.equal(rejected, 8976);
+  assert.equal(metrics.currentDepth, accepted);
+  assert.equal(metrics.rejectedFull, rejected);
+  assert.ok(metrics.currentBytes <= metrics.byteLimit);
+  socket.close();
+  assert.equal(errors.length, accepted);
+  assert.deepEqual(errors.map(({ message }) => message.payload.index),
+    Array.from({ length: accepted }, (_, index) => index));
+  assert.equal(client.queueMetrics.currentDepth, 0);
+  assert.equal(client.queueMetrics.currentBytes, 0);
+});
+
+test("UTF-8 byte pressure bounds large queued payloads and preserves settings on rejection", () => {
+  const { client, connect } = createInspector();
+  const socket = connect({ mode: "old" });
+  const payload = { text: "é".repeat(512 * 1024) };
+  const message = {
+    event: "sendToPlugin", action: "example.action", context: "pi-context", payload,
+  };
+  const size = Buffer.byteLength(JSON.stringify(message), "utf8");
+  const capacity = Math.floor(client.queueMetrics.byteLimit / size);
+  for (let index = 0; index < capacity; index += 1) {
+    assert.equal(client.sendToPlugin(payload), false);
+  }
+  assert.throws(() => client.sendToPlugin(payload), /queue is full/);
+  assert.throws(() => client.setSettings(payload), /queue is full/);
+  assert.deepEqual(plain(client.settings), { mode: "old" });
+  const metrics = client.queueMetrics;
+  assert.equal(metrics.currentDepth, capacity);
+  assert.ok(capacity < metrics.messageLimit);
+  assert.equal(metrics.currentBytes, capacity * size);
+  assert.equal(metrics.peakBytes, metrics.currentBytes);
+  socket.open();
+  assert.equal(socket.frames.length, capacity + 1);
+  assert.equal(client.queueMetrics.currentBytes, 0);
+  assert.equal(client.queueMetrics.currentDepth, 0);
+});
+
+for (const immediate of [false, true]) {
+  test(`single-frame byte limit accepts its boundary and rejects oversized ${immediate ? "open" : "connecting"} sends`, () => {
+    const { client, connect } = createInspector();
+    const socket = connect();
+    if (immediate) socket.open();
+    const message = { event: "custom", text: "" };
+    const overhead = Buffer.byteLength(JSON.stringify(message), "utf8");
+    message.text = "x".repeat(client.queueMetrics.maxMessageBytes - overhead);
+    assert.equal(client.send(message), immediate);
+    message.text += "x";
+    assert.throws(() => client.send(message), /message exceeds byte limit/);
+    assert.equal(client.queueMetrics.rejectedOversized, 1);
+    if (!immediate) socket.open();
+    assert.equal(socket.frames.length, 2);
+    assert.equal(client.queueMetrics.currentBytes, 0);
+  });
+}
+
+test("oversized settings and inbound frames leave the settings snapshot intact", () => {
+  const { client, connect } = createInspector();
+  const socket = connect({ mode: "old" });
+  socket.open();
+  const settings = { text: "😀".repeat(client.queueMetrics.maxMessageBytes / 4) };
+  assert.throws(() => client.setSettings(settings), /message exceeds byte limit/);
+  assert.deepEqual(plain(client.settings), { mode: "old" });
+  const errors = [];
+  client.on("protocolError", (event) => errors.push(event));
+  socket.emit("message", {
+    data: JSON.stringify({ event: "didReceiveSettings", payload: { settings } }),
+  });
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0].error.name, "RangeError");
+  assert.deepEqual(plain(client.settings), { mode: "old" });
+  assert.equal(socket.frames.length, 1);
+  client.queueMetrics.currentBytes = 100;
+  assert.equal(client.queueMetrics.currentBytes, 0);
+});
+
 for (const [name, operation] of Object.entries(operations)) {
   test(`${name} rejects calls before the host callback`, () => {
     const { client } = createInspector();
@@ -259,6 +357,8 @@ for (const stage of ["before open", "during flush"]) {
     assert.deepEqual(errors.map(({ message }) => message.payload.value).sort(), [1, 2]);
     assert.equal(connected, false);
     assert.equal(disconnected, true);
+    assert.equal(client.queueMetrics.currentBytes, 0);
+    assert.equal(client.queueMetrics.currentDepth, 0);
   });
 }
 
@@ -275,6 +375,7 @@ test("registration failure rejects queued messages and prevents connected", () =
   assert.equal(connected, false);
   assert.equal(client.isConnected, false);
   assert.equal(errors.length, 2);
+  assert.equal(client.queueMetrics.currentBytes, 0);
   assert.ok(errors.some(({ message }) => message.event === "registerPropertyInspector"));
   assert.deepEqual(plain(errors.find(({ message }) => message.event === "sendToPlugin").message.payload), { value: 1 });
 });

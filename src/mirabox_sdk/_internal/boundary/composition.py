@@ -419,17 +419,27 @@ def create_stream_dock_boundary(
         raise TypeError("shutdown_config must be BoundaryShutdownConfig or None")
 
     shared_shutdown = shutdown_state or ShutdownState()
-    raw_inbound = RawInboundQueue(queue_config.raw_inbound_limit)
+    raw_inbound = RawInboundQueue(
+        queue_config.raw_inbound_limit,
+        byte_limit=queue_config.raw_inbound_byte_limit,
+        max_message_bytes=queue_config.max_message_bytes,
+    )
     inbound_events = InboundEventQueue(
         queue_config.inbound_event_limit,
         overflow_policy=inbound_overflow_policy,
         coalesce_dial_rotations=coalesce_dial_rotations,
+        byte_limit=queue_config.inbound_event_byte_limit,
     )
     outbound_commands = OutboundCommandQueue(
         queue_config.outbound_command_limit,
         coalesce_commands=coalesce_commands,
+        byte_limit=queue_config.outbound_command_byte_limit,
     )
-    raw_outbound = RawOutboundQueue(queue_config.raw_outbound_limit)
+    raw_outbound = RawOutboundQueue(
+        queue_config.raw_outbound_limit,
+        byte_limit=queue_config.raw_outbound_byte_limit,
+        max_message_bytes=queue_config.max_message_bytes,
+    )
     session_events = SessionEventQueue(queue_config.session_event_limit)
 
     resolved_decoder = (

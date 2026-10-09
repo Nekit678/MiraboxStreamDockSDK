@@ -16,6 +16,7 @@ class RuntimeDispatcherConfigTests(unittest.TestCase):
         self.assertIs(config.scheduler_kind, RuntimeSchedulerKind.KEYED_SERIAL)
         self.assertEqual(config.worker_count, 4)
         self.assertEqual(config.scheduler_pending_limit, 64)
+        self.assertEqual(config.scheduler_pending_byte_limit, 16 * 1024 * 1024)
         self.assertEqual(config.runtime_drain_timeout, 5.0)
         self.assertEqual(config.worker_stop_timeout, 5.0)
         self.assertIsNone(config.callback_timeout)
@@ -36,7 +37,11 @@ class RuntimeDispatcherConfigTests(unittest.TestCase):
                     replace(RuntimeDispatcherConfig(), **{field_name: invalid})
 
     def test_capacity_values_require_positive_non_boolean_integers(self) -> None:
-        for field_name in ("worker_count", "scheduler_pending_limit"):
+        for field_name in (
+            "worker_count",
+            "scheduler_pending_limit",
+            "scheduler_pending_byte_limit",
+        ):
             for invalid in (0, -1, True, 1.5, "1"):
                 with (
                     self.subTest(field_name=field_name, invalid=invalid),

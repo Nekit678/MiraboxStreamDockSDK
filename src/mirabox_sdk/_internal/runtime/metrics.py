@@ -58,6 +58,10 @@ class HandlerSchedulerMetrics:
     callback_timeouts: int = 0
     discarded_during_shutdown: int = 0
     admission_backpressure: int = 0
+    pending_byte_limit: int = 0
+    current_pending_bytes: int = 0
+    peak_pending_bytes: int = 0
+    rejected_oversized: int = 0
 
 
 @dataclass(frozen=True, slots=True)

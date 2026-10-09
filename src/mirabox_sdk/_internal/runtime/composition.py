@@ -703,6 +703,7 @@ def create_stream_dock_runtime(
                 router,
                 worker_count=resolved_config.worker_count,
                 pending_limit=resolved_config.scheduler_pending_limit,
+                pending_byte_limit=resolved_config.scheduler_pending_byte_limit,
                 on_fatal_error=fatal_errors,
             )
     else:

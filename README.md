@@ -353,6 +353,14 @@ Send methods return `true` for an immediate send and `false` only for an
 accepted queued message. Invalid JSON data (including cycles and `BigInt`)
 throws before acceptance; immediate `WebSocket.send()` errors propagate.
 
+Frames are limited to 8 MiB of UTF-8 JSON, including their envelope. While
+connecting, the FIFO accepts at most 1,024 messages and 16 MiB of wire bytes.
+Exceeding any limit throws `RangeError` before acceptance and leaves local
+settings unchanged. Accepted messages retain their order and are not replaced
+automatically. `client.queueMetrics` reports limits, current/peak depth and
+bytes, and `rejectedFull`/`rejectedOversized`. Flush and close release the budget.
+Oversized incoming frames emit `protocolError` before JSON parsing.
+
 Queued messages own serialized JSON snapshots. Deferred send failures emit
 `sendError` with `{ message, error }` for each unsent message, including when
 the socket closes before flushing. A failed message does not prevent later
@@ -897,6 +905,38 @@ target are ordering barriers. All callers whose commands were combined receive
 distinct `CommandFuture` handles backed by the queued command's single
 completion state, and therefore observe the same final write result. The queue
 retains at most one completion state per physical entry.
+
+Raw frame queues default to 16 MiB of UTF-8 wire bytes each, with an 8 MiB
+limit per frame. Configure `StreamDockQueueConfig.max_message_bytes`,
+`raw_inbound_byte_limit`, `inbound_event_byte_limit`,
+`outbound_command_byte_limit`, and `raw_outbound_byte_limit` using positive
+integers. The typed queue byte limits also default to 16 MiB each. They estimate
+retained Python DTO/JSON bytes with `sys.getsizeof()`, including copy-on-write
+backing storage, without serializing on the submitting thread.
+
+Outbound submissions that exceed either capacity raise `OutboundQueueFullError`
+synchronously. Raw outbound frame rejection completes the command future with
+an error. An item larger than its queue's entire byte budget is rejected
+immediately. Inbound byte pressure follows the existing backpressure/rotation
+drop policy. Coalescing must fit the byte budget before changing an entry.
+Queue metrics include `byte_limit`, `current_bytes`, `peak_bytes`, and
+`rejected_oversized`; receiving or discarding an entry releases its bytes.
+
+The keyed scheduler also limits pending retained bytes to 16 MiB; configure
+`RuntimeDispatcherConfig.scheduler_pending_byte_limit` alongside the inbound
+budget when increasing limits. Scheduler metrics expose `pending_byte_limit`,
+`current_pending_bytes`, `peak_pending_bytes`, and `rejected_oversized`.
+An event exceeding the entire scheduler budget receives a terminal error;
+the application reports it as a runtime failure. Sequential dispatch has no
+pending event buffer.
+
+These budgets cover queued content. Shared objects are counted separately in
+different entries; queue/completion bookkeeping, active workers, allocator
+overhead, and opaque native allocations are outside the budgets, so they do not
+define a process RSS limit. Keep submitted DTOs unchanged until processing
+completes. The WebSocket library receives complete frames before the SDK checks
+them, and constructing payloads or serializing a frame can also allocate
+temporary memory before rejection.
 
 Read `application.metrics().boundary` for atomic outbound queue, writer, raw
 transport, and connector snapshots. Before writer startup, submissions raise

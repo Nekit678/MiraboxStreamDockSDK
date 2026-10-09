@@ -19,12 +19,16 @@ class TransportQueueMetrics:
     rejected_full: int
     rejected_after_shutdown: int
     discarded_during_shutdown: int
+    byte_limit: int = 0
+    current_bytes: int = 0
+    peak_bytes: int = 0
+    rejected_oversized: int = 0
 
     @property
     def rejected(self) -> int:
         """Return the number of items refused before queueing."""
 
-        return self.rejected_full + self.rejected_after_shutdown
+        return self.rejected_full + self.rejected_after_shutdown + self.rejected_oversized
 
 
 @dataclass(frozen=True, slots=True)

@@ -9,6 +9,13 @@ from threading import Condition
 from time import monotonic
 from typing import Generic, TypeVar
 
+from .buffer_limits import (
+    DEFAULT_MAX_MESSAGE_BYTES,
+    DEFAULT_QUEUE_BYTE_LIMIT,
+    retained_size,
+    utf8_size,
+    validate_byte_limit,
+)
 from .frames import OutboundFrame, TextFrame
 from .metrics import TransportQueueMetrics
 from .ports import (
@@ -45,6 +52,10 @@ class TransportQueueFullError(TransportQueueError):
     """Report that bounded backpressure expired before capacity became free."""
 
 
+class TransportMessageTooLargeError(TransportQueueError):
+    """Report a frame that cannot fit the message or queue byte limit."""
+
+
 class _BoundedTransportQueue(Generic[ItemT]):
     """Condition-backed FIFO with bounded capacity and explicit shutdown."""
 
@@ -56,6 +67,9 @@ class _BoundedTransportQueue(Generic[ItemT]):
         item_type: type[ItemT],
         reject: Callable[[ItemT, Exception], None] | None = None,
         closed_error_type: type[TransportQueueClosedError] = TransportQueueClosedError,
+        byte_limit: int = 0,
+        max_message_bytes: int = 0,
+        item_size: Callable[[ItemT, int], int] | None = None,
     ) -> None:
         _validate_queue_limit(queue_limit)
         self._queue_limit = queue_limit
@@ -63,8 +77,11 @@ class _BoundedTransportQueue(Generic[ItemT]):
         self._item_type = item_type
         self._reject = reject
         self._closed_error_type = closed_error_type
+        self._byte_limit = byte_limit
+        self._max_message_bytes = min(max_message_bytes, byte_limit)
+        self._item_size = item_size
         self._condition = Condition()
-        self._queue: deque[ItemT] = deque()
+        self._queue: deque[tuple[ItemT, int]] = deque()
         self._accepting = True
 
         self._peak_depth = 0
@@ -75,6 +92,9 @@ class _BoundedTransportQueue(Generic[ItemT]):
         self._rejected_full = 0
         self._rejected_after_shutdown = 0
         self._discarded_during_shutdown = 0
+        self._current_bytes = 0
+        self._peak_bytes = 0
+        self._rejected_oversized = 0
 
     def submit(self, item: ItemT, *, timeout: float | None = None) -> bool:
         """Submit an item, waiting for bounded capacity when necessary."""
@@ -95,14 +115,28 @@ class _BoundedTransportQueue(Generic[ItemT]):
                 return False
 
             backpressured = False
-            while len(self._queue) >= self._queue_limit:
+            size = 0 if self._item_size is None else self._item_size(item, self._max_message_bytes)
+            if size > self._max_message_bytes:
+                self._rejected_oversized += 1
+                self._reject_item(
+                    item,
+                    TransportMessageTooLargeError(
+                        f"{self._queue_name} frame exceeds byte limit "
+                        f"(limit={self._max_message_bytes})"
+                    ),
+                )
+                return False
+            while len(self._queue) >= self._queue_limit or (
+                self._byte_limit and self._current_bytes + size > self._byte_limit
+            ):
                 remaining = None if deadline is None else deadline - monotonic()
                 if remaining is not None and remaining <= 0:
                     self._rejected_full += 1
                     self._reject_item(
                         item,
                         TransportQueueFullError(
-                            f"{self._queue_name} is full (limit={self._queue_limit})"
+                            f"{self._queue_name} is full "
+                            f"(limit={self._queue_limit}, byte_limit={self._byte_limit})"
                         ),
                     )
                     return False
@@ -118,7 +152,9 @@ class _BoundedTransportQueue(Generic[ItemT]):
                     )
                     return False
 
-            self._queue.append(item)
+            self._queue.append((item, size))
+            self._current_bytes += size
+            self._peak_bytes = max(self._peak_bytes, self._current_bytes)
             self._enqueued += 1
             self._peak_depth = max(self._peak_depth, len(self._queue))
             self._condition.notify_all()
@@ -139,7 +175,8 @@ class _BoundedTransportQueue(Generic[ItemT]):
                     raise TimeoutError(f"Timed out waiting for {self._queue_name}")
                 self._condition.wait(remaining)
 
-            item = self._queue.popleft()
+            item, size = self._queue.popleft()
+            self._current_bytes -= size
             self._dequeued += 1
             self._condition.notify_all()
             return item
@@ -178,8 +215,9 @@ class _BoundedTransportQueue(Generic[ItemT]):
                 f"{self._queue_name} item was discarded during shutdown"
             )
             self._discarded_during_shutdown += len(self._queue)
-            discarded = tuple(self._queue)
+            discarded = tuple(item for item, _ in self._queue)
             self._queue.clear()
+            self._current_bytes = 0
             self._condition.notify_all()
 
         for item in discarded:
@@ -201,6 +239,10 @@ class _BoundedTransportQueue(Generic[ItemT]):
                 rejected_full=self._rejected_full,
                 rejected_after_shutdown=self._rejected_after_shutdown,
                 discarded_during_shutdown=self._discarded_during_shutdown,
+                byte_limit=self._byte_limit,
+                current_bytes=self._current_bytes,
+                peak_bytes=self._peak_bytes,
+                rejected_oversized=self._rejected_oversized,
             )
 
     def _reject_item(self, item: ItemT, error: Exception) -> None:
@@ -213,11 +255,22 @@ class RawInboundQueue(RawInboundSource, RawInboundSink, TransportQueueControl):
 
     __slots__ = ("_queue",)
 
-    def __init__(self, queue_limit: int) -> None:
+    def __init__(
+        self,
+        queue_limit: int,
+        *,
+        byte_limit: int = DEFAULT_QUEUE_BYTE_LIMIT,
+        max_message_bytes: int = DEFAULT_MAX_MESSAGE_BYTES,
+    ) -> None:
+        validate_byte_limit("byte_limit", byte_limit)
+        validate_byte_limit("max_message_bytes", max_message_bytes)
         self._queue = _BoundedTransportQueue(
             queue_limit=queue_limit,
             queue_name="Raw inbound queue",
             item_type=str,
+            byte_limit=byte_limit,
+            max_message_bytes=max_message_bytes,
+            item_size=utf8_size,
         )
 
     def submit(self, frame: TextFrame, *, timeout: float | None = None) -> bool:
@@ -256,12 +309,27 @@ class RawOutboundQueue(RawOutboundSource, RawOutboundSink, TransportQueueControl
 
     __slots__ = ("_queue",)
 
-    def __init__(self, queue_limit: int) -> None:
+    def __init__(
+        self,
+        queue_limit: int,
+        *,
+        byte_limit: int = DEFAULT_QUEUE_BYTE_LIMIT,
+        max_message_bytes: int = DEFAULT_MAX_MESSAGE_BYTES,
+    ) -> None:
+        validate_byte_limit("byte_limit", byte_limit)
+        validate_byte_limit("max_message_bytes", max_message_bytes)
         self._queue = _BoundedTransportQueue(
             queue_limit=queue_limit,
             queue_name="Raw outbound queue",
             item_type=OutboundFrame,
             reject=self._fail_frame,
+            byte_limit=byte_limit,
+            max_message_bytes=max_message_bytes,
+            item_size=lambda frame, limit: (
+                utf8_size(frame.payload, limit)
+                if isinstance(frame.payload, str)
+                else retained_size(frame.payload, limit)
+            ),
         )
 
     def submit(self, frame: OutboundFrame, *, timeout: float | None = None) -> bool:

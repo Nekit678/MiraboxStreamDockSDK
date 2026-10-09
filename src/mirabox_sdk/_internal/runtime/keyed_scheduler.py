@@ -11,6 +11,7 @@ from time import monotonic
 
 from ...events import ActionEvent, StreamDockEvent
 from ..lifecycle import RuntimeWorkerError
+from ..transport.buffer_limits import DEFAULT_QUEUE_BYTE_LIMIT, retained_size
 from .metrics import HandlerSchedulerMetrics
 from .models import DispatchOutcome, DispatchResult
 from .ports import DispatchCompletion, HandlerScheduler, RuntimeEventDispatcher
@@ -31,6 +32,7 @@ class _ScheduledWork:
     completion: _DispatchCompletion
     context: str | None
     is_barrier: bool
+    size: int
 
 
 class KeyedSerialHandlerScheduler(HandlerScheduler):
@@ -49,16 +51,22 @@ class KeyedSerialHandlerScheduler(HandlerScheduler):
         worker_count: int,
         pending_limit: int,
         on_fatal_error: Callable[[Exception], None] | None = None,
+        pending_byte_limit: int = DEFAULT_QUEUE_BYTE_LIMIT,
     ) -> None:
         if not isinstance(dispatcher, RuntimeEventDispatcher):
             raise TypeError("dispatcher must implement RuntimeEventDispatcher")
         _require_positive_integer("worker_count", worker_count)
         _require_positive_integer("pending_limit", pending_limit)
+        _require_positive_integer("pending_byte_limit", pending_byte_limit)
 
         self._on_fatal_error = on_fatal_error
         self._dispatcher = dispatcher
         self._worker_count = worker_count
         self._pending_limit = pending_limit
+        self._pending_byte_limit = pending_byte_limit
+        self._pending_bytes = 0
+        self._peak_pending_bytes = 0
+        self._rejected_oversized = 0
         self._context_work_limit = max(1, pending_limit // worker_count)
         self._condition = Condition()
         self._pending: deque[_ScheduledWork] = deque()
@@ -129,7 +137,7 @@ class KeyedSerialHandlerScheduler(HandlerScheduler):
             raise
 
     def submit(self, event: StreamDockEvent) -> DispatchCompletion:
-        """Admit one event, blocking only while the pending deque is full."""
+        """Admit one event within the pending item and retained byte budgets."""
 
         if not isinstance(event, StreamDockEvent):
             raise TypeError("event must be a StreamDockEvent")
@@ -143,8 +151,20 @@ class KeyedSerialHandlerScheduler(HandlerScheduler):
             if not self._started:
                 raise HandlerSchedulerLifecycleError("scheduler has not been started")
 
+            size = retained_size(event, self._pending_byte_limit)
+            if size > self._pending_byte_limit:
+                self._rejected_oversized += 1
+                completion._finish(
+                    error=ValueError(
+                        f"Event exceeds scheduler byte limit (limit={self._pending_byte_limit})"
+                    )
+                )
+                return completion
             backpressured = False
-            while len(self._pending) >= self._pending_limit:
+            while (
+                len(self._pending) >= self._pending_limit
+                or self._pending_bytes + size > self._pending_byte_limit
+            ):
                 if not backpressured:
                     self._admission_backpressure += 1
                     backpressured = True
@@ -171,9 +191,12 @@ class KeyedSerialHandlerScheduler(HandlerScheduler):
                     completion=completion,
                     context=None if is_barrier else context,
                     is_barrier=is_barrier,
+                    size=size,
                 )
             )
             self._accepted += 1
+            self._pending_bytes += size
+            self._peak_pending_bytes = max(self._peak_pending_bytes, self._pending_bytes)
             if not is_barrier:
                 assert context is not None
                 self._pending_by_context[context] = self._pending_by_context.get(context, 0) + 1
@@ -196,21 +219,36 @@ class KeyedSerialHandlerScheduler(HandlerScheduler):
             if not self._started:
                 raise HandlerSchedulerLifecycleError("scheduler has not been started")
             if len(self._pending) < self._pending_limit:
+                deferred_contexts: set[str] = set()
                 for index, event in enumerate(events):
                     if not isinstance(event, ActionEvent) or _is_global_barrier(event):
                         if index == 0:
-                            self._selection_backpressured = False
-                            return index
+                            size = retained_size(event, self._pending_byte_limit)
+                            if self._can_admit_bytes(size):
+                                self._selection_backpressured = False
+                                return index
                         break
+                    if event.context in deferred_contexts:
+                        continue
                     context_work = self._pending_by_context.get(event.context, 0)
                     context_work += int(event.context in self._active_contexts)
                     if context_work < self._context_work_limit:
-                        self._selection_backpressured = False
-                        return index
+                        size = retained_size(event, self._pending_byte_limit)
+                        if self._can_admit_bytes(size):
+                            self._selection_backpressured = False
+                            return index
+                        deferred_contexts.add(event.context)
             if not self._selection_backpressured:
                 self._admission_backpressure += 1
                 self._selection_backpressured = True
             return None
+
+    def _can_admit_bytes(self, size: int) -> bool:
+        # An impossible event must reach submit() for an explicit terminal error.
+        return (
+            size > self._pending_byte_limit
+            or self._pending_bytes + size <= self._pending_byte_limit
+        )
 
     def set_admission_wakeup(self, callback: Callable[[], None]) -> None:
         """Attach the single source consumer's capacity notification."""
@@ -321,6 +359,10 @@ class KeyedSerialHandlerScheduler(HandlerScheduler):
                 callback_timeouts=self._callback_timeouts,
                 discarded_during_shutdown=self._discarded_during_shutdown,
                 admission_backpressure=self._admission_backpressure,
+                pending_byte_limit=self._pending_byte_limit,
+                current_pending_bytes=self._pending_bytes,
+                peak_pending_bytes=self._peak_pending_bytes,
+                rejected_oversized=self._rejected_oversized,
             )
 
     def _run(self) -> None:
@@ -400,6 +442,7 @@ class KeyedSerialHandlerScheduler(HandlerScheduler):
                 self._active_contexts.add(work.context)
 
             del self._pending[index]
+            self._pending_bytes -= work.size
             if work.context is not None:
                 remaining = self._pending_by_context[work.context] - 1
                 if remaining:
@@ -422,6 +465,7 @@ class KeyedSerialHandlerScheduler(HandlerScheduler):
         with self._condition:
             discarded = tuple(self._pending)
             self._pending.clear()
+            self._pending_bytes = 0
             self._pending_by_context.clear()
             self._terminalizing += len(discarded)
             self._discarded_during_shutdown += len(discarded)

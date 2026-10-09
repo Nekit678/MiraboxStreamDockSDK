@@ -3,16 +3,83 @@ from __future__ import annotations
 import unittest
 from threading import Event, Lock, Thread
 
-from mirabox_sdk import LogMessageCommand, SetStateCommand, SetTitleCommand
+from mirabox_sdk import LogMessageCommand, SetImageCommand, SetStateCommand, SetTitleCommand
 from mirabox_sdk._internal.messaging.outbound import (
     OutboundCommandQueue,
     OutboundCommandQueueClosedError,
     OutboundQueueFullError,
 )
 from mirabox_sdk._internal.messaging.ports import OutboundCommandSink, OutboundCommandSource
+from mirabox_sdk._internal.transport.buffer_limits import retained_size
 
 
 class OutboundCommandQueueTests(unittest.TestCase):
+    def test_byte_budget_rejects_large_images_before_item_limit_and_releases(self) -> None:
+        image = SetImageCommand("button", "data:image/png;base64," + "x" * 4096)
+        size = retained_size(image, 100_000)
+        queue = OutboundCommandQueue(1024, byte_limit=size)
+        first = queue.send_async(image)
+        with self.assertRaisesRegex(OutboundQueueFullError, "byte_limit"):
+            queue.send_async(image)
+        self.assertEqual(queue.metrics().current_depth, 1)
+        self.assertEqual(queue.metrics().current_bytes, size)
+        self.assertEqual(queue.metrics().rejected_full, 1)
+        queued = queue.receive(timeout=0)
+        self.assertEqual(queue.metrics().current_bytes, 0)
+        queued.completion._finish()
+        first.result(timeout=0)
+        accepted = queue.send_async(image)
+        queue.shutdown(timeout=0)
+        self.assertEqual(queue.metrics().current_bytes, 0)
+        with self.assertRaises(OutboundCommandQueueClosedError):
+            accepted.result(timeout=0)
+
+    def test_coalescing_accounts_for_growing_and_shrinking_images(self) -> None:
+        large = SetImageCommand("button", "x" * 4096)
+        small = SetImageCommand("button", "x")
+        large_size = retained_size(large, 100_000)
+        small_size = retained_size(small, 100_000)
+        queue = OutboundCommandQueue(1, byte_limit=large_size, coalesce_commands=True)
+        futures = [queue.send_async(command) for command in (small, large, small)]
+        self.assertEqual(queue.metrics().current_bytes, small_size)
+        self.assertEqual(queue.metrics().peak_bytes, large_size)
+        self.assertEqual(queue.metrics().coalesced, 2)
+        queue.receive().completion._finish()
+        self.assertTrue(all(future.done() for future in futures))
+        self.assertEqual(queue.metrics().current_bytes, 0)
+
+    def test_rejected_coalescing_replacement_preserves_the_accepted_command(self) -> None:
+        small = SetImageCommand("button", "x")
+        large = SetImageCommand("button", "x" * 4096)
+        barrier = LogMessageCommand("barrier")
+        budget = retained_size(small, 100_000) + retained_size(barrier, 100_000)
+        queue = OutboundCommandQueue(10, byte_limit=budget, coalesce_commands=True)
+        queue.send_async(barrier)
+        accepted = queue.send_async(small)
+        with self.assertRaises(OutboundQueueFullError):
+            queue.send_async(large)
+        self.assertFalse(accepted.done())
+        self.assertEqual(queue.metrics().current_bytes, budget)
+        self.assertEqual(queue.metrics().rejected_oversized, 1)
+        queue.receive().completion._finish()
+        submission = queue.receive()
+        self.assertIs(submission.command, small)
+        submission.completion._finish()
+        accepted.result(timeout=0)
+
+    def test_replacement_that_only_exceeds_aggregate_budget_is_rejected(self) -> None:
+        small = SetImageCommand("button", "x")
+        large = SetImageCommand("button", "x" * 4096)
+        budget = retained_size(large, 100_000)
+        queue = OutboundCommandQueue(10, byte_limit=budget, coalesce_commands=True)
+        queue.send_async(LogMessageCommand("barrier"))
+        queue.send_async(small)
+        with self.assertRaises(OutboundQueueFullError):
+            queue.send_async(large)
+        self.assertEqual(queue.metrics().rejected_full, 1)
+        queue.receive().completion._finish()
+        self.assertIs(queue.receive().command, small)
+
     def test_rejects_invalid_configuration(self) -> None:
         for invalid_limit in (0, -1, True, 1.5):
             with self.assertRaisesRegex(ValueError, "positive integer"):

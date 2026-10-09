@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import unittest
 from collections.abc import Callable
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 from threading import Event, Lock, Thread, current_thread
 from threading import enumerate as enumerate_threads
 from time import monotonic, sleep
@@ -44,7 +44,10 @@ from mirabox_sdk._internal.transport.ports import (
     SessionEventSink,
     WebSocketConnector,
 )
-from mirabox_sdk._internal.transport.queues import TransportQueueClosedError
+from mirabox_sdk._internal.transport.queues import (
+    TransportMessageTooLargeError,
+    TransportQueueClosedError,
+)
 from mirabox_sdk._internal.transport.session import Connected, Disconnected
 from mirabox_sdk._internal.transport.websocket import WebSocketClientConnector
 from mirabox_sdk.runtime.application import _create_stream_dock_application
@@ -284,6 +287,36 @@ class _BoundaryHarness:
 
 
 class StreamDockBoundaryPipelineTests(unittest.TestCase):
+    def test_byte_limits_are_wired_and_oversized_command_completes_with_failure(self) -> None:
+        config = replace(
+            _queue_config(),
+            max_message_bytes=128,
+            raw_inbound_byte_limit=512,
+            inbound_event_byte_limit=1024,
+            outbound_command_byte_limit=2048,
+            raw_outbound_byte_limit=512,
+        )
+        harness = _BoundaryHarness(queue_config=config)
+        harness.start()
+        try:
+            self.assertFalse(harness.connector._raw_inbound.submit("x" * 129))
+            completion = harness.boundary.commands.send_async(LogMessageCommand("x" * 256))
+            with self.assertRaises(TransportMessageTooLargeError):
+                completion.result(timeout=1)
+            succeeded = harness.boundary.commands.send_async(LogMessageCommand("valid"))
+            succeeded.result(timeout=1)
+            metrics = harness.boundary.metrics()
+            self.assertEqual(metrics.raw_inbound.byte_limit, 512)
+            self.assertEqual(metrics.inbound_events.byte_limit, 1024)
+            self.assertEqual(metrics.outbound_commands.byte_limit, 2048)
+            self.assertEqual(metrics.raw_outbound.byte_limit, 512)
+            self.assertEqual(metrics.raw_inbound.rejected_oversized, 1)
+            self.assertEqual(metrics.raw_outbound.rejected_oversized, 1)
+            self.assertEqual(metrics.command_writer.completion_failures, 1)
+        finally:
+            harness.boundary.close()
+            harness.join()
+
     def test_commands_fail_fast_before_writer_start_and_after_close(self) -> None:
         harness = _BoundaryHarness()
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 from collections import deque
+from dataclasses import replace
 from threading import Event, Thread
 from unittest.mock import patch
 
@@ -21,6 +22,7 @@ from mirabox_sdk._internal.messaging.inbound import (
     _QueuedEvent,
 )
 from mirabox_sdk._internal.messaging.ports import InboundEventSink, InboundEventSource
+from mirabox_sdk._internal.transport.buffer_limits import retained_size
 
 
 def dial(context: str, ticks: int = 1) -> DialRotateEvent:
@@ -72,6 +74,58 @@ class _IndexCostDeque(deque[_QueuedEvent]):
 
 
 class InboundEventQueueTests(unittest.TestCase):
+    def test_settings_byte_budget_rejects_before_item_limit_and_releases(self) -> None:
+        event = replace(key_down("button"), settings={"large": "x" * 4096})
+        size = retained_size(event, 100_000)
+        queue = InboundEventQueue(1024, byte_limit=size)
+        self.assertTrue(queue.submit(event))
+        self.assertFalse(queue.submit(event, timeout=0))
+        self.assertEqual(queue.metrics().current_bytes, size)
+        self.assertEqual(queue.metrics().rejected_full, 1)
+        self.assertIs(queue.receive_selected(lambda events: 0, timeout=0), event)
+        self.assertEqual(queue.metrics().current_bytes, 0)
+        queue.task_done()
+        self.assertTrue(queue.submit(event))
+        queue.shutdown(timeout=0)
+        self.assertEqual(queue.metrics().current_bytes, 0)
+
+    def test_impossible_event_is_rejected_without_waiting(self) -> None:
+        queue = InboundEventQueue(1024, byte_limit=1)
+        self.assertFalse(queue.submit(key_down("button")))
+        self.assertEqual(queue.metrics().rejected_oversized, 1)
+        self.assertEqual(queue.metrics().dropped, 1)
+
+    def test_byte_pressure_drops_enough_rotations_to_admit_lossless_event(self) -> None:
+        first, second = dial("first"), dial("second")
+        budget = retained_size(first, 100_000) + retained_size(second, 100_000)
+        empty = key_down("button")
+        empty_size = retained_size(replace(empty, settings={"large": ""}), 100_000)
+        event = replace(empty, settings={"large": "x" * (budget - empty_size)})
+        self.assertLessEqual(retained_size(event, 100_000), budget)
+        queue = InboundEventQueue(1024, byte_limit=budget)
+        self.assertTrue(queue.submit(first))
+        self.assertTrue(queue.submit(second))
+        self.assertTrue(queue.submit(event, timeout=0))
+        self.assertEqual(queue.metrics().dropped_newest, 2)
+        self.assertIs(queue.receive(), event)
+        queue.task_done()
+        self.assertEqual(queue.metrics().current_bytes, 0)
+
+    def test_coalescing_updates_byte_weight_and_preserves_budget(self) -> None:
+        small = dial("button")
+        large = replace(small, settings={"large": "x" * 4096})
+        budget = retained_size(large, 100_000)
+        queue = InboundEventQueue(1, byte_limit=budget, coalesce_dial_rotations=True)
+        for event in (small, large, small):
+            self.assertTrue(queue.submit(event))
+            self.assertLessEqual(queue.metrics().current_bytes, budget)
+        self.assertEqual(queue.metrics().coalesced, 2)
+        self.assertEqual(queue.metrics().current_bytes, retained_size(small, 100_000))
+        self.assertEqual(queue.metrics().peak_bytes, budget)
+        self.assertEqual(queue.receive().ticks, 3)
+        queue.task_done()
+        self.assertEqual(queue.metrics().current_bytes, 0)
+
     def test_selection_leaves_deferred_events_queued_and_preserves_coalescing(self) -> None:
         queue = InboundEventQueue(3, coalesce_dial_rotations=True)
         cold = key_down("cold")

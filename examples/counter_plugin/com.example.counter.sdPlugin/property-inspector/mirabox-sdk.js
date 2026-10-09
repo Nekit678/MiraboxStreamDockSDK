@@ -1,6 +1,27 @@
 (() => {
   "use strict";
 
+  const MAX_MESSAGE_BYTES = 8 * 1024 * 1024;
+  const QUEUE_BYTE_LIMIT = 16 * 1024 * 1024;
+  const PENDING_MESSAGE_LIMIT = 1024;
+
+  /** Count wire bytes without allocating a second copy of a large message. */
+  function utf8Size(text, limit) {
+    let size = 0;
+    for (let index = 0; index < text.length; index += 1) {
+      const code = text.charCodeAt(index);
+      if (code < 0x80) size += 1;
+      else if (code < 0x800) size += 2;
+      else if (code >= 0xd800 && code <= 0xdbff
+        && text.charCodeAt(index + 1) >= 0xdc00 && text.charCodeAt(index + 1) <= 0xdfff) {
+        size += 4;
+        index += 1;
+      } else size += 3;
+      if (size > limit) break;
+    }
+    return size;
+  }
+
   /**
    * Determine whether a value is a non-null object rather than an array.
    *
@@ -53,6 +74,11 @@
     constructor() {
       this._listeners = new Map();
       this._pendingMessages = [];
+      this._pendingBytes = 0;
+      this._peakPendingBytes = 0;
+      this._peakPendingDepth = 0;
+      this._rejectedFull = 0;
+      this._rejectedOversized = 0;
       this._websocket = undefined;
       this._action = undefined;
       this._context = undefined;
@@ -117,6 +143,21 @@
      */
     get isConnected() {
       return this._websocket?.readyState === WebSocket.OPEN;
+    }
+
+    /** Return a detached snapshot of the connecting queue's wire byte budget. */
+    get queueMetrics() {
+      return {
+        messageLimit: PENDING_MESSAGE_LIMIT,
+        maxMessageBytes: MAX_MESSAGE_BYTES,
+        byteLimit: QUEUE_BYTE_LIMIT,
+        currentDepth: this._pendingMessages.length,
+        currentBytes: this._pendingBytes,
+        peakDepth: this._peakPendingDepth,
+        peakBytes: this._peakPendingBytes,
+        rejectedFull: this._rejectedFull,
+        rejectedOversized: this._rejectedOversized,
+      };
     }
 
     /**
@@ -215,7 +256,9 @@
       websocket.addEventListener("open", () => {
         const registration = { event: registerEvent, uuid: propertyInspectorUUID };
         try {
-          websocket.send(JSON.stringify(registration));
+          const data = JSON.stringify(registration);
+          this._messageSize(data);
+          websocket.send(data);
         } catch (error) {
           websocket.close();
           this._emit("sendError", { message: registration, error });
@@ -223,6 +266,7 @@
           return;
         }
         const pendingMessages = this._pendingMessages.splice(0);
+        this._pendingBytes = 0;
         for (const data of pendingMessages) {
           try {
             if (websocket.readyState !== WebSocket.OPEN) {
@@ -263,6 +307,7 @@
      * @returns {boolean} `true` if sent immediately; `false` if accepted into the queue.
      * @throws {TypeError} If `message` is not an object or JSON serialization fails.
      * @throws {Error} If uninitialized, closing, closed, or an immediate send fails.
+     * @throws {RangeError} If the frame or connecting queue exceeds its byte/item limit.
      */
     send(message) {
       if (!isObject(message)) {
@@ -276,12 +321,21 @@
         throw new Error("Property Inspector WebSocket is closing or closed");
       }
       const data = JSON.stringify(message);
+      const size = this._messageSize(data);
       parseObject(data, "message");
       if (websocket.readyState === WebSocket.OPEN) {
         websocket.send(data);
         return true;
       }
+      if (this._pendingMessages.length >= PENDING_MESSAGE_LIMIT
+        || this._pendingBytes + size > QUEUE_BYTE_LIMIT) {
+        this._rejectedFull += 1;
+        throw new RangeError("Property Inspector connecting queue is full (message or byte limit)");
+      }
       this._pendingMessages.push(data);
+      this._pendingBytes += size;
+      this._peakPendingBytes = Math.max(this._peakPendingBytes, this._pendingBytes);
+      this._peakPendingDepth = Math.max(this._peakPendingDepth, this._pendingMessages.length);
       return false;
     }
 
@@ -360,14 +414,28 @@
 
     _rejectPendingMessages(error) {
       const pendingMessages = this._pendingMessages.splice(0);
+      this._pendingBytes = 0;
       for (const data of pendingMessages) {
         this._emit("sendError", { message: JSON.parse(data), error });
       }
     }
 
+    _messageSize(data) {
+      if (typeof data !== "string") {
+        throw new TypeError("message must serialize to JSON text");
+      }
+      const size = utf8Size(data, MAX_MESSAGE_BYTES);
+      if (size > MAX_MESSAGE_BYTES) {
+        this._rejectedOversized += 1;
+        throw new RangeError(`Property Inspector message exceeds byte limit (${MAX_MESSAGE_BYTES})`);
+      }
+      return size;
+    }
+
     _receive(event) {
       let message;
       try {
+        this._messageSize(event.data);
         message = parseObject(event.data, "WebSocket message");
       } catch (error) {
         console.error("Ignoring invalid Stream Dock message", error);

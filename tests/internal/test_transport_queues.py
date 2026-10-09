@@ -17,6 +17,7 @@ from mirabox_sdk._internal.transport.queues import (
     RawInboundQueue,
     RawOutboundQueue,
     SessionEventQueue,
+    TransportMessageTooLargeError,
     TransportQueueClosedError,
     TransportQueueFullError,
 )
@@ -24,6 +25,78 @@ from mirabox_sdk._internal.transport.session import Connected, Disconnected
 
 
 class TransportQueueTests(unittest.TestCase):
+    def test_utf8_budget_rejects_oversized_and_releases_bytes_on_receive(self) -> None:
+        queue = RawInboundQueue(10, byte_limit=8, max_message_bytes=6)
+        self.assertTrue(queue.submit("😀é"))  # Six bytes, three Python characters.
+        self.assertFalse(queue.submit("éé", timeout=0))
+        self.assertFalse(queue.submit("😀😀"))  # Impossible submissions never wait.
+        metrics = queue.metrics()
+        self.assertEqual(metrics.current_bytes, 6)
+        self.assertEqual(metrics.peak_bytes, 6)
+        self.assertEqual(metrics.current_depth, 1)
+        self.assertEqual(metrics.rejected_full, 1)
+        self.assertEqual(metrics.rejected_oversized, 1)
+        self.assertEqual(metrics.rejected, 2)
+        self.assertEqual(queue.receive(), "😀é")
+        self.assertEqual(queue.metrics().current_bytes, 0)
+        self.assertTrue(queue.submit("éé", timeout=0))
+        self.assertFalse(queue.shutdown(timeout=0))
+        self.assertEqual(queue.metrics().current_bytes, 0)
+
+    def test_byte_backpressure_wakes_on_receive_and_shutdown(self) -> None:
+        for shutdown in (False, True):
+            with self.subTest(shutdown=shutdown):
+                queue = RawInboundQueue(10, byte_limit=4, max_message_bytes=4)
+                queue.submit("1234")
+                finished = Event()
+                accepted: list[bool] = []
+
+                def produce(target: RawInboundQueue, results: list[bool], signal: Event) -> None:
+                    results.append(target.submit("abcd"))
+                    signal.set()
+
+                producer = Thread(target=produce, args=(queue, accepted, finished))
+                producer.start()
+                self.assertFalse(finished.wait(0.02))
+                if shutdown:
+                    queue.shutdown(timeout=0)
+                else:
+                    queue.receive(timeout=0)
+                self.assertTrue(finished.wait(1))
+                producer.join(1)
+                self.assertEqual(accepted, [not shutdown])
+                self.assertLessEqual(queue.metrics().peak_bytes, 4)
+
+    def test_outbound_byte_rejections_complete_receipts(self) -> None:
+        queue = RawOutboundQueue(10, byte_limit=6, max_message_bytes=5)
+        first = OutboundFrame("12345", TransportReceipt())
+        full = OutboundFrame("ab", TransportReceipt())
+        oversized = OutboundFrame("123456", TransportReceipt())
+        self.assertTrue(queue.submit(first))
+        self.assertFalse(queue.submit(full, timeout=0))
+        self.assertFalse(queue.submit(oversized))
+        with self.assertRaises(TransportQueueFullError):
+            full.receipt.result(timeout=0)
+        with self.assertRaisesRegex(TransportMessageTooLargeError, "limit=5"):
+            oversized.receipt.result(timeout=0)
+        self.assertFalse(first.receipt.done())
+        queue.shutdown(timeout=0)
+        self.assertEqual(queue.metrics().current_bytes, 0)
+        self.assertTrue(first.receipt.done())
+
+    def test_message_cannot_exceed_an_empty_queues_byte_budget(self) -> None:
+        queue = RawInboundQueue(10, byte_limit=2, max_message_bytes=10)
+        self.assertFalse(queue.submit("abc"))
+        self.assertEqual(queue.metrics().rejected_oversized, 1)
+
+    def test_rejects_invalid_byte_limits(self) -> None:
+        for queue_type in (RawInboundQueue, RawOutboundQueue):
+            for name in ("byte_limit", "max_message_bytes"):
+                for invalid in (0, -1, True, 1.5):
+                    with self.subTest(queue=queue_type, name=name, value=invalid):
+                        with self.assertRaisesRegex(ValueError, name):
+                            queue_type(1, **{name: invalid})
+
     def test_rejects_invalid_queue_limits_and_timeouts(self) -> None:
         for queue_type in (RawInboundQueue, RawOutboundQueue, SessionEventQueue):
             for invalid_limit in (0, -1, True, 1.5):

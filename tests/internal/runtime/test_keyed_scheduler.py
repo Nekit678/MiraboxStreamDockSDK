@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 from collections import defaultdict
 from collections.abc import Callable
+from dataclasses import replace
 from threading import Event, Lock, Thread
 
 from mirabox_sdk import StreamDockEvent, SystemDidWakeUpEvent, UnknownStreamDockEvent
@@ -10,6 +11,7 @@ from mirabox_sdk._internal.runtime.keyed_scheduler import KeyedSerialHandlerSche
 from mirabox_sdk._internal.runtime.models import DispatchOutcome, DispatchResult
 from mirabox_sdk._internal.runtime.ports import DispatchCompletion, HandlerScheduler
 from mirabox_sdk._internal.runtime.scheduler import HandlerSchedulerLifecycleError
+from mirabox_sdk._internal.transport.buffer_limits import retained_size
 
 from .fakes import (
     FakeRuntimeEventDispatcher,
@@ -33,6 +35,84 @@ def _scheduler(
 
 
 class KeyedSerialHandlerSchedulerTests(unittest.TestCase):
+    def test_pending_byte_budget_backpressures_until_work_is_taken(self) -> None:
+        entered, release, submitted = Event(), Event(), Event()
+        event = replace(key_down_event(), settings={"large": "x" * 4096})
+        budget = retained_size(event, 100_000)
+
+        def dispatch(event: StreamDockEvent) -> DispatchResult:
+            entered.set()
+            release.wait()
+            return DispatchResult(DispatchOutcome.HANDLED)
+
+        scheduler = KeyedSerialHandlerScheduler(
+            FakeRuntimeEventDispatcher(dispatch),
+            worker_count=1,
+            pending_limit=64,
+            pending_byte_limit=budget,
+        )
+        self.addCleanup(lambda: scheduler.stop(timeout=1))
+        self.addCleanup(release.set)
+        scheduler.start()
+        active = scheduler.submit(event)
+        self.assertTrue(entered.wait(1))
+        pending = scheduler.submit(event)
+        self.assertEqual(scheduler.metrics().current_pending_bytes, budget)
+        accepted: list[DispatchCompletion] = []
+
+        def produce() -> None:
+            accepted.append(scheduler.submit(event))
+            submitted.set()
+
+        producer = Thread(target=produce)
+        producer.start()
+        self.assertFalse(submitted.wait(0.02))
+        release.set()
+        self.assertTrue(submitted.wait(1))
+        producer.join(1)
+        for completion in (active, pending, *accepted):
+            self.assertIs(completion.result(1).outcome, DispatchOutcome.HANDLED)
+        self.assertTrue(scheduler.stop(timeout=1))
+        self.assertEqual(scheduler.metrics().current_pending_bytes, 0)
+        self.assertEqual(scheduler.metrics().peak_pending_bytes, budget)
+        self.assertEqual(scheduler.metrics().admission_backpressure, 1)
+
+    def test_byte_admission_preserves_context_order_and_barriers(self) -> None:
+        entered, release = Event(), Event()
+
+        def dispatch(event: StreamDockEvent) -> DispatchResult:
+            entered.set()
+            release.wait()
+            return DispatchResult(DispatchOutcome.HANDLED)
+
+        queued = replace(key_down_event(context="queued"), settings={"large": "x" * 4096})
+        cold = key_down_event(context="cold")
+        budget = retained_size(queued, 100_000) + retained_size(cold, 100_000)
+        scheduler = KeyedSerialHandlerScheduler(
+            FakeRuntimeEventDispatcher(dispatch),
+            worker_count=1,
+            pending_limit=64,
+            pending_byte_limit=budget,
+        )
+        self.addCleanup(lambda: scheduler.stop(timeout=1))
+        self.addCleanup(release.set)
+        scheduler.start()
+        scheduler.submit(SystemDidWakeUpEvent())
+        self.assertTrue(entered.wait(1))
+        scheduler.submit(queued)
+        large = replace(key_down_event(context="hot"), settings={"large": "x" * 2048})
+        small = key_down_event(context="hot")
+        self.assertEqual(scheduler.select_event([large, small, cold]), 2)
+        self.assertIsNone(scheduler.select_event([large, small, SystemDidWakeUpEvent(), cold]))
+        impossible = replace(large, settings={"large": "x" * budget})
+        self.assertEqual(scheduler.select_event([impossible]), 0)
+        with self.assertRaisesRegex(ValueError, "scheduler byte limit"):
+            scheduler.submit(impossible).result(0)
+        self.assertEqual(scheduler.metrics().rejected_oversized, 1)
+        with self.assertLogs("mirabox_sdk", level="WARNING"):
+            self.assertFalse(scheduler.stop(timeout=0))
+        self.assertEqual(scheduler.metrics().current_pending_bytes, 0)
+
     def test_discard_finishes_every_completion_when_an_observer_raises_base_exception(self) -> None:
         entered, release = Event(), Event()
 
@@ -77,6 +157,7 @@ class KeyedSerialHandlerSchedulerTests(unittest.TestCase):
         for field_name, values in (
             ("worker_count", (0, -1, True, 1.5)),
             ("pending_limit", (0, -1, True, 1.5)),
+            ("pending_byte_limit", (0, -1, True, 1.5)),
         ):
             for invalid in values:
                 kwargs = {"worker_count": 2, "pending_limit": 8, field_name: invalid}

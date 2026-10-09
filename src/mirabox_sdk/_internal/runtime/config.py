@@ -6,6 +6,7 @@ import warnings
 from dataclasses import dataclass
 from math import isfinite
 
+from ..transport.buffer_limits import DEFAULT_QUEUE_BYTE_LIMIT
 from .models import RuntimeSchedulerKind
 
 
@@ -42,6 +43,8 @@ class RuntimeDispatcherConfig:
 
     ``callback_drain_timeout`` only bounds shutdown drain; it does not monitor
     callbacks during normal dispatch. ``callback_timeout`` is its deprecated alias.
+    ``scheduler_pending_byte_limit`` bounds estimated retained DTO/JSON bytes in
+    the keyed scheduler's pending deque; active callbacks are counted separately.
     """
 
     session_poll_interval: float = 0.05
@@ -54,6 +57,7 @@ class RuntimeDispatcherConfig:
     callback_timeout: float | None = None
     callback_drain_timeout: float | None = None
     shutdown_timeout: float | None = 5.0
+    scheduler_pending_byte_limit: int = DEFAULT_QUEUE_BYTE_LIMIT
 
     def __post_init__(self) -> None:
         _require_positive_finite_number("session_poll_interval", self.session_poll_interval)
@@ -64,6 +68,7 @@ class RuntimeDispatcherConfig:
 
         _require_positive_integer("worker_count", self.worker_count)
         _require_positive_integer("scheduler_pending_limit", self.scheduler_pending_limit)
+        _require_positive_integer("scheduler_pending_byte_limit", self.scheduler_pending_byte_limit)
 
         _require_optional_timeout("runtime_drain_timeout", self.runtime_drain_timeout)
         _require_optional_timeout("worker_stop_timeout", self.worker_stop_timeout)

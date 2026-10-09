@@ -24,6 +24,10 @@ class InboundEventQueueMetrics:
     rejected_full: int
     rejected_after_shutdown: int
     discarded_during_shutdown: int
+    byte_limit: int = 0
+    current_bytes: int = 0
+    peak_bytes: int = 0
+    rejected_oversized: int = 0
 
     @property
     def dropped(self) -> int:
@@ -35,6 +39,7 @@ class InboundEventQueueMetrics:
             + self.rejected_full
             + self.rejected_after_shutdown
             + self.discarded_during_shutdown
+            + self.rejected_oversized
         )
 
 
@@ -52,12 +57,16 @@ class OutboundCommandQueueMetrics:
     rejected_full: int
     rejected_after_shutdown: int
     discarded_during_shutdown: int
+    byte_limit: int = 0
+    current_bytes: int = 0
+    peak_bytes: int = 0
+    rejected_oversized: int = 0
 
     @property
     def rejected(self) -> int:
         """Return the number of commands refused before acceptance."""
 
-        return self.rejected_full + self.rejected_after_shutdown
+        return self.rejected_full + self.rejected_after_shutdown + self.rejected_oversized
 
 
 @dataclass(frozen=True, slots=True)
