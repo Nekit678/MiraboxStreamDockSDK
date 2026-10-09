@@ -284,20 +284,17 @@ class InboundEventQueue(InboundEventSource, InboundEventSink, InboundEventQueueC
         return True
 
     def _drop_queued_rotation(self) -> bool:
-        queue_indexes = range(len(self._queue))
-        indexes = (
-            reversed(queue_indexes)
-            if self._overflow_policy is InboundOverflowPolicy.DROP_NEWEST
-            else iter(queue_indexes)
-        )
+        drop_newest = self._overflow_policy is InboundOverflowPolicy.DROP_NEWEST
+        queued_events = reversed(self._queue) if drop_newest else iter(self._queue)
 
-        for index in indexes:
-            queued = self._queue[index]
+        # Direct iteration avoids quadratic traversal from repeated deque indexing.
+        for offset, queued in enumerate(queued_events):
             if not isinstance(queued.event, DialRotateEvent):
                 continue
+            index = len(self._queue) - offset - 1 if drop_newest else offset
             del self._queue[index]
             self._forget_queued_event(queued)
-            if self._overflow_policy is InboundOverflowPolicy.DROP_NEWEST:
+            if drop_newest:
                 self._dropped_newest += 1
             else:
                 self._dropped_oldest += 1

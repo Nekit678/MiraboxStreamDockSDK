@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import unittest
+from collections import deque
 from threading import Event, Thread
+from unittest.mock import patch
 
 from mirabox_sdk import (
     Controller,
@@ -16,6 +18,7 @@ from mirabox_sdk._internal.messaging.inbound import (
     InboundEventQueue,
     InboundEventQueueClosedError,
     InboundOverflowPolicy,
+    _QueuedEvent,
 )
 from mirabox_sdk._internal.messaging.ports import InboundEventSink, InboundEventSource
 
@@ -53,6 +56,19 @@ def will_appear(context: str) -> WillAppearEvent:
         controller=Controller.KEYPAD,
         is_in_multi_action=False,
     )
+
+
+class _IndexCostDeque(deque[_QueuedEvent]):
+    """Count traversal work for indexed reads without timing-dependent assertions."""
+
+    index_access_cost = 0
+
+    def __getitem__(self, index: int) -> _QueuedEvent:
+        queued = super().__getitem__(index)
+        if index < 0:
+            index += len(self)
+        self.index_access_cost += 1 + min(index, len(self) - index - 1)
+        return queued
 
 
 class InboundEventQueueTests(unittest.TestCase):
@@ -213,6 +229,76 @@ class InboundEventQueueTests(unittest.TestCase):
         self.assertIs(drop_newest.receive(), oldest_rotation)
         self.assertIs(drop_newest.receive(), lifecycle)
         self.assertEqual(drop_newest.metrics().dropped_newest, 1)
+
+    def test_full_lossless_queue_overflow_scan_has_linear_index_access_cost(self) -> None:
+        for policy in InboundOverflowPolicy:
+            for capacity in (128, 512, 2048):
+                with self.subTest(policy=policy, capacity=capacity):
+                    measured = _IndexCostDeque()
+                    with patch(
+                        "mirabox_sdk._internal.messaging.inbound.deque", return_value=measured
+                    ):
+                        queue = InboundEventQueue(capacity, overflow_policy=policy)
+                    events = [key_down(str(index)) for index in range(capacity)]
+                    for event in events:
+                        self.assertTrue(queue.submit(event, timeout=0))
+
+                    self.assertFalse(queue.submit(key_down("overflow"), timeout=0))
+                    self.assertLessEqual(measured.index_access_cost, capacity)
+                    metrics = queue.metrics()
+                    self.assertEqual(metrics.current_depth, capacity)
+                    self.assertEqual(metrics.rejected_full, 1)
+                    self.assertEqual((metrics.dropped_newest, metrics.dropped_oldest), (0, 0))
+                    for event in events:
+                        self.assertIs(queue.receive(timeout=0), event)
+                        queue.task_done()
+                    self.assertTrue(queue.drain(timeout=0))
+
+    def test_overflow_removes_rotation_at_either_end_or_middle_and_preserves_order(self) -> None:
+        for policy in InboundOverflowPolicy:
+            for rotation_indexes in ((0,), (2,), (4,), (0, 2, 4)):
+                with self.subTest(policy=policy, rotation_indexes=rotation_indexes):
+                    queue = InboundEventQueue(5, overflow_policy=policy)
+                    events: list[StreamDockEvent] = [
+                        dial(str(index)) if index in rotation_indexes else key_down(str(index))
+                        for index in range(5)
+                    ]
+                    for event in events:
+                        self.assertTrue(queue.submit(event, timeout=0))
+                    incoming = key_down("incoming")
+                    self.assertTrue(queue.submit(incoming, timeout=0))
+
+                    newest = policy is InboundOverflowPolicy.DROP_NEWEST
+                    removed_index = max(rotation_indexes) if newest else min(rotation_indexes)
+                    expected = events[:removed_index] + events[removed_index + 1 :] + [incoming]
+                    self.assertEqual([queue.receive(timeout=0) for _ in expected], expected)
+                    for _ in expected:
+                        queue.task_done()
+                    metrics = queue.metrics()
+                    self.assertEqual(metrics.dropped_newest, int(newest))
+                    self.assertEqual(metrics.dropped_oldest, int(not newest))
+                    self.assertEqual(metrics.acknowledged, 5)
+                    self.assertTrue(queue.drain(timeout=0))
+
+    def test_evicted_rotation_cannot_coalesce_with_a_later_submission(self) -> None:
+        for policy in InboundOverflowPolicy:
+            with self.subTest(policy=policy):
+                queue = InboundEventQueue(3, overflow_policy=policy, coalesce_dial_rotations=True)
+                events = [key_down(str(index)) for index in range(3)]
+                self.assertTrue(queue.submit(dial("dial", 1)))
+                for event in events:
+                    self.assertTrue(queue.submit(event, timeout=0))
+                self.assertIs(queue.receive(timeout=0), events[0])
+                queue.task_done()
+
+                rotation = dial("dial", 2)
+                self.assertTrue(queue.submit(rotation, timeout=0))
+                expected = [*events[1:], rotation]
+                self.assertEqual([queue.receive(timeout=0) for _ in expected], expected)
+                for _ in expected:
+                    queue.task_done()
+                self.assertEqual(queue.metrics().coalesced, 0)
+                self.assertTrue(queue.drain(timeout=0))
 
     def test_lossless_event_backpressures_and_can_time_out_explicitly(self) -> None:
         queue = InboundEventQueue(1)
