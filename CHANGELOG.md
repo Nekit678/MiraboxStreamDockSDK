@@ -8,6 +8,11 @@ change public APIs between minor versions.
 
 ### Added
 
+- Add async global-settings persistence and `CommandFuture.add_done_callback()`
+  (PERF-04). Complete settings futures after commit/rollback; reject overlapping
+  async transactions with `GlobalSettingsBusyError` before mutation or encoding.
+- Add a slow-sender benchmark for command p95/p99, callback-worker occupancy,
+  input latency and settings snapshots, with a local before/after baseline.
 - Run the existing scheduler performance gate in a dedicated CI job on Ubuntu
   24.04 with CPython 3.13.11; retain results, diagnostics and runner/dependency
   metadata for 90 days, including failed gates. Record a local baseline before
@@ -49,6 +54,8 @@ change public APIs between minor versions.
 
 ### Fixed
 
+- Allow global-settings snapshots during mutation and transport I/O while keeping
+  writes and incoming replacements serialized and rollback-safe (PERF-04).
 - Bind `Action.settings_codec` to its settings type (TYPE-01), including class
   access. Typed actions register with `settings_codec=...`; reject incompatible
   or omitted codecs while preserving concrete subclasses, constructors and

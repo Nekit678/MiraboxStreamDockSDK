@@ -88,6 +88,22 @@ class HarnessTests(unittest.TestCase):
             plugin=plugin,
         )
 
+    def test_async_global_settings_commit_through_the_production_command_pipeline(self) -> None:
+        with self.make_harness() as harness:
+            settings = harness.application.global_settings
+            settings.update_async(lambda draft: draft.update(count=1)).result(timeout=1)
+            self.assertEqual(settings.snapshot(), {"count": 1})
+            self.assertTrue(settings.loaded)
+            self.assertEqual(
+                harness.messages[-1],
+                {
+                    "event": "setGlobalSettings",
+                    "context": "plugin-uuid",
+                    "payload": {"count": 1},
+                },
+            )
+            self.assertEqual(harness.application.metrics().actions.global_settings_updates, 1)
+
     def test_construction_is_idle_and_context_exit_joins_workers_without_websocket(self) -> None:
         before = {thread.ident for thread in enumerate_threads()}
         harness = self.make_harness()

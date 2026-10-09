@@ -7,10 +7,15 @@ from collections.abc import Callable
 from typing import Protocol, TypeVar, runtime_checkable
 
 from .codecs import JsonCodec
+from .completion import CommandFuture
 from .json_types import JsonObject
 from .json_types import JsonValue as JsonValue  # Resolve recursive JSON type hints.
 
 GlobalSettingsT = TypeVar("GlobalSettingsT")
+
+
+class GlobalSettingsBusyError(RuntimeError):
+    """Reject an async write while another settings transaction is active."""
 
 
 @runtime_checkable
@@ -57,5 +62,37 @@ class GlobalSettings(Protocol):
 
         ...
 
+    @abstractmethod
+    def update_async(self, update: Callable[[JsonObject], None]) -> CommandFuture:
+        """Mutate and validate on this thread, then persist without waiting.
 
-__all__ = ["GlobalSettings"]
+        Only one transaction may be in progress. Raises
+        :class:`GlobalSettingsBusyError` before invoking ``update`` if busy.
+        The returned future completes after commit or rollback. Observe it with
+        ``add_done_callback``; a wait timeout does not cancel persistence.
+        """
+
+        ...
+
+    @abstractmethod
+    def set_async(self, settings: JsonObject) -> CommandFuture:
+        """Validate and submit a replacement, committing only after success.
+
+        Raises :class:`GlobalSettingsBusyError` if a transaction is in progress.
+        Validation and command acceptance errors propagate before returning.
+        """
+
+        ...
+
+    @abstractmethod
+    def set_typed_async(
+        self,
+        settings: GlobalSettingsT,
+        codec: JsonCodec[GlobalSettingsT],
+    ) -> CommandFuture:
+        """Encode on this thread and persist with the same async guarantees."""
+
+        ...
+
+
+__all__ = ["GlobalSettings", "GlobalSettingsBusyError"]

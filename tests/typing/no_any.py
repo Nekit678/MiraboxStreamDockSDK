@@ -72,6 +72,10 @@ assert_type(StrictAction.settings_codec, JsonCodec[JsonObject])
 assert_type(StrictAction.get_settings_codec(), JsonCodec[JsonObject])
 
 
+def observe_completion(result: CommandFuture) -> None:
+    assert_type(result.exception(timeout=0), Exception | None)
+
+
 def check_contract(
     context: ApplicationContext,
     application: StreamDockApplication,
@@ -83,6 +87,14 @@ def check_contract(
     assert_type(context.stream_dock.send_async(LogMessageCommand("shared sender")), CommandFuture)
     assert_type(context.global_settings.loaded, bool)
     assert_type(context.global_settings.snapshot(), JsonObject)
+    persistence = context.global_settings.update_async(lambda draft: draft.update(count=1))
+    assert_type(persistence, CommandFuture)
+    assert_type(persistence.add_done_callback(observe_completion), None)
+    assert_type(context.global_settings.set_async({"count": 1}), CommandFuture)
+    assert_type(
+        context.global_settings.set_typed_async(CustomSettings(1), CUSTOM_SETTINGS_CODEC),
+        CommandFuture,
+    )
     assert_type(context.session_readiness.wait(0), bool)
     assert_type(context.stop_signal, StopSignal)
     assert_type(context.stop_signal.requested, bool)

@@ -1,0 +1,139 @@
+{
+  "audit_item": "PERF-04",
+  "measured_on": "2026-10-10",
+  "timezone": "Asia/Omsk",
+  "base_revision": "f9723f45d640325f2a7b4a92b731ec385e678cec",
+  "execution": "local-source-checkout; controlled in-process sender; no hardware",
+  "before_command": "PYTHONPATH=src:. python scripts/benchmark_command_latency.py",
+  "after_command": "PYTHONPATH=src python -m scripts.benchmark_command_latency --include-async-settings",
+  "notes": [
+    "Before was measured before changes to runtime or completion code; after uses the working-tree fix.",
+    "Both runs use four callback workers, eight independent batches and a 20 ms per-frame sender delay.",
+    "Command latency covers dispatch entry, construction, acceptance, encoding, setup gate, receipt and local commit.",
+    "Input latency covers the typed inbound queue, pump and scheduler; JSON decoding and physical device I/O are excluded.",
+    "Occupancy is sampled with the first send gated, before the input probe. Settings modes use one writer and three snapshot readers.",
+    "Small synthetic samples demonstrate blocking; these p95/p99 values are not production tail-latency estimates.",
+    "One async settings transaction is accepted at a time; busy rejections are explicit and are not queued."
+  ],
+  "before": {
+    "environment": {
+      "python": "3.13.11",
+      "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39"
+    },
+    "measurements": [
+      {
+        "mode": "sync_commands",
+        "batches": 8,
+        "command_count": 32,
+        "worker_count": 4,
+        "sender_delay_ms": 20.0,
+        "command_p95_ms": 81.40477233973797,
+        "command_p99_ms": 82.12952389672864,
+        "occupied_workers_before_input": 4,
+        "input_start_p95_ms": 20.73844062979333,
+        "input_start_p99_ms": 20.75228971778415,
+        "snapshot_p95_ms": null,
+        "completed_commands": 32,
+        "committed_count": null
+      },
+      {
+        "mode": "async_commands",
+        "batches": 8,
+        "command_count": 32,
+        "worker_count": 4,
+        "sender_delay_ms": 20.0,
+        "command_p95_ms": 81.7906879237853,
+        "command_p99_ms": 81.91173042112496,
+        "occupied_workers_before_input": 0,
+        "input_start_p95_ms": 0.5858385586179793,
+        "input_start_p99_ms": 0.6296325218863785,
+        "snapshot_p95_ms": null,
+        "completed_commands": 32,
+        "committed_count": null
+      },
+      {
+        "mode": "sync_settings",
+        "batches": 8,
+        "command_count": 8,
+        "worker_count": 4,
+        "sender_delay_ms": 20.0,
+        "command_p95_ms": 21.745132785872556,
+        "command_p99_ms": 21.854980995994993,
+        "occupied_workers_before_input": 4,
+        "input_start_p95_ms": 20.719970820937306,
+        "input_start_p99_ms": 20.75266698608175,
+        "snapshot_p95_ms": 21.271326034911908,
+        "completed_commands": 8,
+        "committed_count": 1
+      }
+    ]
+  },
+  "after": {
+    "environment": {
+      "python": "3.13.11",
+      "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39"
+    },
+    "measurements": [
+      {
+        "mode": "sync_commands",
+        "batches": 8,
+        "command_count": 32,
+        "worker_count": 4,
+        "sender_delay_ms": 20.0,
+        "command_p95_ms": 81.22273574699648,
+        "command_p99_ms": 81.4092001284007,
+        "occupied_workers_before_input": 4,
+        "input_start_p95_ms": 20.906735546304844,
+        "input_start_p99_ms": 21.016508687171154,
+        "snapshot_p95_ms": null,
+        "completed_commands": 32,
+        "committed_count": null
+      },
+      {
+        "mode": "async_commands",
+        "batches": 8,
+        "command_count": 32,
+        "worker_count": 4,
+        "sender_delay_ms": 20.0,
+        "command_p95_ms": 81.7358152999077,
+        "command_p99_ms": 81.95825279923156,
+        "occupied_workers_before_input": 0,
+        "input_start_p95_ms": 0.45207842777017504,
+        "input_start_p99_ms": 0.45522926666308194,
+        "snapshot_p95_ms": null,
+        "completed_commands": 32,
+        "committed_count": null
+      },
+      {
+        "mode": "sync_settings",
+        "batches": 8,
+        "command_count": 8,
+        "worker_count": 4,
+        "sender_delay_ms": 20.0,
+        "command_p95_ms": 21.685032168170437,
+        "command_p99_ms": 21.701499259797856,
+        "occupied_workers_before_input": 1,
+        "input_start_p95_ms": 0.44991867616772657,
+        "input_start_p99_ms": 0.47992290928959846,
+        "snapshot_p95_ms": 0.026095015346072614,
+        "completed_commands": 8,
+        "committed_count": 1
+      },
+      {
+        "mode": "async_settings",
+        "batches": 8,
+        "command_count": 8,
+        "worker_count": 4,
+        "sender_delay_ms": 20.0,
+        "command_p95_ms": 24.03921819641255,
+        "command_p99_ms": 24.81244043330662,
+        "occupied_workers_before_input": 0,
+        "input_start_p95_ms": 0.2852994337445125,
+        "input_start_p99_ms": 0.2857062843395397,
+        "snapshot_p95_ms": 0.02632497053127736,
+        "completed_commands": 8,
+        "committed_count": 1
+      }
+    ]
+  }
+}

@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 from abc import abstractmethod
-from collections.abc import Callable
-from threading import RLock
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from threading import Condition, RLock
 from typing import Protocol, TypeVar, runtime_checkable
 
 from ...codecs import JsonCodec
 from ...commands import SetGlobalSettingsCommand
+from ...completion import CommandFuture
 from ...events import DidReceiveGlobalSettingsEvent
-from ...global_settings import GlobalSettings
+from ...global_settings import GlobalSettings, GlobalSettingsBusyError
 from ...json_types import JsonObject, ValidatedJsonObject, clone_json_object
 from ..messaging.ports import OutboundCommandSink
 from .metrics import ActionContextMetrics, _ActionContextMetricRecorder
@@ -58,6 +60,19 @@ class GlobalSettingsState(Protocol):
         settings: GlobalSettingsT,
         codec: JsonCodec[GlobalSettingsT],
     ) -> None: ...
+
+    @abstractmethod
+    def update_async(self, update: Callable[[JsonObject], None]) -> CommandFuture: ...
+
+    @abstractmethod
+    def set_async(self, settings: JsonObject) -> CommandFuture: ...
+
+    @abstractmethod
+    def set_typed_async(
+        self,
+        settings: GlobalSettingsT,
+        codec: JsonCodec[GlobalSettingsT],
+    ) -> CommandFuture: ...
 
 
 class GlobalSettingsCoordinator(GlobalSettings):
@@ -149,6 +164,31 @@ class GlobalSettingsCoordinator(GlobalSettings):
             return ActionContextMetrics()
         return self._metrics.snapshot()
 
+    def update_async(self, update: Callable[[JsonObject], None]) -> CommandFuture:
+        return self._track_async_update(self._state.update_async(update))
+
+    def set_async(self, settings: JsonObject) -> CommandFuture:
+        return self._track_async_update(self._state.set_async(settings))
+
+    def set_typed_async(
+        self,
+        settings: GlobalSettingsT,
+        codec: JsonCodec[GlobalSettingsT],
+    ) -> CommandFuture:
+        return self._track_async_update(self._state.set_typed_async(settings, codec))
+
+    def _track_async_update(self, persistence: CommandFuture) -> CommandFuture:
+        completion = CommandFuture()
+
+        def finished(result: CommandFuture) -> None:
+            error = result.exception(timeout=0)
+            if error is None:
+                self._increment_metric("global_settings_updates")
+            completion._finish(error=error)
+
+        persistence.add_done_callback(finished)
+        return completion
+
     def _increment_metric(self, field_name: str) -> None:
         if self._metrics is not None:
             self._metrics.increment(field_name)
@@ -164,7 +204,12 @@ class DefaultGlobalSettingsState(GlobalSettingsState):
             raise TypeError("sender must implement OutboundCommandSink")
         self._context = context
         self._sender = sender
-        self._lock = RLock()
+        # Writes and incoming replacements remain serial. Readers only take the
+        # state lock and can see the last committed snapshot during transport I/O.
+        self._write_lock = RLock()
+        self._write_depth = 0
+        self._lock = Condition()
+        self._pending: CommandFuture | None = None
         self._settings: JsonObject = {}
         self._loaded = False
 
@@ -182,8 +227,9 @@ class DefaultGlobalSettingsState(GlobalSettingsState):
 
     def receive(self, settings: JsonObject) -> ValidatedJsonObject:
         source = ValidatedJsonObject(settings)
-        with self._lock:
-            self._replace_locked(source)
+        with self._write_transaction():
+            with self._lock:
+                self._replace_locked(source)
         return source
 
     def new_event(
@@ -197,27 +243,115 @@ class DefaultGlobalSettingsState(GlobalSettingsState):
     def update(self, update: Callable[[JsonObject], None]) -> None:
         if not callable(update):
             raise TypeError("update must be callable")
-        with self._lock:
-            draft = clone_json_object(self._settings)
+        with self._write_transaction():
+            draft = self.settings
             update(draft)
-            self._send_and_replace_locked(SetGlobalSettingsCommand(self._context, draft))
+            self._send_and_replace(SetGlobalSettingsCommand(self._context, draft))
 
     def set(self, settings: JsonObject) -> None:
-        with self._lock:
-            self._send_and_replace_locked(SetGlobalSettingsCommand(self._context, settings))
+        with self._write_transaction():
+            self._send_and_replace(SetGlobalSettingsCommand(self._context, settings))
 
     def set_typed(
         self,
         settings: GlobalSettingsT,
         codec: JsonCodec[GlobalSettingsT],
     ) -> None:
-        with self._lock:
+        with self._write_transaction():
             command = SetGlobalSettingsCommand.from_settings(self._context, settings, codec)
-            self._send_and_replace_locked(command)
+            self._send_and_replace(command)
 
-    def _send_and_replace_locked(self, command: SetGlobalSettingsCommand) -> None:
+    def _wait_for_pending(self) -> None:
+        with self._lock:
+            # A reentrant send hook must not wait on its own async submission.
+            if self._write_depth and self._pending is not None:
+                raise GlobalSettingsBusyError(
+                    "A global settings transaction is already in progress"
+                )
+            self._lock.wait_for(lambda: self._pending is None)
+
+    @contextmanager
+    def _write_transaction(self, *, blocking: bool = True) -> Iterator[None]:
+        if not self._write_lock.acquire(blocking=blocking):
+            raise GlobalSettingsBusyError("A global settings transaction is already in progress")
+        try:
+            if blocking:
+                self._wait_for_pending()
+            else:
+                with self._lock:
+                    self._require_idle_locked()
+            self._write_depth += 1
+            try:
+                yield
+            finally:
+                self._write_depth -= 1
+        finally:
+            self._write_lock.release()
+
+    def _send_and_replace(self, command: SetGlobalSettingsCommand) -> None:
         self._sender.send(command)
-        self._replace_locked(ValidatedJsonObject(command.settings))
+        with self._lock:
+            self._replace_locked(ValidatedJsonObject(command.settings))
+
+    def update_async(self, update: Callable[[JsonObject], None]) -> CommandFuture:
+        if not callable(update):
+            raise TypeError("update must be callable")
+
+        def prepare() -> SetGlobalSettingsCommand:
+            draft = self.settings
+            update(draft)
+            return SetGlobalSettingsCommand(self._context, draft)
+
+        return self._persist_async(prepare)
+
+    def set_async(self, settings: JsonObject) -> CommandFuture:
+        return self._persist_async(lambda: SetGlobalSettingsCommand(self._context, settings))
+
+    def set_typed_async(
+        self,
+        settings: GlobalSettingsT,
+        codec: JsonCodec[GlobalSettingsT],
+    ) -> CommandFuture:
+        return self._persist_async(
+            lambda: SetGlobalSettingsCommand.from_settings(self._context, settings, codec)
+        )
+
+    def _persist_async(self, prepare: Callable[[], SetGlobalSettingsCommand]) -> CommandFuture:
+        with self._write_transaction(blocking=False):
+            command = prepare()
+            source = ValidatedJsonObject(command.settings)
+            completion = CommandFuture()
+            with self._lock:
+                self._pending = completion
+            try:
+                sent = self._sender.send_async(command)
+            except BaseException:
+                with self._lock:
+                    self._pending = None
+                    self._lock.notify_all()
+                raise
+            sent.add_done_callback(lambda result: self._complete_async(result, source, completion))
+            return completion
+
+    def _require_idle_locked(self) -> None:
+        if self._pending is not None or self._write_depth:
+            raise GlobalSettingsBusyError("A global settings transaction is already in progress")
+
+    def _complete_async(
+        self,
+        sent: CommandFuture,
+        source: ValidatedJsonObject,
+        completion: CommandFuture,
+    ) -> None:
+        error = sent.exception(timeout=0)
+        with self._lock:
+            if error is None:
+                self._replace_locked(source)
+            self._pending = None
+            self._lock.notify_all()
+        # Completion observers may read settings or submit another transaction.
+        # Invoke them after releasing the state lock.
+        completion._finish(error=error)
 
     def _replace_locked(self, source: ValidatedJsonObject) -> None:
         self._settings = source._copy_on_write_view()

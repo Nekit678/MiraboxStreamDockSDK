@@ -104,7 +104,7 @@ from .events import (
     WillAppearEvent,
     WillDisappearEvent,
 )
-from .global_settings import GlobalSettings
+from .global_settings import GlobalSettings, GlobalSettingsBusyError
 from .json_types import JsonObject, JsonValue, OwnedJsonPayload, ValidatedJsonObject
 from .logging_config import LoggingOverflowPolicy, configure_logging, dropped_log_records
 from .parser import parse_stream_dock_event
@@ -202,6 +202,7 @@ __all__ = [
     "GetGlobalSettingsCommand",
     "GetSettingsCommand",
     "GlobalSettings",
+    "GlobalSettingsBusyError",
     "HandlerSchedulerMetrics",
     "FunctionalJsonCodec",
     "InvalidFieldError",

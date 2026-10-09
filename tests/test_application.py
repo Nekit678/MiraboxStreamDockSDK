@@ -120,6 +120,15 @@ class _RecordingGlobalSettings:
     def set_typed(self, _settings: object, _codec: object) -> None:
         raise AssertionError("global settings are not used by application lifecycle tests")
 
+    def update_async(self, _update: object) -> CommandFuture:
+        raise AssertionError("global settings are not used by application lifecycle tests")
+
+    def set_async(self, _settings: object) -> CommandFuture:
+        raise AssertionError("global settings are not used by application lifecycle tests")
+
+    def set_typed_async(self, _settings: object, _codec: object) -> CommandFuture:
+        raise AssertionError("global settings are not used by application lifecycle tests")
+
 
 class _RecordingService:
     def __init__(
@@ -897,6 +906,21 @@ class ApplicationPluginFactoryTests(unittest.TestCase):
 
 
 class CanonicalCommandFutureTests(unittest.TestCase):
+    def test_completion_observers_receive_the_registered_handle_and_original_failure(self) -> None:
+        completion = CommandFuture()
+        shared = completion._share()
+        observed: list[tuple[CommandFuture, Exception | None]] = []
+
+        def observe(result: CommandFuture) -> None:
+            observed.append((result, result.exception(timeout=0)))
+
+        shared.add_done_callback(observe)
+        self.assertEqual(observed, [])
+        failure = RuntimeError("send failed")
+        completion._finish(error=failure)
+        completion.add_done_callback(observe)
+        self.assertEqual(observed, [(shared, failure), (completion, failure)])
+
     def test_result_timeout_leaves_command_pending_for_a_later_result(self) -> None:
         completion = CommandFuture()
 

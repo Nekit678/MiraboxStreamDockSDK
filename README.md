@@ -316,6 +316,41 @@ isolated copy, so changing it never changes the runtime state. Use `set()` or
 `set_typed()` for complete replacements. The facade exposes no mutable
 `settings` property; read the current value through `snapshot()`.
 
+Readers continue to see the last committed snapshot while a mutation or send is
+in progress. Writes and incoming global-settings replacements stay serialized.
+For callbacks that should return before transport completion, use
+`update_async()`, `set_async()`, or `set_typed_async()`. Mutation, encoding and
+validation run on the calling thread; the returned `CommandFuture` completes
+after local commit or rollback. Only one transaction can be in progress:
+overlapping async calls raise `GlobalSettingsBusyError` before running their
+mutator or codec. Retain a rejected operation for an application service to retry
+after the active transaction finishes. Synchronous writes wait and then use the
+latest committed state.
+
+```python
+import logging
+
+from mirabox_sdk import CommandFuture
+
+logger = logging.getLogger(__name__)
+
+
+def observe_command(completion: CommandFuture) -> None:
+    error = completion.exception(timeout=0)
+    if error is not None:
+        logger.error("Outbound command failed; exception_type=%s", type(error).__name__)
+
+
+completion = application.global_settings.update_async(append_items)
+completion.add_done_callback(observe_command)
+```
+
+Preparation and queue-acceptance errors still propagate from the async call.
+`completion.result(timeout=...)` bounds only the caller's wait: an accepted
+transaction can still send and commit later. Expiring that wait does not roll
+back or cancel the command. Transport failure preserves the previous local
+state; successful transport completion is not a device persistence acknowledgement.
+
 ## Property Inspector client
 
 Copy the JavaScript client shipped with the installed SDK into the plugin
@@ -870,14 +905,20 @@ behavior.
 
 `send_async()` performs the same queue acceptance but returns a
 `CommandFuture` before serialization or WebSocket I/O. Queue-full, pre-start,
-and shutdown rejections are raised immediately; call `future.result()` only
-when the eventual writer-side error or completion matters. Before `run()` has
+and shutdown rejections are raised immediately. Observe eventual failures with
+`future.add_done_callback(observe_command)` or `result()` in application-owned
+background work. Completion callbacks run on the completing thread, or immediately
+on the registering thread if already done; keep them short and avoid waiting
+for other commands there. Before `run()` has
 started the command writer, both `send()` and `send_async()` raise
 `OutboundCommandBusNotReadyError` and do not enqueue a command. For
 high-frequency display rendering, `Action.set_image_async()`,
 `set_title_async()`, and `set_state_async()` avoid holding an inbound callback
-while the writer is slow. Rollback-sensitive settings helpers remain
-synchronous.
+while the writer is slow. Global settings also offer async persistence with
+commit/rollback as described above; `Action.set_settings()` remains synchronous.
+Run slow external I/O in an application service and give dependency clients
+finite operation deadlines. A command-future wait timeout does not impose a
+transport deadline.
 
 `future.result(timeout=...)` re-raises the original command failure, including
 a transport `TimeoutError`. Only an expired wait raises
@@ -1166,12 +1207,20 @@ python -m compileall -q src tests scripts examples
 ruff check src tests scripts examples
 ruff format --check src tests scripts examples
 PYTHONPATH=src python scripts/benchmark_runtime_scheduler.py --check
+PYTHONPATH=src python -m scripts.benchmark_command_latency --include-async-settings
 python -m mypy
 python -m build
 python scripts/verify_distribution.py dist
 python scripts/verify_wheel_typing.py dist
 python -m twine check dist/*
 ```
+
+The [PERF-04 baseline](docs/benchmarks/command_latency_baseline.json) records
+slow-sender command p95/p99, occupied workers, input latency and settings snapshot
+latency before and after async persistence. These are small synthetic samples
+through real queues, the event pump, scheduler and writer, with a controlled
+sender; they exclude device I/O and incoming JSON decoding. The benchmark
+measures blocking without imposing a machine-dependent timing gate.
 
 The test suite uses fake connections and protocol messages; it does not require
 a running Stream Dock instance. CI runs the SDK on Linux and Windows across all

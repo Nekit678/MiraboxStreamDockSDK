@@ -317,6 +317,42 @@ application.global_settings.update(append_items)
 замены используйте `set()` или `set_typed()`. У фасада нет изменяемого свойства
 `settings`; текущее значение читайте через `snapshot()`.
 
+Во время мутации или отправки readers видят последний committed snapshot.
+Записи и входящие замены global settings остаются последовательными.
+Для callbacks, которые должны вернуться до завершения transport, используйте
+`update_async()`, `set_async()` или `set_typed_async()`. Мутация, кодирование и
+валидация выполняются в вызывающем потоке; возвращённый `CommandFuture`
+завершается после локального commit или rollback. Одновременно выполняется одна
+транзакция: конкурирующий async-вызов выбрасывает `GlobalSettingsBusyError`
+до запуска mutator или codec. Сохраните отклонённую операцию для повторной попытки
+из application service после завершения активной транзакции. Синхронные записи
+дожидаются её результата и используют последнее committed состояние.
+
+```python
+import logging
+
+from mirabox_sdk import CommandFuture
+
+logger = logging.getLogger(__name__)
+
+
+def observe_command(completion: CommandFuture) -> None:
+    error = completion.exception(timeout=0)
+    if error is not None:
+        logger.error("Outbound command failed; exception_type=%s", type(error).__name__)
+
+
+completion = application.global_settings.update_async(append_items)
+completion.add_done_callback(observe_command)
+```
+
+Ошибки подготовки и принятия очередью передаются непосредственно из async-вызова.
+`completion.result(timeout=...)` ограничивает только ожидание вызывающего кода:
+принятая транзакция ещё может отправиться и выполнить commit позднее. Истечение
+ожидания не отменяет команду и не выполняет rollback. Ошибка transport сохраняет
+прежнее локальное состояние; успешная отправка не является подтверждением
+сохранения настроек устройством.
+
 ## Клиент Property Inspector
 
 Скопируйте JavaScript-клиент из установленного SDK в пакет плагина:
@@ -879,13 +915,19 @@ errors с исходной причиной в `__cause__`; owned event при �
 
 `send_async()` выполняет ту же постановку в очередь, но возвращает
 `CommandFuture` до сериализации и WebSocket I/O. Переполнение очереди, попытка
-до старта и начало shutdown выбрасываются сразу; `future.result()` нужен только
-коду, которому важен итог отправки или отложенная ошибка writer-а. До запуска
-writer методом `run()` оба метода, `send()` и `send_async()`, выбрасывают
+до старта и начало shutdown выбрасываются сразу. Наблюдайте отложенные ошибки через
+`future.add_done_callback(observe_command)` или `result()` в фоновой работе
+приложения. Completion callback выполняется в завершающем потоке либо сразу
+в регистрирующем, если команда уже завершена; callback должен быть коротким
+и не ждать другие команды. До запуска writer методом `run()` оба метода,
+`send()` и `send_async()`, выбрасывают
 `OutboundCommandBusNotReadyError` и не ставят команду в очередь. Для частого
 обновления отображения `Action.set_image_async()`, `set_title_async()` и
 `set_state_async()` не удерживают inbound callback при медленном writer-е.
-Helpers настроек с rollback-семантикой остаются синхронными.
+Global settings также поддерживают async persistence с commit/rollback,
+описанным выше; `Action.set_settings()` остаётся синхронным. Длительный внешний
+I/O выполняйте в application service, задавая клиентам зависимостей конечные
+deadlines операций. Timeout ожидания future не задаёт deadline transport.
 
 `future.result(timeout=...)` повторно выбрасывает исходную ошибку команды, в том
 числе транспортный `TimeoutError`. Только истечение ожидания вызывает
@@ -1178,12 +1220,20 @@ python -m compileall -q src tests scripts examples
 ruff check src tests scripts examples
 ruff format --check src tests scripts examples
 PYTHONPATH=src python scripts/benchmark_runtime_scheduler.py --check
+PYTHONPATH=src python -m scripts.benchmark_command_latency --include-async-settings
 python -m mypy
 python -m build
 python scripts/verify_distribution.py dist
 python scripts/verify_wheel_typing.py dist
 python -m twine check dist/*
 ```
+
+[Baseline PERF-04](docs/benchmarks/command_latency_baseline.json) содержит
+command p95/p99 с медленным sender, занятость workers, задержки input и snapshot
+настроек до и после async persistence. Это небольшие синтетические выборки
+через реальные очереди, event pump, scheduler и writer с контролируемым sender;
+I/O устройства и декодирование входящего JSON не измеряются. Benchmark измеряет
+блокировки без зависящего от машины ограничения времени в CI.
 
 Тесты используют имитации соединения и сообщений протокола — запущенный Stream
 Dock не требуется. CI проверяет SDK в Linux и Windows на всех поддерживаемых

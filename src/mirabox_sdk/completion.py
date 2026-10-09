@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from concurrent.futures import Future
 from typing import cast
 
@@ -41,6 +42,18 @@ class CommandFuture:
         """Return whether command processing reached a terminal state."""
 
         return self._future.done()
+
+    def add_done_callback(self, callback: Callable[[CommandFuture], None]) -> None:
+        """Observe completion without blocking a callback worker.
+
+        The callback receives this handle and runs on the completing thread, or
+        immediately on the registering thread if already complete. Keep it short;
+        use ``exception(timeout=0)`` to inspect failures without waiting.
+        """
+
+        if not callable(callback):
+            raise TypeError("callback must be callable")
+        self._future.add_done_callback(lambda _future: callback(self))
 
     def wait(self, timeout: float | None = None) -> bool:
         """Wait up to ``timeout`` seconds and report terminal completion."""

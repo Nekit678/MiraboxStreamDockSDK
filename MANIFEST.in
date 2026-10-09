@@ -2,6 +2,7 @@ include CHANGELOG.md
 include CONTRIBUTING.md
 include README.ru.md
 include RELEASING.md
+include docs/benchmarks/command_latency_baseline.json
 recursive-include docs *.md *.svg
 recursive-include examples *.html *.js *.json *.md *.py *.spec *.svg
 recursive-include scripts *.py
