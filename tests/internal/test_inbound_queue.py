@@ -115,16 +115,29 @@ class InboundEventQueueTests(unittest.TestCase):
         small = dial("button")
         large = replace(small, settings={"large": "x" * 4096})
         budget = retained_size(large, 100_000)
-        queue = InboundEventQueue(1, byte_limit=budget, coalesce_dial_rotations=True)
-        for event in (small, large, small):
-            self.assertTrue(queue.submit(event))
-            self.assertLessEqual(queue.metrics().current_bytes, budget)
-        self.assertEqual(queue.metrics().coalesced, 2)
-        self.assertEqual(queue.metrics().current_bytes, retained_size(small, 100_000))
-        self.assertEqual(queue.metrics().peak_bytes, budget)
-        self.assertEqual(queue.receive().ticks, 3)
-        queue.task_done()
-        self.assertEqual(queue.metrics().current_bytes, 0)
+        for events in ((small, large), (small, large, small)):
+            with self.subTest(updates=len(events)):
+                queue = InboundEventQueue(1, byte_limit=budget, coalesce_dial_rotations=True)
+                byte_weights: list[int] = []
+                for event in events:
+                    self.assertTrue(queue.submit(event))
+                    metrics = queue.metrics()
+                    byte_weights.append(metrics.current_bytes)
+                    self.assertLessEqual(metrics.current_bytes, budget)
+                    self.assertEqual(metrics.peak_bytes, max(byte_weights))
+                self.assertGreater(byte_weights[1], byte_weights[0])
+                if len(events) == 3:
+                    self.assertLess(byte_weights[2], byte_weights[1])
+                self.assertEqual(queue.metrics().coalesced, len(events) - 1)
+                coalesced = queue.receive()
+                self.assertIsInstance(coalesced, DialRotateEvent)
+                self.assertEqual(coalesced.ticks, len(events))
+                self.assertEqual(coalesced.settings, events[-1].settings)
+                # Replacement instances can have different allocation sizes than inputs.
+                self.assertEqual(byte_weights[-1], retained_size(coalesced, 100_000))
+                queue.task_done()
+                self.assertEqual(queue.metrics().current_bytes, 0)
+                self.assertEqual(queue.metrics().peak_bytes, max(byte_weights))
 
     def test_selection_leaves_deferred_events_queued_and_preserves_coalescing(self) -> None:
         queue = InboundEventQueue(3, coalesce_dial_rotations=True)
