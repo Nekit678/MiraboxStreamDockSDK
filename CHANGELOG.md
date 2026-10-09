@@ -24,6 +24,11 @@ change public APIs between minor versions.
   24.04 with CPython 3.13.11; retain results, diagnostics and runner/dependency
   metadata for 90 days, including failed gates. Record a local baseline before
   further runtime changes (QA-01).
+- Complete the CI performance matrix with ungated zero-delay scheduler results,
+  all command/settings latency modes and settings-copy operations, mixed
+  hot/cold events with checked global barriers, and a 120-second memory soak
+  per scheduler with Linux RSS, traced memory and queue byte accounting (QA-01).
+  Retain all results and diagnostics even after a benchmark failure.
 - Add public `SdkDiagnostic` / `SourceLocation` and an application/harness
   `error_observer` for protocol and action/plugin callback failures (DX-02).
   Default error logs identify schema paths and traceback locations without

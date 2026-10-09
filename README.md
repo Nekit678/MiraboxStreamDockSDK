@@ -1252,14 +1252,45 @@ python -m compileall -q src tests scripts examples
 ruff check src tests scripts examples
 ruff format --check src tests scripts examples
 PYTHONPATH=src python scripts/benchmark_runtime_scheduler.py --check
+PYTHONPATH=src python scripts/benchmark_runtime_scheduler.py --callback-delay 0 --json
 PYTHONPATH=src python -m scripts.benchmark_command_latency --include-async-settings
 PYTHONPATH=src python -m scripts.benchmark_settings_copies
+PYTHONPATH=src python -m scripts.benchmark_runtime_workload --mode mixed
+PYTHONPATH=src python -m scripts.benchmark_runtime_workload --mode soak --soak-seconds 120
 python -m mypy
 python -m build
 python scripts/verify_distribution.py dist
 python scripts/verify_wheel_typing.py dist
 python -m twine check dist/*
 ```
+
+The dedicated performance job runs this full matrix on Ubuntu 24.04 with
+CPython 3.13.11. The `runtime-scheduler-benchmark` artifact retains every JSON
+result, stderr log and shared revision/runner/dependency metadata for 90 days.
+Later measurements still run after a failed benchmark, and artifacts upload
+even when the job fails.
+
+| Measurement | Scenarios | Result file |
+| --- | --- | --- |
+| Scheduler gate | Sequential/keyed, 1/4/16/64 contexts, delayed callbacks; coalescing and blocked hot context at pending limits 1/4/16/64 | `results.json` |
+| Zero-delay scheduler | The same context matrix without delayed-callback throughput/latency budgets | `scheduler-zero-delay.json` |
+| Command latency | Sync/async commands and sync/async settings, eight batches each | `command-latency.json` |
+| Settings copies | Small/wide/nested settings, four operations, 31 timing samples each | `settings-copies.json` |
+| Mixed load | Both schedulers with zero/delayed callbacks, hot/cold contexts, key/settings events and lifecycle/global/unknown barriers | `mixed-load.json` |
+| Memory soak | Both schedulers, 120 seconds each after warmup, 64 B/4 KiB/64 KiB payload strings | `memory-soak.json` |
+
+Mixed load checks context FIFO, exclusive barriers, complete acknowledgement and
+queue count/byte bounds. It measures the typed queue/pump/scheduler path with
+synthetic callbacks, excluding parsing, action management, commands and device
+I/O. Memory runs keep the runtime alive between batches without retaining
+callback latency history. Every five seconds, after drain and garbage collection,
+they sample Linux RSS, tracemalloc retained/peak bytes and released queue bytes;
+initial/final samples and retained-memory growth are included. Workload totals
+include the reported warmup events; sample elapsed times start after warmup.
+RSS is `null` outside Linux. Timing and memory growth have no new CI thresholds;
+the existing delayed scheduler gate and workload invariants remain enforced.
+These synthetic measurements do not establish device throughput or rule out
+longer-term memory leaks. Increase `--soak-seconds` for longer local runs.
 
 The [PERF-04 baseline](docs/benchmarks/command_latency_baseline.json) records
 slow-sender command p95/p99, occupied workers, input latency and settings snapshot

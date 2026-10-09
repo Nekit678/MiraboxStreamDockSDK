@@ -1265,14 +1265,46 @@ python -m compileall -q src tests scripts examples
 ruff check src tests scripts examples
 ruff format --check src tests scripts examples
 PYTHONPATH=src python scripts/benchmark_runtime_scheduler.py --check
+PYTHONPATH=src python scripts/benchmark_runtime_scheduler.py --callback-delay 0 --json
 PYTHONPATH=src python -m scripts.benchmark_command_latency --include-async-settings
 PYTHONPATH=src python -m scripts.benchmark_settings_copies
+PYTHONPATH=src python -m scripts.benchmark_runtime_workload --mode mixed
+PYTHONPATH=src python -m scripts.benchmark_runtime_workload --mode soak --soak-seconds 120
 python -m mypy
 python -m build
 python scripts/verify_distribution.py dist
 python scripts/verify_wheel_typing.py dist
 python -m twine check dist/*
 ```
+
+Отдельный performance job запускает полную матрицу на Ubuntu 24.04 с
+CPython 3.13.11. Артефакт `runtime-scheduler-benchmark` хранит все JSON-результаты,
+stderr и общие сведения о revision, runner и зависимостях 90 дней. После ошибки
+benchmark остальные замеры продолжаются; артефакты загружаются и при падении job.
+
+| Замер | Сценарии | Файл результатов |
+| --- | --- | --- |
+| Scheduler gate | Sequential/keyed, 1/4/16/64 контекста, callback с задержкой; coalescing и заблокированный горячий контекст при pending limits 1/4/16/64 | `results.json` |
+| Zero-delay scheduler | Та же матрица контекстов без throughput/latency budgets для callback с задержкой | `scheduler-zero-delay.json` |
+| Command latency | Sync/async commands и sync/async settings, по восемь batches | `command-latency.json` |
+| Копирование settings | Small/wide/nested, четыре операции, по 31 замеру времени | `settings-copies.json` |
+| Смешанная нагрузка | Оба scheduler с нулевой/ненулевой задержкой callback, горячие/холодные контексты, key/settings events и lifecycle/global/unknown barriers | `mixed-load.json` |
+| Прогон памяти | Оба scheduler, по 120 секунд после прогрева, payload-строки 64 B/4 KiB/64 KiB | `memory-soak.json` |
+
+Смешанная нагрузка проверяет FIFO контекстов, исключительность barriers,
+подтверждение всех событий и границы очередей по количеству и байтам. Замер
+проходит через typed queue/pump/scheduler с синтетическими callbacks; parser,
+управление action, commands и I/O устройства не входят в него. Прогон памяти
+сохраняет runtime между batches и не накапливает историю callback latency.
+Каждые пять секунд после drain и сборки мусора снимаются Linux RSS,
+retained/peak bytes tracemalloc и освобождённые байты очередей; сохраняются
+начальная/конечная точки и прирост памяти. Итоги нагрузки включают отдельно
+указанные события прогрева; время точек памяти отсчитывается после прогрева.
+Вне Linux RSS равен `null`. Новых порогов времени или прироста памяти в CI нет;
+существующий scheduler gate с задержкой и инварианты нагрузки проверяются.
+Синтетические замеры не определяют throughput устройства и не исключают утечки
+на более длительном интервале. Для долгого локального прогона увеличьте
+`--soak-seconds`.
 
 [Baseline PERF-04](docs/benchmarks/command_latency_baseline.json) содержит
 command p95/p99 с медленным sender, занятость workers, задержки input и snapshot

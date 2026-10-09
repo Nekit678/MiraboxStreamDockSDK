@@ -33,7 +33,7 @@ jobs:
         run: node --test tests/property_inspector.test.js
 
   performance:
-    name: Scheduler performance (Python 3.13.11 on Ubuntu 24.04)
+    name: Performance matrix (Python 3.13.11 on Ubuntu 24.04)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
@@ -100,6 +100,64 @@ jobs:
             > build/runtime-scheduler-benchmark/results.json \
             2> build/runtime-scheduler-benchmark/diagnostics.log || benchmark_status=$?
           cat build/runtime-scheduler-benchmark/diagnostics.log >&2
+          exit "$benchmark_status"
+
+      - name: Measure zero-delay scheduler matrix
+        if: ${{ !cancelled() }}
+        run: |
+          benchmark_status=0
+          python scripts/benchmark_runtime_scheduler.py \
+            --events 10000 --repeats 3 --callback-delay 0 \
+            --workers 4 --pending-limit 64 --coalescing-events 512 \
+            --coalescing-pending-limits 1,4,16,64 --json \
+            > build/runtime-scheduler-benchmark/scheduler-zero-delay.json \
+            2> build/runtime-scheduler-benchmark/scheduler-zero-delay.log || benchmark_status=$?
+          cat build/runtime-scheduler-benchmark/scheduler-zero-delay.log >&2
+          exit "$benchmark_status"
+
+      - name: Measure all command and settings latency modes
+        if: ${{ !cancelled() }}
+        run: |
+          benchmark_status=0
+          python -m scripts.benchmark_command_latency \
+            --batches 8 --workers 4 --sender-delay-ms 20 --include-async-settings \
+            > build/runtime-scheduler-benchmark/command-latency.json \
+            2> build/runtime-scheduler-benchmark/command-latency.log || benchmark_status=$?
+          cat build/runtime-scheduler-benchmark/command-latency.log >&2
+          exit "$benchmark_status"
+
+      - name: Measure all settings shapes and copy operations
+        if: ${{ !cancelled() }}
+        run: |
+          benchmark_status=0
+          python -m scripts.benchmark_settings_copies --samples 31 \
+            > build/runtime-scheduler-benchmark/settings-copies.json \
+            2> build/runtime-scheduler-benchmark/settings-copies.log || benchmark_status=$?
+          cat build/runtime-scheduler-benchmark/settings-copies.log >&2
+          exit "$benchmark_status"
+
+      - name: Measure mixed load and global barriers
+        if: ${{ !cancelled() }}
+        run: |
+          benchmark_status=0
+          python -m scripts.benchmark_runtime_workload --mode mixed \
+            --batches 10 --events-per-segment 64 \
+            --workers 4 --pending-limit 64 --source-limit 256 \
+            > build/runtime-scheduler-benchmark/mixed-load.json \
+            2> build/runtime-scheduler-benchmark/mixed-load.log || benchmark_status=$?
+          cat build/runtime-scheduler-benchmark/mixed-load.log >&2
+          exit "$benchmark_status"
+
+      - name: Measure sustained memory use for both schedulers
+        if: ${{ !cancelled() }}
+        run: |
+          benchmark_status=0
+          python -m scripts.benchmark_runtime_workload --mode soak \
+            --soak-seconds 120 --sample-interval 5 --events-per-segment 64 \
+            --workers 4 --pending-limit 64 --source-limit 256 \
+            > build/runtime-scheduler-benchmark/memory-soak.json \
+            2> build/runtime-scheduler-benchmark/memory-soak.log || benchmark_status=$?
+          cat build/runtime-scheduler-benchmark/memory-soak.log >&2
           exit "$benchmark_status"
 
       - name: Upload benchmark results and environment

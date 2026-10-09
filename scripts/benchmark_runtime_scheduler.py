@@ -681,6 +681,8 @@ def main() -> int:
         help="exit unsuccessfully when a scheduler, skewed-load or coalescing budget is exceeded",
     )
     arguments = parser.parse_args()
+    if arguments.check and arguments.callback_delay == 0:
+        parser.error("--check requires a non-zero callback delay; zero-delay results are ungated")
     if arguments.check and set(arguments.coalescing_pending_limits) != set(
         COALESCING_PERFORMANCE_BUDGETS
     ):
@@ -707,9 +709,13 @@ def main() -> int:
         )
         for pending_limit in arguments.coalescing_pending_limits
     )
-    scheduler_comparisons = evaluate_scheduler_performance(
-        scheduler_measurements,
-        pending_limit=arguments.pending_limit,
+    scheduler_comparisons = (
+        evaluate_scheduler_performance(
+            scheduler_measurements,
+            pending_limit=arguments.pending_limit,
+        )
+        if arguments.callback_delay
+        else ()
     )
     coalescing_comparisons = (
         evaluate_coalescing_performance(coalescing_measurements)
@@ -736,10 +742,13 @@ def main() -> int:
                         "platform": platform.platform(),
                         "python": platform.python_version(),
                     },
+                    "configuration": vars(arguments),
                     "scheduler": [asdict(value) for value in scheduler_measurements],
                     "coalescing": [asdict(value) for value in coalescing_measurements],
                     "skewed_load": [asdict(value) for value in skewed_measurements],
                     "performance_gate": {
+                        "enforced": arguments.check,
+                        "scheduler_budgets_applied": bool(arguments.callback_delay),
                         "passed": not violations,
                         "scheduler": [asdict(value) for value in scheduler_comparisons],
                         "coalescing": [asdict(value) for value in coalescing_comparisons],

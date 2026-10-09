@@ -2,12 +2,63 @@
 
 from __future__ import annotations
 
+import json
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
+from io import StringIO
+from unittest.mock import patch
 
 from scripts import benchmark_runtime_scheduler
 
 
 class RuntimeSchedulerBenchmarkTests(unittest.TestCase):
+    def test_zero_delay_json_reports_the_matrix_without_delayed_callback_budgets(self) -> None:
+        output = StringIO()
+        with (
+            patch(
+                "sys.argv",
+                [
+                    "benchmark_runtime_scheduler",
+                    "--events",
+                    "32",
+                    "--repeats",
+                    "1",
+                    "--callback-delay",
+                    "0",
+                    "--coalescing-events",
+                    "80",
+                    "--json",
+                ],
+            ),
+            redirect_stdout(output),
+        ):
+            self.assertEqual(benchmark_runtime_scheduler.main(), 0)
+        result = json.loads(output.getvalue())
+        self.assertEqual(result["configuration"]["callback_delay"], 0)
+        self.assertEqual(len(result["scheduler"]), 8)
+        self.assertFalse(result["performance_gate"]["enforced"])
+        self.assertFalse(result["performance_gate"]["scheduler_budgets_applied"])
+        self.assertEqual(result["performance_gate"]["scheduler"], [])
+
+    def test_zero_delay_rejects_delayed_callback_performance_gate(self) -> None:
+        output = StringIO()
+        with (
+            patch(
+                "sys.argv",
+                [
+                    "benchmark_runtime_scheduler",
+                    "--callback-delay",
+                    "0",
+                    "--check",
+                ],
+            ),
+            redirect_stderr(output),
+            self.assertRaises(SystemExit) as raised,
+        ):
+            benchmark_runtime_scheduler.main()
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("zero-delay results are ungated", output.getvalue())
+
     def test_skewed_load_reaches_cold_context_with_bounded_source_and_pending_work(self) -> None:
         for pending_limit in (1, 4, 64):
             with self.subTest(pending_limit=pending_limit):
