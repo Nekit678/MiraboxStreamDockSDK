@@ -1221,6 +1221,7 @@ ruff check src tests scripts examples
 ruff format --check src tests scripts examples
 PYTHONPATH=src python scripts/benchmark_runtime_scheduler.py --check
 PYTHONPATH=src python -m scripts.benchmark_command_latency --include-async-settings
+PYTHONPATH=src python -m scripts.benchmark_settings_copies
 python -m mypy
 python -m build
 python scripts/verify_distribution.py dist
@@ -1234,6 +1235,16 @@ command p95/p99 с медленным sender, занятость workers, зад
 через реальные очереди, event pump, scheduler и writer с контролируемым sender;
 I/O устройства и декодирование входящего JSON не измеряются. Benchmark измеряет
 блокировки без зависящего от машины ограничения времени в CI.
+
+[Baseline PERF-05](docs/benchmarks/settings_copies_baseline.json) содержит
+задержки работы с настройками, удерживаемую и пиковую память одного вызова,
+число копирований из профиля для маленьких, широких и вложенных объектов.
+Global snapshot и replay создают одну глубокую копию; стандартный runtime
+registry использует изолированные settings context manager, поэтому путь от
+парсинга до создания action выполняет два копирования. Переопределённые registry
+и декодеры action сохраняют прежний путь. Время, память и профиль измеряются
+отдельно; декодирование JSON-текста, I/O устройства и callbacks не входят в
+замер. Порог времени для CI не применяется.
 
 Тесты используют имитации соединения и сообщений протокола — запущенный Stream
 Dock не требуется. CI проверяет SDK в Linux и Windows на всех поддерживаемых

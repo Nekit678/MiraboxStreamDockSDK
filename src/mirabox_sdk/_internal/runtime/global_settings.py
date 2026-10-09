@@ -13,7 +13,7 @@ from ...commands import SetGlobalSettingsCommand
 from ...completion import CommandFuture
 from ...events import DidReceiveGlobalSettingsEvent
 from ...global_settings import GlobalSettings, GlobalSettingsBusyError
-from ...json_types import JsonObject, ValidatedJsonObject, clone_json_object
+from ...json_types import JsonObject, ValidatedJsonObject
 from ..messaging.ports import OutboundCommandSink
 from .metrics import ActionContextMetrics, _ActionContextMetricRecorder
 
@@ -31,7 +31,11 @@ class GlobalSettingsState(Protocol):
     @property
     @abstractmethod
     def settings(self) -> JsonObject:
-        """Return an isolated copy of the current settings object."""
+        """Return a fresh plain deep copy owned by the caller.
+
+        Neither the backend nor other readers may share mutable containers
+        with this result. The coordinator forwards it without another copy.
+        """
 
         ...
 
@@ -107,7 +111,7 @@ class GlobalSettingsCoordinator(GlobalSettings):
     def snapshot(self) -> JsonObject:
         """Return an isolated snapshot of the current plugin-wide settings."""
 
-        return clone_json_object(self._state.settings)
+        return self._state.settings
 
     def receive(self, event: DidReceiveGlobalSettingsEvent) -> ValidatedJsonObject:
         """Replace state before callbacks and return the immutable replay source."""
@@ -210,7 +214,7 @@ class DefaultGlobalSettingsState(GlobalSettingsState):
         self._write_depth = 0
         self._lock = Condition()
         self._pending: CommandFuture | None = None
-        self._settings: JsonObject = {}
+        self._settings = ValidatedJsonObject({})
         self._loaded = False
 
     @property
@@ -218,7 +222,7 @@ class DefaultGlobalSettingsState(GlobalSettingsState):
         """Return an isolated copy without exposing backend-owned containers."""
 
         with self._lock:
-            return clone_json_object(self._settings)
+            return self._settings.isolated_copy()
 
     @property
     def loaded(self) -> bool:
@@ -237,7 +241,7 @@ class DefaultGlobalSettingsState(GlobalSettingsState):
         source: ValidatedJsonObject | None = None,
     ) -> DidReceiveGlobalSettingsEvent:
         with self._lock:
-            resolved_source = source or ValidatedJsonObject(self._settings)
+            resolved_source = source if source is not None else self._settings
             return DidReceiveGlobalSettingsEvent(settings=resolved_source.isolated_copy())
 
     def update(self, update: Callable[[JsonObject], None]) -> None:
@@ -354,5 +358,5 @@ class DefaultGlobalSettingsState(GlobalSettingsState):
         completion._finish(error=error)
 
     def _replace_locked(self, source: ValidatedJsonObject) -> None:
-        self._settings = source._copy_on_write_view()
+        self._settings = source
         self._loaded = True

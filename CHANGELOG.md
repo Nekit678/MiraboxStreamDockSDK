@@ -8,6 +8,9 @@ change public APIs between minor versions.
 
 ### Added
 
+- Add a settings-copy benchmark for small, wide and nested payloads, recording
+  parse/action creation, global snapshot/replay latency, clone counts and
+  transient memory with a local before/after baseline (PERF-05).
 - Add async global-settings persistence and `CommandFuture.add_done_callback()`
   (PERF-04). Complete settings futures after commit/rollback; reject overlapping
   async transactions with `GlobalSettingsBusyError` before mutation or encoding.
@@ -54,6 +57,10 @@ change public APIs between minor versions.
 
 ### Fixed
 
+- Remove redundant global-settings snapshot/replay copies and transfer the
+  runtime's isolated action settings to the default registry decoder (PERF-05).
+  Keep public JSON containers native, codec inputs isolated, custom registry
+  and action decoder overrides intact, and persistence rollback semantics.
 - Allow global-settings snapshots during mutation and transport I/O while keeping
   writes and incoming replacements serialized and rollback-safe (PERF-04).
 - Bind `Action.settings_codec` to its settings type (TYPE-01), including class

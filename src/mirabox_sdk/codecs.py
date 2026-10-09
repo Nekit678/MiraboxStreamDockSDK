@@ -211,7 +211,15 @@ def _decode_owned_with_codec(
 ) -> DecodedT:
     """Decode an owned payload through an isolated plain deep snapshot."""
 
-    isolated = payload.isolated_copy()
+    return _decode_isolated_with_codec(payload.isolated_copy(), codec)
+
+
+def _decode_isolated_with_codec(
+    isolated: JsonObject,
+    codec: JsonCodec[DecodedT],
+) -> DecodedT:
+    """Transfer a validated plain snapshot exclusively owned by the caller."""
+
     try:
         if type(codec) is FunctionalJsonCodec:
             assert isinstance(codec, FunctionalJsonCodec)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Generic, Protocol, TypeVar, runtime_checkable
 
+from ....action_registry import ActionRegistry
 from ....json_types import JsonObject
 from ....protocols import StreamDockActionDependencies
 from ..ports import ActionFactory, RuntimeActionCallbacks
@@ -50,8 +51,15 @@ class ActionRegistryFactoryAdapter(ActionFactory, Generic[DependenciesT]):
         context: str,
         initial_settings: JsonObject,
     ) -> RuntimeActionCallbacks | None:
-        """Create one action through the bound dependency-aware registry."""
+        """Consume one isolated settings snapshot through the bound registry."""
 
+        if (
+            type(self._registry) is ActionRegistry
+            and getattr(self._registry.create, "__func__", None) is ActionRegistry.create
+        ):
+            return self._registry._create_from_owned_settings(
+                action_uuid, context, initial_settings, self._dependencies
+            )
         return self._registry.create(
             action_uuid,
             context,

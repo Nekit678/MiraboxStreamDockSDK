@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import unittest
 from threading import Event, Thread
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
+import mirabox_sdk.json_types as json_types
 from mirabox_sdk import (
     DidReceiveGlobalSettingsEvent,
     FunctionalJsonCodec,
@@ -29,6 +30,65 @@ from .fakes import RecordingCommandSink
 
 
 class DefaultGlobalSettingsStateTests(unittest.TestCase):
+    def test_snapshot_and_replay_clone_each_container_once(self) -> None:
+        state = DefaultGlobalSettingsState("plugin", RecordingCommandSink())
+        source = state.receive({"nested": {"items": [1, 2]}})
+        facade = GlobalSettingsCoordinator(state)
+
+        for read in (
+            facade.snapshot,
+            facade.new_replay_event,
+            lambda: state.new_event(source),
+        ):
+            with self.subTest(read=read):
+                with patch(
+                    "mirabox_sdk.json_types._clone_json_dict",
+                    wraps=json_types._clone_json_dict,
+                ) as clone:
+                    result = read()
+                self.assertEqual(clone.call_count, 2)
+                settings = (
+                    result.settings if isinstance(result, DidReceiveGlobalSettingsEvent) else result
+                )
+                self.assertEqual(settings, {"nested": {"items": [1, 2]}})
+
+    def test_public_snapshot_and_replay_use_isolated_native_containers(self) -> None:
+        state = DefaultGlobalSettingsState("plugin", RecordingCommandSink())
+        facade = GlobalSettingsCoordinator(state)
+        facade.snapshot()["bypassed"] = True
+        self.assertFalse(facade.loaded)
+        self.assertIsNone(facade.new_replay_event())
+        original: JsonObject = {"nested": {"items": [{"count": 1}]}}
+        state.receive(original)
+        first = facade.snapshot()
+        second = facade.snapshot()
+        replay = facade.new_replay_event()
+        assert replay is not None
+
+        for settings in (original, first, replay.settings):
+            self.assertIs(type(settings), dict)
+            nested = dict.__getitem__(settings, "nested")
+            self.assertIs(type(nested), dict)
+            items = dict.__getitem__(nested, "items")
+            self.assertIs(type(items), list)
+            item = list.__getitem__(items, 0)
+            self.assertIs(type(item), dict)
+            dict.__setitem__(item, "count", 2)
+            list.append(items, {"count": 3})
+
+        expected = {"nested": {"items": [{"count": 1}]}}
+        self.assertEqual(second, expected)
+        self.assertEqual(facade.snapshot(), expected)
+        self.assertEqual(state.new_event().settings, expected)
+
+    def test_replay_keeps_explicit_source_after_committed_state_changes(self) -> None:
+        state = DefaultGlobalSettingsState("plugin", RecordingCommandSink())
+        source = state.receive({"nested": {"items": [1]}})
+        state.set({"nested": {"items": [2]}})
+
+        self.assertEqual(state.new_event(source).settings, {"nested": {"items": [1]}})
+        self.assertEqual(state.new_event().settings, {"nested": {"items": [2]}})
+
     def test_readers_see_committed_state_while_a_send_is_blocked(self) -> None:
         sender = RecordingCommandSink()
         state = DefaultGlobalSettingsState("plugin-uuid", sender)

@@ -159,7 +159,12 @@ class ActionFactory(Protocol):
         context: str,
         initial_settings: JsonObject,
     ) -> RuntimeActionCallbacks | None:
-        """Return a new action, or ``None`` for an unknown action UUID."""
+        """Return a new action, or ``None`` for an unknown action UUID.
+
+        ``initial_settings`` is a validated plain deep snapshot exclusively
+        owned by this call. The factory may transfer it to the new action or
+        a codec without copying it again.
+        """
 
         ...
 

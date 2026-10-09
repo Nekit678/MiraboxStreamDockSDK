@@ -6,7 +6,7 @@ from collections.abc import Callable
 from typing import Any, Generic, Protocol, TypeVar, cast, overload
 
 from .action import Action
-from .codecs import JsonCodec
+from .codecs import JsonCodec, _decode_isolated_with_codec
 from .json_types import JsonObject
 from .json_types import JsonValue as JsonValue  # Resolve recursive JSON type hints.
 from .protocols import StreamDockActionDependencies
@@ -177,6 +177,30 @@ class ActionRegistry(Generic[DependenciesT]):
             action_uuid,
             context,
             action_type.decode_settings(settings),
+            dependencies,
+        )
+
+    def _create_from_owned_settings(
+        self,
+        action_uuid: str,
+        context: str,
+        settings: JsonObject,
+        dependencies: DependenciesT,
+    ) -> Action[Any, DependenciesT] | None:
+        """Consume the runtime factory's validated, isolated settings snapshot."""
+
+        action_type = self._action_types.get(action_uuid)
+        if action_type is None:
+            return None
+        # Preserve plugin overrides; only the default decoder's copy is redundant.
+        if getattr(action_type.decode_settings, "__func__", None) is not getattr(
+            Action.decode_settings, "__func__", None
+        ):
+            return self.create(action_uuid, context, settings, dependencies)
+        return action_type(
+            action_uuid,
+            context,
+            _decode_isolated_with_codec(settings, action_type.settings_codec),
             dependencies,
         )
 

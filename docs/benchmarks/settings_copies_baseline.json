@@ -1,0 +1,272 @@
+{
+  "audit_item": "PERF-05",
+  "measured_on": "2026-10-10",
+  "timezone": "Asia/Omsk",
+  "base_revision": "854f1f4c5a9c43789e476c13c4ff3a0a4e6f562b",
+  "execution": "local-source-checkout; no hardware",
+  "command": "PYTHONPATH=src python -m scripts.benchmark_settings_copies",
+  "notes": [
+    "Before was captured before runtime changes; after uses the working-tree fix. Both use 31 timed samples per operation.",
+    "Timing, tracemalloc and cProfile are separate runs. Memory values are from one call; its return value is kept alive when sampled.",
+    "Inputs, global state and registry are prepared outside measurements. Action creation includes parsing a decoded envelope and a fresh context manager.",
+    "No JSON text decoding, transport, callbacks or device I/O. Measurements are synthetic and have no timing gate.",
+    "Clone counts include recursive dictionary clones and JSON value visits; these demonstrate fewer full traversals independently of timing noise.",
+    "The standard runtime registry consumes isolated settings; public registry.create and custom registry/action decoder overrides preserve their existing paths."
+  ],
+  "before": {
+    "environment": {
+      "python": "3.13.11",
+      "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39"
+    },
+    "measurements": [
+      {
+        "shape": "small",
+        "operation": "backend_settings",
+        "samples": 31,
+        "median_ms": 0.001293,
+        "retained_bytes": 408,
+        "peak_bytes": 792,
+        "dict_clone_calls": 1,
+        "value_clone_calls": 2
+      },
+      {
+        "shape": "small",
+        "operation": "global_snapshot",
+        "samples": 31,
+        "median_ms": 0.002391,
+        "retained_bytes": 592,
+        "peak_bytes": 912,
+        "dict_clone_calls": 2,
+        "value_clone_calls": 4
+      },
+      {
+        "shape": "small",
+        "operation": "global_replay",
+        "samples": 31,
+        "median_ms": 0.003614,
+        "retained_bytes": 944,
+        "peak_bytes": 1328,
+        "dict_clone_calls": 2,
+        "value_clone_calls": 4
+      },
+      {
+        "shape": "small",
+        "operation": "parse_action_creation",
+        "samples": 31,
+        "median_ms": 0.008962,
+        "retained_bytes": 1407,
+        "peak_bytes": 2575,
+        "dict_clone_calls": 3,
+        "value_clone_calls": 6
+      },
+      {
+        "shape": "wide",
+        "operation": "backend_settings",
+        "samples": 31,
+        "median_ms": 1.395011,
+        "retained_bytes": 85528,
+        "peak_bytes": 86536,
+        "dict_clone_calls": 1,
+        "value_clone_calls": 10001
+      },
+      {
+        "shape": "wide",
+        "operation": "global_snapshot",
+        "samples": 31,
+        "median_ms": 2.970786,
+        "retained_bytes": 85824,
+        "peak_bytes": 171264,
+        "dict_clone_calls": 2,
+        "value_clone_calls": 20002
+      },
+      {
+        "shape": "wide",
+        "operation": "global_replay",
+        "samples": 31,
+        "median_ms": 3.058719,
+        "retained_bytes": 86176,
+        "peak_bytes": 171712,
+        "dict_clone_calls": 2,
+        "value_clone_calls": 20002
+      },
+      {
+        "shape": "wide",
+        "operation": "parse_action_creation",
+        "samples": 31,
+        "median_ms": 4.301794,
+        "retained_bytes": 86639,
+        "peak_bytes": 258047,
+        "dict_clone_calls": 3,
+        "value_clone_calls": 30003
+      },
+      {
+        "shape": "nested",
+        "operation": "backend_settings",
+        "samples": 31,
+        "median_ms": 0.152799,
+        "retained_bytes": 24464,
+        "peak_bytes": 40144,
+        "dict_clone_calls": 121,
+        "value_clone_calls": 221
+      },
+      {
+        "shape": "nested",
+        "operation": "global_snapshot",
+        "samples": 31,
+        "median_ms": 0.279153,
+        "retained_bytes": 40416,
+        "peak_bytes": 51192,
+        "dict_clone_calls": 242,
+        "value_clone_calls": 442
+      },
+      {
+        "shape": "nested",
+        "operation": "global_replay",
+        "samples": 31,
+        "median_ms": 0.234603,
+        "retained_bytes": 40520,
+        "peak_bytes": 59944,
+        "dict_clone_calls": 242,
+        "value_clone_calls": 442
+      },
+      {
+        "shape": "nested",
+        "operation": "parse_action_creation",
+        "samples": 31,
+        "median_ms": 0.235122,
+        "retained_bytes": 39799,
+        "peak_bytes": 74679,
+        "dict_clone_calls": 363,
+        "value_clone_calls": 663
+      }
+    ]
+  },
+  "after": {
+    "environment": {
+      "python": "3.13.11",
+      "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39"
+    },
+    "measurements": [
+      {
+        "shape": "small",
+        "operation": "backend_settings",
+        "samples": 31,
+        "median_ms": 0.001076,
+        "retained_bytes": 360,
+        "peak_bytes": 744,
+        "dict_clone_calls": 1,
+        "value_clone_calls": 2
+      },
+      {
+        "shape": "small",
+        "operation": "global_snapshot",
+        "samples": 31,
+        "median_ms": 0.001017,
+        "retained_bytes": 360,
+        "peak_bytes": 744,
+        "dict_clone_calls": 1,
+        "value_clone_calls": 2
+      },
+      {
+        "shape": "small",
+        "operation": "global_replay",
+        "samples": 31,
+        "median_ms": 0.00172,
+        "retained_bytes": 648,
+        "peak_bytes": 784,
+        "dict_clone_calls": 1,
+        "value_clone_calls": 2
+      },
+      {
+        "shape": "small",
+        "operation": "parse_action_creation",
+        "samples": 31,
+        "median_ms": 0.008613,
+        "retained_bytes": 1407,
+        "peak_bytes": 2527,
+        "dict_clone_calls": 2,
+        "value_clone_calls": 4
+      },
+      {
+        "shape": "wide",
+        "operation": "backend_settings",
+        "samples": 31,
+        "median_ms": 1.574011,
+        "retained_bytes": 85536,
+        "peak_bytes": 85920,
+        "dict_clone_calls": 1,
+        "value_clone_calls": 10001
+      },
+      {
+        "shape": "wide",
+        "operation": "global_snapshot",
+        "samples": 31,
+        "median_ms": 1.485656,
+        "retained_bytes": 85536,
+        "peak_bytes": 85920,
+        "dict_clone_calls": 1,
+        "value_clone_calls": 10001
+      },
+      {
+        "shape": "wide",
+        "operation": "global_replay",
+        "samples": 31,
+        "median_ms": 1.540704,
+        "retained_bytes": 85824,
+        "peak_bytes": 85960,
+        "dict_clone_calls": 1,
+        "value_clone_calls": 10001
+      },
+      {
+        "shape": "wide",
+        "operation": "parse_action_creation",
+        "samples": 31,
+        "median_ms": 3.160175,
+        "retained_bytes": 86639,
+        "peak_bytes": 172879,
+        "dict_clone_calls": 2,
+        "value_clone_calls": 20002
+      },
+      {
+        "shape": "nested",
+        "operation": "backend_settings",
+        "samples": 31,
+        "median_ms": 0.068052,
+        "retained_bytes": 24536,
+        "peak_bytes": 27584,
+        "dict_clone_calls": 121,
+        "value_clone_calls": 221
+      },
+      {
+        "shape": "nested",
+        "operation": "global_snapshot",
+        "samples": 31,
+        "median_ms": 0.067788,
+        "retained_bytes": 24536,
+        "peak_bytes": 27584,
+        "dict_clone_calls": 121,
+        "value_clone_calls": 221
+      },
+      {
+        "shape": "nested",
+        "operation": "global_replay",
+        "samples": 31,
+        "median_ms": 0.07113,
+        "retained_bytes": 24824,
+        "peak_bytes": 27584,
+        "dict_clone_calls": 121,
+        "value_clone_calls": 221
+      },
+      {
+        "shape": "nested",
+        "operation": "parse_action_creation",
+        "samples": 31,
+        "median_ms": 0.152937,
+        "retained_bytes": 39799,
+        "peak_bytes": 51432,
+        "dict_clone_calls": 242,
+        "value_clone_calls": 442
+      }
+    ]
+  }
+}

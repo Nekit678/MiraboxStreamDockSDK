@@ -1208,6 +1208,7 @@ ruff check src tests scripts examples
 ruff format --check src tests scripts examples
 PYTHONPATH=src python scripts/benchmark_runtime_scheduler.py --check
 PYTHONPATH=src python -m scripts.benchmark_command_latency --include-async-settings
+PYTHONPATH=src python -m scripts.benchmark_settings_copies
 python -m mypy
 python -m build
 python scripts/verify_distribution.py dist
@@ -1221,6 +1222,15 @@ latency before and after async persistence. These are small synthetic samples
 through real queues, the event pump, scheduler and writer, with a controlled
 sender; they exclude device I/O and incoming JSON decoding. The benchmark
 measures blocking without imposing a machine-dependent timing gate.
+
+The [PERF-05 baseline](docs/benchmarks/settings_copies_baseline.json) records
+settings latency, per-call retained/peak memory and profiled clone counts for
+small, wide and nested objects. Global snapshots and replay make one deep copy;
+the default runtime registry reuses the context manager's isolated settings,
+so parsing through action creation makes two copies. Custom registry and action
+decoder overrides retain their existing path. Timing, memory and profiling run
+separately; JSON text decoding, device I/O and callbacks are excluded, and no
+timing gate applies.
 
 The test suite uses fake connections and protocol messages; it does not require
 a running Stream Dock instance. CI runs the SDK on Linux and Windows across all
