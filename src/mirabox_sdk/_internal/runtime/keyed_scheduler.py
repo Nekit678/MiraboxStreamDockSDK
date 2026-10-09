@@ -259,6 +259,8 @@ class KeyedSerialHandlerScheduler(HandlerScheduler):
             self._admission_wakeup = callback
 
     def _notify_admission(self) -> None:
+        if self._admission_wakeup is None:
+            return
         # Selection takes the source lock before the scheduler lock. Notify
         # outside the scheduler lock to preserve that lock order.
         with self._condition:

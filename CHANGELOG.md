@@ -61,6 +61,9 @@ change public APIs between minor versions.
 
 ### Fixed
 
+- Reduce scalar byte-accounting and unused admission-notification overhead in
+  runtime scheduling without changing budgets. Print benchmark diagnostics
+  in CI step logs.
 - Accept the production `inbound_overflow_policy`, `coalesce_dial_rotations`
   and `coalesce_commands` options in `StreamDockHarness`, preserving defaults
   and validation and enabling public queue behavior tests (QA-01).

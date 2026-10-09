@@ -109,8 +109,9 @@ CPython 3.13.11 for pull requests, pushes to `main` and manual runs. The
 `runtime-scheduler-benchmark` artifact is retained for 90 days and uploaded even
 when the gate fails. It contains `results.json`, `diagnostics.log`,
 `environment.json` (source revision, SDK/Python/platform, GIL and runner image),
-`dependencies.json` and `cpu.txt`. A budget violation fails the job; use the
-artifact to inspect the measurements and runner rather than ignoring failures.
+`dependencies.json` and `cpu.txt`. Diagnostics also appear in the step log.
+A budget violation fails the job; use the artifact to inspect the measurements
+and runner rather than ignoring failures.
 
 The command keeps the benchmark's existing budgets and takes the median of
 three scheduler runs. Throughput budgets compare keyed scheduling with the

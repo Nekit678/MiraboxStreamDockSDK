@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from sys import getsizeof
 
-from mirabox_sdk import SetSettingsCommand
+from mirabox_sdk import Controller, SetSettingsCommand
 from mirabox_sdk._internal.transport.buffer_limits import retained_size, utf8_size
 
 
@@ -28,6 +28,13 @@ class BufferLimitTests(unittest.TestCase):
         for _ in range(2000):
             value = [value]
         self.assertGreater(retained_size(value, 1_000_000), 100_000)
+
+    def test_retained_size_counts_scalar_payloads_and_honors_exact_budget(self) -> None:
+        values = [None, True, 42, 1.5, "text", b"bytes", dict, Controller.KEYPAD]
+        expected = getsizeof(values) + sum(getsizeof(value) for value in values)
+
+        self.assertEqual(retained_size(values, expected), expected)
+        self.assertGreater(retained_size(values, expected - 1), expected - 1)
 
     def test_cow_backing_memory_is_counted_without_materializing_views(self) -> None:
         command = SetSettingsCommand("button", {"items": [{"text": "x" * 4096}]})

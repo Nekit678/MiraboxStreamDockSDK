@@ -52,6 +52,9 @@ def retained_size(value: object, limit: int) -> int:
         size += getsizeof(item)
         if size > limit:
             return size
+        # Scalars have no retained children; avoid an empty iterator per leaf.
+        if isinstance(item, (str, bytes, int, float, bool, type)) or item is None:
+            continue
         pending.append(_children(item))
     return size
 
@@ -60,8 +63,6 @@ _END = object()
 
 
 def _children(value: object) -> Iterator[object]:
-    if isinstance(value, (str, bytes, int, float, bool, type)) or value is None:
-        return
     if isinstance(value, dict):
         yield from chain.from_iterable(dict.items(value))
     elif isinstance(value, list):
