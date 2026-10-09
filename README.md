@@ -862,6 +862,11 @@ high-frequency display rendering, `Action.set_image_async()`,
 while the writer is slow. Rollback-sensitive settings helpers remain
 synchronous.
 
+`future.result(timeout=...)` re-raises the original command failure, including
+a transport `TimeoutError`. Only an expired wait raises
+`TimeoutError("Outbound command did not complete before the timeout")`; it does
+not cancel the command, and a later call can retrieve its terminal result.
+
 The outbound queue holds 1,024 waiting commands by default. It never silently
 drops a command when full: `send()` and `send_async()` raise
 `OutboundQueueFullError`. Configure its capacity together with the other

@@ -897,6 +897,95 @@ class ApplicationPluginFactoryTests(unittest.TestCase):
 
 
 class CanonicalCommandFutureTests(unittest.TestCase):
+    def test_result_timeout_leaves_command_pending_for_a_later_result(self) -> None:
+        completion = CommandFuture()
+
+        with self.assertRaisesRegex(
+            TimeoutError, "^Outbound command did not complete before the timeout$"
+        ):
+            completion.result(timeout=0)
+        self.assertFalse(completion.done())
+        self.assertFalse(completion.wait(timeout=0))
+        with self.assertRaisesRegex(
+            TimeoutError, "^Outbound command did not complete before the timeout$"
+        ):
+            completion.exception(timeout=0)
+
+        completion._finish()
+        self.assertTrue(completion.done())
+        self.assertTrue(completion.wait(timeout=0))
+        self.assertIsNone(completion.result(timeout=0))
+        self.assertIsNone(completion.exception(timeout=0))
+
+    def test_result_preserves_recorded_failures_and_their_causes(self) -> None:
+        for failure in (RuntimeError("send failed"), TimeoutError("transport write timed out")):
+            cause = OSError("transport failure")
+            failure.__cause__ = cause
+            completion = CommandFuture()
+            shared = completion._share()
+            completion._finish(error=failure)
+
+            for handle in (completion, shared):
+                for timeout in (None, 0, 1):
+                    with self.subTest(failure=type(failure), handle=handle, timeout=timeout):
+                        self.assertTrue(handle.done())
+                        self.assertTrue(handle.wait(timeout=timeout))
+                        self.assertIs(handle.exception(timeout=timeout), failure)
+                        with self.assertRaises(type(failure)) as raised:
+                            handle.result(timeout=timeout)
+                        self.assertIs(raised.exception, failure)
+                        self.assertIs(raised.exception.__cause__, cause)
+
+    def test_result_timeout_is_preserved_when_command_finishes_before_it_is_raised(self) -> None:
+        def check_race(failure: Exception | None) -> None:
+            completion = CommandFuture()
+            finish_requested = Event()
+            finished = Event()
+            wait_for_completion = completion._future.exception
+
+            def finish() -> None:
+                if finish_requested.wait(1):
+                    completion._finish(error=failure)
+                    finished.set()
+
+            def wait_then_finish(timeout: float | None = None) -> None:
+                try:
+                    wait_for_completion(timeout)
+                except TimeoutError:
+                    # Finish on another thread after the wait has expired, before
+                    # CommandFuture can handle the wait's TimeoutError.
+                    finish_requested.set()
+                    self.assertTrue(finished.wait(1))
+                    raise
+
+            worker = Thread(target=finish)
+            worker.start()
+            try:
+                with (
+                    patch.object(completion._future, "result", side_effect=wait_then_finish),
+                    patch.object(completion._future, "exception", side_effect=wait_then_finish),
+                    self.assertRaisesRegex(
+                        TimeoutError, "^Outbound command did not complete before the timeout$"
+                    ),
+                ):
+                    completion.result(timeout=0)
+            finally:
+                finish_requested.set()
+                worker.join(1)
+            self.assertFalse(worker.is_alive())
+            self.assertTrue(completion.done())
+            self.assertIs(completion.exception(timeout=0), failure)
+            if failure is None:
+                self.assertIsNone(completion.result(timeout=0))
+            else:
+                with self.assertRaises(type(failure)) as raised:
+                    completion.result(timeout=0)
+                self.assertIs(raised.exception, failure)
+
+        for failure in (None, RuntimeError("send failed"), TimeoutError("transport timed out")):
+            with self.subTest(failure=failure):
+                check_race(failure)
+
     def test_boundary_and_action_helpers_share_one_completion_type(self) -> None:
         self.assertIs(BoundaryCommandFuture, CommandFuture)
 

@@ -54,10 +54,9 @@ class CommandFuture:
     def result(self, timeout: float | None = None) -> None:
         """Wait for completion and re-raise the recorded command failure."""
 
-        try:
-            return self._future.result(timeout)
-        except TimeoutError as exc:
-            raise TimeoutError("Outbound command did not complete before the timeout") from exc
+        # Wait without raising recorded failures, which may themselves be timeouts.
+        self.exception(timeout)
+        return self._future.result(timeout=0)
 
     def exception(self, timeout: float | None = None) -> Exception | None:
         """Wait for completion and return the recorded failure, if any."""

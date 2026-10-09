@@ -39,6 +39,9 @@ change public APIs between minor versions.
 
 ### Fixed
 
+- Preserve recorded command failures, including `TimeoutError` and its original
+  cause, in `CommandFuture.result()`. Only an expired completion wait raises
+  `TimeoutError("Outbound command did not complete before the timeout")` (API-01).
 - Keep hot-context bursts at the bounded inbound queue and select independent
   contexts before the next global barrier, with per-context admission budgets
   and capacity wakeups. Preserve context FIFO and global pending limits; cover
