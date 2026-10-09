@@ -12,6 +12,7 @@ from collections.abc import (
     Mapping,
     ValuesView,
 )
+from copy import deepcopy
 from typing import Any, TypeAlias, TypeGuard, overload
 
 JsonValue: TypeAlias = None | bool | int | float | str | list["JsonValue"] | dict[str, "JsonValue"]
@@ -28,10 +29,10 @@ def clone_json_object(value: object) -> JsonObject:
         value: Arbitrary value expected to contain a finite JSON object.
 
     Returns:
-        An isolated JSON object.
+        An isolated JSON object containing only plain dict/list containers.
 
     Raises:
-        ValueError: If ``value`` is not a finite JSON object.
+        ValueError: If ``value`` is not a finite, acyclic JSON object.
     """
 
     if not isinstance(value, dict):
@@ -42,6 +43,7 @@ def clone_json_object(value: object) -> JsonObject:
 def _clone_json_value(
     value: object,
     container_has_only_scalars: dict[int, bool] | None = None,
+    active_containers: set[int] | None = None,
 ) -> JsonValue:
     if value is None or isinstance(value, (bool, int, str)):
         return value
@@ -50,34 +52,53 @@ def _clone_json_value(
             raise ValueError("expected a finite JSON value")
         return value
     if isinstance(value, list):
+        if active_containers is None:
+            active_containers = set()
+        identity = id(value)
+        if identity in active_containers:
+            raise ValueError("expected an acyclic JSON value")
+        active_containers.add(identity)
         cloned_list: list[JsonValue] = []
         has_only_scalars = True
-        for item in value:
-            cloned_item = _clone_json_value(item, container_has_only_scalars)
-            if isinstance(cloned_item, (dict, list)):
-                has_only_scalars = False
-            cloned_list.append(cloned_item)
+        try:
+            for item in value:
+                cloned_item = _clone_json_value(item, container_has_only_scalars, active_containers)
+                if isinstance(cloned_item, (dict, list)):
+                    has_only_scalars = False
+                cloned_list.append(cloned_item)
+        finally:
+            active_containers.remove(identity)
         if container_has_only_scalars is not None:
             container_has_only_scalars[id(cloned_list)] = has_only_scalars
         return cloned_list
     if isinstance(value, dict):
-        return _clone_json_dict(value, container_has_only_scalars)
+        return _clone_json_dict(value, container_has_only_scalars, active_containers)
     raise ValueError("expected a JSON value")
 
 
 def _clone_json_dict(
     value: dict[object, object],
     container_has_only_scalars: dict[int, bool] | None = None,
+    active_containers: set[int] | None = None,
 ) -> JsonObject:
+    if active_containers is None:
+        active_containers = set()
+    identity = id(value)
+    if identity in active_containers:
+        raise ValueError("expected an acyclic JSON value")
+    active_containers.add(identity)
     cloned: JsonObject = {}
     has_only_scalars = True
-    for key, item in value.items():
-        if not isinstance(key, str):
-            raise ValueError("expected JSON object keys to be strings")
-        cloned_item = _clone_json_value(item, container_has_only_scalars)
-        if isinstance(cloned_item, (dict, list)):
-            has_only_scalars = False
-        cloned[key] = cloned_item
+    try:
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise ValueError("expected JSON object keys to be strings")
+            cloned_item = _clone_json_value(item, container_has_only_scalars, active_containers)
+            if isinstance(cloned_item, (dict, list)):
+                has_only_scalars = False
+            cloned[key] = cloned_item
+    finally:
+        active_containers.remove(identity)
     if container_has_only_scalars is not None:
         container_has_only_scalars[id(cloned)] = has_only_scalars
     return cloned
@@ -87,10 +108,10 @@ class ValidatedJsonObject:
     """Own one validated JSON-object snapshot.
 
     Construction validates and clones the complete object once. The immutable
-    backing snapshot can then create multiple isolated copy-on-write payloads
-    without another recursive validation or clone. The backing snapshot can be
-    handed between threads after construction; each mutable view created from
-    it must have only one thread accessing or mutating it at a time.
+    backing snapshot can then create independent mutable payloads and plain
+    deep copies. The backing snapshot can be handed between threads after
+    construction; each mutable copy must have only one thread accessing or
+    mutating it at a time.
     """
 
     __slots__ = ("_container_has_only_scalars", "_value")
@@ -140,7 +161,12 @@ class ValidatedJsonObject:
         return OwnedJsonPayload._from_validated(self)
 
     def isolated_copy(self) -> JsonObject:
-        """Return an isolated copy-on-write JSON object."""
+        """Return an isolated deep snapshot containing only plain dict/list containers."""
+
+        return clone_json_object(self._value)
+
+    def _copy_on_write_view(self) -> JsonObject:
+        """Create a private view for SDK-owned state and wire serialization."""
 
         return _copy_on_write_json_object(self)
 
@@ -178,7 +204,7 @@ def _copy_on_write_json_object(
             commits.
 
     Returns:
-        A ``dict`` subclass compatible with :data:`JsonObject`.
+        An internal ``dict`` subclass; never expose it to public consumers.
     """
 
     source = (
@@ -793,58 +819,55 @@ class _CopyOnWriteJsonList(list[JsonValue]):
         return self
 
 
-class OwnedJsonPayload(_CopyOnWriteJsonDict):
-    """Mutable JSON payload with an SDK-owned, validated backing snapshot.
+class OwnedJsonPayload(dict[str, JsonValue]):
+    """Mutable JSON payload with native dict storage and plain nested containers.
 
-    Raw construction performs one validation-and-clone traversal. Constructing
-    from :class:`ValidatedJsonObject` reuses its owned snapshot. Every exposed
-    mutation is validated and isolated, while :meth:`isolated_copy` cheaply
-    creates an independent copy-on-write view for local SDK state. Like every
-    mutable copy-on-write view, an instance is not safe for simultaneous access
-    from multiple threads.
+    Construction validates and deeply isolates the input. Subsequent mutations
+    have ordinary dict/list semantics, including reference sharing on insertion
+    and shallow copies. The command layer validates and snapshots the current
+    contents before serialization. Use :meth:`isolated_copy` for a validated,
+    independent deep snapshot. An instance must have one accessing thread at a
+    time; neither it nor any reachable mutable object may change while its
+    command is being sent.
     """
 
-    __slots__ = ("_current_snapshot",)
+    __slots__ = ()
 
     def __init__(self, value: object | ValidatedJsonObject) -> None:
         if isinstance(value, ValidatedJsonObject):
-            validated = value
+            cloned = value.isolated_copy()
         else:
             if not isinstance(value, dict):
                 try:
                     value = dict(value)  # type: ignore[arg-type]
                 except (TypeError, ValueError):
                     raise ValueError("expected a JSON object") from None
-            validated = ValidatedJsonObject(value)
-        self._initialize_from_validated(validated)
+            cloned = clone_json_object(value)
+        super().__init__(cloned)
 
     @classmethod
     def _from_validated(cls, validated: ValidatedJsonObject) -> OwnedJsonPayload:
-        payload = dict.__new__(cls)
-        payload._initialize_from_validated(validated)
-        return payload
-
-    def _initialize_from_validated(self, validated: ValidatedJsonObject) -> None:
-        self._current_snapshot: ValidatedJsonObject | None = validated
-        owner = _CopyOnWriteOwner(validated, self._discard_current_snapshot)
-        super().__init__(
-            validated._value,
-            owner,
-            validated._container_has_only_scalars.get(id(validated._value)),
-        )
+        return cls(validated)
 
     def isolated_copy(self) -> JsonObject:
-        """Return an independent copy-on-write view of the current payload."""
+        """Validate and return a deep snapshot of the current plain JSON containers."""
 
-        return _copy_on_write_json_object(self._validated_object())
+        return clone_json_object(self)
+
+    def __copy__(self) -> JsonObject:
+        return self.copy()
+
+    def __deepcopy__(self, memo: dict[int, object]) -> JsonObject:
+        result: JsonObject = {}
+        memo[id(self)] = result
+        for key, value in self.items():
+            result[key] = deepcopy(value, memo)
+        return result
 
     def _validated_object(self) -> ValidatedJsonObject:
-        if self._current_snapshot is None:
-            self._current_snapshot = ValidatedJsonObject(self)
-        return self._current_snapshot
-
-    def _discard_current_snapshot(self) -> None:
-        self._current_snapshot = None
+        # Native base methods and plain nested containers can mutate without
+        # hooks, so a cached certificate would not describe the current data.
+        return ValidatedJsonObject(self)
 
 
 def is_json_value(value: object) -> TypeGuard[JsonValue]:

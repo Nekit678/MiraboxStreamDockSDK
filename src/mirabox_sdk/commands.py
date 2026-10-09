@@ -23,9 +23,9 @@ PayloadT = TypeVar("PayloadT")
 class ValidatedWireMessage:
     """A complete JSON wire message validated by the command layer.
 
-    The constructor validates and owns custom command output. Commands whose
-    extensible payload is already owned use :meth:`from_owned_payload`, so the
-    payload is not traversed a second time.
+    The constructor validates and owns custom command output. Commands with a
+    mutable owned payload use :meth:`from_owned_payload` to validate and capture
+    its current contents independently of subsequent native mutations.
     """
 
     __slots__ = ("_message",)
@@ -39,7 +39,7 @@ class ValidatedWireMessage:
         payload: OwnedJsonPayload,
         **routing_fields: str,
     ) -> ValidatedWireMessage:
-        """Compose string routing fields and one already-owned JSON payload."""
+        """Validate and snapshot the current payload with string routing fields."""
 
         if not isinstance(payload, OwnedJsonPayload):
             raise TypeError("payload must be an OwnedJsonPayload")
@@ -48,7 +48,11 @@ class ValidatedWireMessage:
         ):
             raise ValueError("wire routing fields must be strings")
         message: JsonObject = dict(routing_fields)
-        message["payload"] = payload
+        try:
+            snapshot = payload._validated_object()
+        except ValueError:
+            raise ValueError("Stream Dock command contains a non-JSON value") from None
+        message["payload"] = snapshot._copy_on_write_view()
         validated = object.__new__(cls)
         validated._message = message
         return validated
@@ -65,8 +69,8 @@ class StreamDockCommand(ABC):
     construct, inspect, and test before passing them to
     :meth:`StreamDockSender.send` or :meth:`StreamDockSender.send_async`.
     Scalar-only commands may be shared freely between threads. Payload-bearing
-    commands own mutable copy-on-write JSON; neither the command nor that
-    payload may be mutated after a thread begins sending it.
+    commands own mutable JSON containers; neither the command nor any mutable
+    object reachable from its payload may change while a send is in flight.
     """
 
     @abstractmethod
@@ -79,8 +83,8 @@ class StreamDockCommand(ABC):
         """Return an owned wire message whose complete JSON shape is valid.
 
         Custom commands inherit this validating implementation. Commands with
-        an :class:`OwnedJsonPayload` override it to compose a certified
-        envelope without recursively traversing the payload again.
+        an :class:`OwnedJsonPayload` override it to validate and capture the
+        current payload, including mutations made through native containers.
         """
 
         try:
@@ -197,7 +201,7 @@ class SendToPropertyInspectorCommand(StreamDockCommand):
         }
 
     def to_validated_wire(self) -> ValidatedWireMessage:
-        """Compose a certified envelope without revalidating the payload."""
+        """Validate and capture the current payload in a certified envelope."""
 
         return ValidatedWireMessage.from_owned_payload(
             self.payload,
@@ -322,7 +326,7 @@ class SetSettingsCommand(StreamDockCommand):
         return {"event": "setSettings", "context": self.context, "payload": self.settings}
 
     def to_validated_wire(self) -> ValidatedWireMessage:
-        """Compose a certified envelope without revalidating the payload."""
+        """Validate and capture the current payload in a certified envelope."""
 
         return ValidatedWireMessage.from_owned_payload(
             self.settings,
@@ -446,8 +450,8 @@ class SetGlobalSettingsCommand(StreamDockCommand):
     """Persist settings shared by every action in a plugin.
 
     The command validates and isolates ``settings`` when constructed, then
-    retains the owned snapshot for both serialization and successful runtime
-    state replacement.
+    retains mutable owned data for serialization and successful runtime state
+    replacement. Wire preparation validates and captures its current contents.
 
     Attributes:
         context: Plugin UUID used as the command context.
@@ -520,7 +524,7 @@ class SetGlobalSettingsCommand(StreamDockCommand):
         }
 
     def to_validated_wire(self) -> ValidatedWireMessage:
-        """Compose a certified envelope without revalidating the payload."""
+        """Validate and capture the current payload in a certified envelope."""
 
         return ValidatedWireMessage.from_owned_payload(
             self.settings,

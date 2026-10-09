@@ -974,15 +974,35 @@ submission (or the final coalesced write) and receives its serialization,
 transport, overflow, or shutdown result. `send_async()` returns after
 acceptance; the returned `CommandFuture` exposes the later result.
 
+Public JSON uses native `dict`/`list` contents. `OwnedJsonPayload` is a `dict`
+subclass with ordinary storage and plain nested containers; base operations
+such as `dict.items(payload)` and `list.copy(payload["values"])` see the same
+data as normal access. Command constructors deeply isolate their inputs.
+`ValidatedJsonObject.isolated_copy()` and `OwnedJsonPayload.isolated_copy()`
+return independent deep snapshots made entirely of plain `dict`/`list` objects.
+Events delivered to separate global-settings recipients also own independent
+containers. `.copy()` and `copy.copy()` remain shallow, and inserting a mutable
+value shares that reference within the receiving object, just as in Python.
+
+Migration from COW payloads: mutations now use native container semantics and
+are validated when creating an isolated snapshot or preparing a command for
+sending. Invalid values, non-string keys, non-finite floats and cycles are
+rejected there. Call `.isolated_copy()` when immediate validation is needed.
+`to_wire()` returns an envelope referencing the command's live payload;
+`to_validated_wire()` captures an independent, validated wire snapshot.
+Large public snapshots now require a full container copy; COW remains internal.
+
 Scalar-only frozen command objects may be shared between threads.
 Payload-bearing commands own mutable `OwnedJsonPayload` data: do not mutate a
-command or its payload once any thread begins `send()` or `send_async()`.
+command or any mutable object reachable from its payload from the start of
+`send()` or `send_async()` until completion, including through inserted aliases.
 `ValidatedJsonObject` backing snapshots are safe to hand between threads after
-construction, but every mutable COW view—event settings, `Action.settings`, and
+construction, but every mutable JSON object—event settings, `Action.settings`, and
 `OwnedJsonPayload`—allows only one accessing or mutating thread at a time.
 `application.global_settings.snapshot()` is isolated, and its `update()` method
 serializes rollback-safe changes from background services; do not share a live
-mutable view between threads.
+mutable object between threads. The sending thread owns the submitted payload
+until its command completes; build a separate command for independent work.
 
 Shutdown closes the typed boundary, drains owned inbound work while callback
 commands can still finish, stops the scheduler and pumps, and finally releases

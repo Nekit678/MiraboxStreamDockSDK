@@ -209,7 +209,7 @@ def _decode_owned_with_codec(
     payload: OwnedJsonPayload,
     codec: JsonCodec[DecodedT],
 ) -> DecodedT:
-    """Decode an owned payload through an isolated copy-on-write view."""
+    """Decode an owned payload through an isolated plain deep snapshot."""
 
     isolated = payload.isolated_copy()
     try:

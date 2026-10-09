@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import ast
+import copy
 import json
+import pickle
 import unittest
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -246,6 +248,89 @@ class StreamDockRegistrationTests(unittest.TestCase):
 
 
 class JsonCodecTests(unittest.TestCase):
+    def test_public_payloads_support_native_container_operations(self) -> None:
+        source: JsonObject = {
+            "values": [1, 2],
+            "nested": {"items": [{"count": 1}]},
+            "empty_object": {},
+            "empty_list": [],
+        }
+        snapshot = ValidatedJsonObject(source)
+        payloads = (
+            SetSettingsCommand("button", source).settings,
+            SetGlobalSettingsCommand("plugin", source).settings,
+            SendToPropertyInspectorCommand("action", "button", source).payload,
+            snapshot.owned_payload(),
+            snapshot.isolated_copy(),
+        )
+        for payload in payloads:
+            with self.subTest(payload_type=type(payload).__name__):
+                values = dict.__getitem__(payload, "values")
+                self.assertIs(type(values), list)
+                self.assertEqual(list.copy(values), [1, 2])
+                self.assertEqual(list.__getitem__(values, slice(None)), [1, 2])
+                self.assertEqual(list.__add__(values, [3]), [1, 2, 3])
+                self.assertEqual(list.__mul__(values, 2), [1, 2, 1, 2])
+                self.assertEqual(list(list.__iter__(values)), [1, 2])
+                self.assertEqual(dict.get(payload, "nested"), source["nested"])
+                self.assertEqual(dict.copy(payload), source)
+                self.assertEqual(list(dict.items(payload)), list(source.items()))
+                self.assertEqual(payload.copy(), source)
+                self.assertIs(payload.copy()["values"], values)
+                self.assertEqual(dict.__or__(payload, {"extra": True}), source | {"extra": True})
+                for copied in (copy.deepcopy(payload), pickle.loads(pickle.dumps(payload))):
+                    self.assertEqual(copied, source)
+                    self.assertIsNot(copied["values"], values)
+                for indent in (None, 2):
+                    self.assertEqual(json.loads(json.dumps(payload, indent=indent)), source)
+
+                list.append(values, 3)
+                dict.__setitem__(payload, "extra", {"count": 2})
+                self.assertEqual(payload["values"], [1, 2, 3])
+                self.assertEqual(payload["extra"], {"count": 2})
+        self.assertEqual(source["values"], [1, 2])
+        self.assertEqual(snapshot.isolated_copy(), source)
+
+    def test_public_snapshots_are_plain_and_isolated_after_native_mutations(self) -> None:
+        validated = ValidatedJsonObject({"nested": {"values": [{"count": 1}]}})
+        payload = validated.owned_payload()
+        first = payload.isolated_copy()
+        second = payload.isolated_copy()
+        self.assertIs(type(first), dict)
+        self.assertIs(type(first["nested"]), dict)
+        values = first["nested"]["values"]
+        self.assertIs(type(values), list)
+        self.assertIs(type(values[0]), dict)
+        dict.__setitem__(values[0], "count", 2)
+        list.append(values, {"count": 3})
+        self.assertEqual(second, {"nested": {"values": [{"count": 1}]}})
+        self.assertEqual(payload, second)
+        self.assertEqual(validated.isolated_copy(), second)
+
+    def test_owned_payload_insertions_and_shallow_copies_share_native_references(self) -> None:
+        payload = OwnedJsonPayload({})
+        inserted = {"values": [1]}
+        payload["inserted"] = inserted
+        shallow = copy.copy(payload)
+        isolated = payload.isolated_copy()
+
+        self.assertIs(payload["inserted"], inserted)
+        self.assertIs(shallow["inserted"], inserted)
+        inserted["values"].append(2)
+        self.assertEqual(payload, {"inserted": {"values": [1, 2]}})
+        self.assertEqual(isolated, {"inserted": {"values": [1]}})
+
+    def test_deep_snapshots_accept_repeated_references_and_reject_cycles(self) -> None:
+        shared = {"count": 1}
+        payload = OwnedJsonPayload({})
+        payload.update(first=shared, second=shared)
+        snapshot = payload.isolated_copy()
+        self.assertEqual(snapshot, {"first": {"count": 1}, "second": {"count": 1}})
+        self.assertIsNot(snapshot["first"], snapshot["second"])
+        payload["self"] = payload
+        with self.assertRaisesRegex(ValueError, "acyclic"):
+            payload.isolated_copy()
+
     def test_validated_json_object_creates_isolated_owned_payloads(self) -> None:
         source: JsonObject = {"profile": {"levels": [1, 2]}}
         validated = ValidatedJsonObject(source)
@@ -263,7 +348,7 @@ class JsonCodecTests(unittest.TestCase):
         self.assertEqual(first.isolated_copy(), {"profile": {"levels": [4]}})
         self.assertIsInstance(first, OwnedJsonPayload)
 
-    def test_validated_wire_message_requires_owned_payload_for_shallow_composition(
+    def test_validated_wire_message_requires_owned_payload_for_snapshot_composition(
         self,
     ) -> None:
         with self.assertRaisesRegex(TypeError, "OwnedJsonPayload"):
@@ -347,7 +432,7 @@ class JsonCodecTests(unittest.TestCase):
             },
         )
 
-    def test_extensible_commands_own_direct_payloads_and_validate_mutations(self) -> None:
+    def test_extensible_commands_own_inputs_and_validate_current_contents_for_sending(self) -> None:
         source: JsonObject = {"nested": {"value": 1}}
         settings_command = SetSettingsCommand("button", source)
         global_command = SetGlobalSettingsCommand("plugin", source)
@@ -360,8 +445,9 @@ class JsonCodecTests(unittest.TestCase):
         self.assertEqual(settings_command.settings, {"nested": {"value": 1}})
         self.assertEqual(global_command.settings, {"nested": {"value": 1}})
         self.assertEqual(inspector_command.payload, {"nested": {"value": 1}})
+        settings_command.settings["invalid"] = object()  # type: ignore[assignment]
         with self.assertRaises(ValueError):
-            settings_command.settings["invalid"] = object()  # type: ignore[assignment]
+            settings_command.to_validated_wire()
 
     def test_converts_typed_property_inspector_payloads_both_ways(self) -> None:
         event = SendToPluginEvent(

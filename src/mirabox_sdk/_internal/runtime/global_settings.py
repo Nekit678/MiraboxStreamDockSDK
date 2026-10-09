@@ -220,5 +220,5 @@ class DefaultGlobalSettingsState(GlobalSettingsState):
         self._replace_locked(ValidatedJsonObject(command.settings))
 
     def _replace_locked(self, source: ValidatedJsonObject) -> None:
-        self._settings = source.isolated_copy()
+        self._settings = source._copy_on_write_view()
         self._loaded = True

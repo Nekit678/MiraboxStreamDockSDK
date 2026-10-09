@@ -33,6 +33,12 @@ change public APIs between minor versions.
 
 ### Changed
 
+- Use native dictionary storage and plain nested dict/list containers for public
+  JSON payloads (API-02), keeping COW views internal. `isolated_copy()` returns
+  an independent plain deep snapshot. Mutations and shallow copies now follow
+  Python reference semantics; validation moves from mutation to snapshot/send
+  preparation, including cycle rejection. Commands revalidate current data and
+  capture independent wire snapshots; large public copies require a full traversal.
 - Adopt a facade-first API (SDK-API-001): remove `ActionFactory`,
   `HandlerSchedulerFactory`, `WebSocketConnectorFactory`, `StreamDockRuntime`
   and `StreamDockRuntimeLifecycleError` from supported exports. Remove the

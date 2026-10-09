@@ -31,12 +31,19 @@ class BufferLimitTests(unittest.TestCase):
 
     def test_cow_backing_memory_is_counted_without_materializing_views(self) -> None:
         command = SetSettingsCommand("button", {"items": [{"text": "x" * 4096}]})
-        payload = command.settings
+        wire_message = command.to_validated_wire()
+        payload = wire_message._json_object()["payload"]
         before = dict(payload._owner._containers)  # type: ignore[attr-defined]
-        size = retained_size(command, 100_000)
+        size = retained_size(wire_message, 100_000)
         self.assertGreater(size, 4096)
         self.assertEqual(payload._owner._containers, before)  # type: ignore[attr-defined]
-        self.assertEqual(retained_size(command, 100_000), size)
+        self.assertEqual(retained_size(wire_message, 100_000), size)
+
+    def test_native_owned_payload_storage_is_counted(self) -> None:
+        command = SetSettingsCommand("button", {"items": [{"text": "x" * 4096}]})
+
+        self.assertGreater(retained_size(command, 100_000), 4096)
+        self.assertEqual(list.copy(command.settings["items"]), [{"text": "x" * 4096}])
 
     def test_custom_command_state_with_private_slots_is_counted(self) -> None:
         class SlottedState:

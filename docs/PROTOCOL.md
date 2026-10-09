@@ -246,13 +246,37 @@ write facade.
 All command models expose `to_wire()` for the exact JSON object sent through
 the WebSocket. `SetSettingsCommand`, `SetGlobalSettingsCommand`, and
 `SendToPropertyInspectorCommand` retain extensible JSON as an
-`OwnedJsonPayload` backed by one `ValidatedJsonObject` snapshot. Their
-`to_validated_wire()` implementations compose a `ValidatedWireMessage` without
-another recursive payload pass. Custom `StreamDockCommand` implementations can
+`OwnedJsonPayload` with native dictionary storage and plain nested dictionaries
+and lists. Constructors validate and deeply isolate their inputs; subsequent
+mutations have ordinary Python container semantics. `.copy()` and `copy.copy()`
+are shallow, and insertion shares the inserted reference. Native base methods
+such as `dict.__getitem__`, `dict.items` and `list.copy` expose the same contents
+as normal access. `OwnedJsonPayload.isolated_copy()` and
+`ValidatedJsonObject.isolated_copy()` validate and return independent deep
+snapshots containing only plain dictionaries and lists. Global-settings events
+delivered to separate recipients also receive independent plain containers.
+
+`to_wire()` constructs an envelope referencing the command's live payload.
+`to_validated_wire()` validates the current payload again and captures an
+independent `ValidatedWireMessage`, so native mutations cannot leave a stale
+validation certificate. Invalid values, non-string keys, non-finite floats and
+cycles are rejected before serialization. Custom `StreamDockCommand` implementations can
 continue to implement only `to_wire()`; the inherited `to_validated_wire()`
 validates and owns that output before the transport receives it. The transport
 therefore serializes one uniform validated-message contract and retains
 `allow_nan=False` as a final encoder safeguard.
+
+Migration (API-02): COW views are private SDK state/serialization details.
+Public mutations no longer validate or clone inserted values immediately;
+use `.isolated_copy()` for immediate validation and isolation. Public deep
+snapshots now cost a full container traversal. Before this change, a local
+CPython 3.13.11 Linux/WSL2 microbenchmark (median of five runs, 2,000 creations
+per run) measured COW view creation at 0.75–0.92 µs and plain validated cloning
+at 0.37–0.84 µs for Counter's `{"count": 1}` and the extensible command payloads
+in `tests/internal/wire_fixtures.py`. A synthetic nested list of 10,000 integers
+(100 creations per run) measured 0.78 µs versus 1,661.51 µs. These measurements
+exclude source snapshot construction and reading the contents; they measure
+copy creation, not end-to-end command or callback performance.
 
 One connection-owned outbound writer performs validation, serialization,
 logging, and WebSocket writes in FIFO queue order. The bounded queue rejects
@@ -272,10 +296,12 @@ they may wait there and submit commands only after `wait()` returns `True`.
 That signal opens after connection, registration, and the initial global
 settings request complete, but does not wait for the first settings response.
 Scalar-only frozen commands may be shared between threads. A mutable
-`OwnedJsonPayload` must have one owner at a time and must not change after any
-thread submits its command. The same single-owner rule applies to mutable COW
-event and settings views; immutable `ValidatedJsonObject` backing snapshots may
-be handed between threads.
+`OwnedJsonPayload` must have one owner at a time. Neither it nor any reachable
+mutable object may change, including through inserted aliases, from the start
+of sending until completion. The same single-owner rule applies
+to mutable event and settings containers; immutable `ValidatedJsonObject`
+backing snapshots may be handed between threads. Construct a separate command
+for independently mutable data.
 
 Per-message protocol logs are emitted only at DEBUG and contain routing metadata
 such as the event and context. Message payloads are redacted by default because

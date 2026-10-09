@@ -49,7 +49,10 @@ class DefaultGlobalSettingsStateTests(unittest.TestCase):
         source = state.receive({"nested": {"count": 1}})
         first = state.new_event(source)
         second = state.new_event(source)
-        first.settings["nested"]["count"] = 2  # type: ignore[index]
+        self.assertIs(type(first.settings), dict)
+        nested = dict.__getitem__(first.settings, "nested")
+        self.assertIs(type(nested), dict)
+        dict.__setitem__(nested, "count", 2)
 
         self.assertTrue(state.loaded)
         self.assertEqual(second, DidReceiveGlobalSettingsEvent(settings={"nested": {"count": 1}}))

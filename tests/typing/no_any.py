@@ -11,6 +11,7 @@ from mirabox_sdk import (
     FunctionalJsonCodec,
     JsonCodec,
     JsonObject,
+    JsonValue,
     LogMessageCommand,
     OwnedJsonPayload,
     ShutdownFailure,
@@ -117,5 +118,9 @@ def check_contract(
     )
     snapshot = ValidatedJsonObject({"count": 1})
     assert_type(snapshot.owned_payload(), OwnedJsonPayload)
+    assert_type(dict.copy(snapshot.owned_payload()), JsonObject)
     assert_type(snapshot.isolated_copy(), JsonObject)
     assert_type(OwnedJsonPayload(snapshot).isolated_copy(), JsonObject)
+    values = OwnedJsonPayload({"values": [1, 2]})["values"]
+    if isinstance(values, list):
+        assert_type(list.copy(values), list[JsonValue])

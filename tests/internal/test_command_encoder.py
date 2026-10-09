@@ -7,6 +7,8 @@ from unittest.mock import patch
 from mirabox_sdk import (
     JsonObject,
     LogMessageCommand,
+    SendToPropertyInspectorCommand,
+    SetGlobalSettingsCommand,
     SetSettingsCommand,
     StreamDockCommand,
     ValidatedWireMessage,
@@ -101,6 +103,50 @@ class JsonStreamDockCommandEncoderTests(unittest.TestCase):
                 "payload": {"message": "Микрофон 🎛️"},
             },
         )
+
+    def test_encodes_native_mutations_and_keeps_validated_wire_snapshots_isolated(self) -> None:
+        for command in (
+            SetSettingsCommand("button", {"values": [1, 2]}),
+            SetGlobalSettingsCommand("plugin", {"values": [1, 2]}),
+            SendToPropertyInspectorCommand("action", "button", {"values": [1, 2]}),
+        ):
+            with self.subTest(command=type(command).__name__):
+                payload = command.to_wire()["payload"]
+                values = payload["values"]
+                snapshot = command.to_validated_wire()
+                list.append(values, 3)
+                dict.update(payload, count=1)
+                self.assertEqual(
+                    json.loads(self.encoder.encode(command))["payload"],
+                    {"values": [1, 2, 3], "count": 1},
+                )
+                self.assertEqual(snapshot._json_object()["payload"], {"values": [1, 2]})
+
+    def test_revalidates_invalid_native_mutations_before_serializing(self) -> None:
+        invalid_values = (object(), float("nan"), float("inf"), (1, 2), {1: "value"})
+        cyclic_list: list[object] = []
+        cyclic_list.append(cyclic_list)
+        cyclic_dict: dict[str, object] = {}
+        cyclic_dict["self"] = cyclic_dict
+        for invalid in (*invalid_values, cyclic_list, cyclic_dict):
+            for command in (
+                SetSettingsCommand("button", {"values": []}),
+                SetGlobalSettingsCommand("plugin", {"values": []}),
+                SendToPropertyInspectorCommand("action", "button", {"values": []}),
+            ):
+                with self.subTest(command=type(command).__name__, invalid_type=type(invalid)):
+                    command.to_validated_wire()
+                    payload = command.to_wire()["payload"]
+                    list.append(payload["values"], invalid)
+                    with self.assertRaisesRegex(ValueError, "non-JSON value"):
+                        self.encoder.encode(command)
+
+    def test_rejects_native_non_string_keys_at_the_owned_payload_root(self) -> None:
+        command = SetSettingsCommand("button", {})
+        dict.__setitem__(command.settings, 1, "invalid")
+
+        with self.assertRaisesRegex(ValueError, "non-JSON value"):
+            self.encoder.encode(command)
 
     def test_validates_and_serializes_exactly_once(self) -> None:
         command = _CountingCommand()
