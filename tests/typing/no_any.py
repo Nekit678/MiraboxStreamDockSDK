@@ -1,5 +1,6 @@
 """Consumer expressions checked with disallow_any_expr, including imported SDK types."""
 
+from dataclasses import dataclass
 from typing import assert_type
 
 from mirabox_sdk import (
@@ -7,6 +8,8 @@ from mirabox_sdk import (
     ActionRegistry,
     ApplicationContext,
     CommandFuture,
+    FunctionalJsonCodec,
+    JsonCodec,
     JsonObject,
     LogMessageCommand,
     OwnedJsonPayload,
@@ -30,6 +33,42 @@ class StrictAction(Action[JsonObject, ApplicationContext]):
 
 
 assert_type(registry.register("com.example.strict.alias")(StrictAction), type[StrictAction])
+
+
+@dataclass(frozen=True)
+class CustomSettings:
+    count: int
+
+
+def decode_settings(value: JsonObject) -> CustomSettings:
+    count = value.get("count", 0)
+    if type(count) is not int:
+        raise ValueError("count must be an integer")
+    return CustomSettings(count)
+
+
+CUSTOM_SETTINGS_CODEC = FunctionalJsonCodec[CustomSettings](
+    decode_settings, lambda value: {"count": value.count}
+)
+
+
+@registry.register("com.example.strict.settings", settings_codec=CUSTOM_SETTINGS_CODEC)
+class StrictSettingsAction(Action[CustomSettings, ApplicationContext]):
+    def read_count(self) -> int:
+        return self.settings.count
+
+
+assert_type(
+    registry.register("com.example.strict.settings.alias", settings_codec=CUSTOM_SETTINGS_CODEC)(
+        StrictSettingsAction
+    ),
+    type[StrictSettingsAction],
+)
+assert_type(StrictSettingsAction.settings_codec, JsonCodec[CustomSettings])
+assert_type(StrictSettingsAction.get_settings_codec(), JsonCodec[CustomSettings])
+assert_type(StrictSettingsAction.decode_settings({"count": 1}), CustomSettings)
+assert_type(StrictAction.settings_codec, JsonCodec[JsonObject])
+assert_type(StrictAction.get_settings_codec(), JsonCodec[JsonObject])
 
 
 def check_contract(
@@ -59,6 +98,14 @@ def check_contract(
     strict_action = StrictAction("com.example.strict.action", "button", {}, context)
     assert_type(strict_action, StrictAction)
     assert_type(strict_action.read_context(), str)
+    typed_action = StrictSettingsAction(
+        "com.example.strict.settings", "button", CustomSettings(1), context
+    )
+    assert_type(typed_action, StrictSettingsAction)
+    assert_type(typed_action.settings, CustomSettings)
+    assert_type(typed_action.settings_codec, JsonCodec[CustomSettings])
+    assert_type(typed_action.read_count(), int)
+    typed_action.set_settings(CustomSettings(2))
     assert_type(application.metrics().event_pump.events_received, int)
     assert_type(harness.application, StreamDockApplication)
     assert_type(harness.context, ApplicationContext)

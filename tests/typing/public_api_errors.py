@@ -6,6 +6,7 @@ from mirabox_sdk import (
     Action,
     ActionRegistry,
     ApplicationContext,
+    FunctionalJsonCodec,
     JsonObject,
     LogMessageCommand,
     OwnedJsonPayload,
@@ -36,6 +37,78 @@ class NeedsLabel(Action[JsonObject, ExpectedDependencies]):
 
 
 registry.register("com.example.incompatible.direct")(NeedsLabel)  # type: ignore[arg-type]
+
+
+@dataclass(frozen=True)
+class CustomSettings:
+    count: int
+
+
+JSON_SETTINGS_CODEC = FunctionalJsonCodec[JsonObject](lambda value: value, lambda value: value)
+
+
+class IncompatibleSettingsCodec(Action[CustomSettings, SuppliedDependencies]):
+    settings_codec = JSON_SETTINGS_CODEC  # type: ignore[assignment]
+
+
+@registry.register("com.example.missing.codec")  # type: ignore[arg-type]
+class MissingSettingsCodec(Action[CustomSettings, SuppliedDependencies]):
+    pass
+
+
+registry.register("com.example.wrong.codec", settings_codec=JSON_SETTINGS_CODEC)(
+    MissingSettingsCodec  # type: ignore[arg-type]
+)
+registry.register("com.example.missing.codec.direct")(MissingSettingsCodec)  # type: ignore[arg-type]
+
+
+def decode_settings(value: JsonObject) -> CustomSettings:
+    count = value.get("count", 0)
+    if type(count) is not int:
+        raise ValueError("count must be an integer")
+    return CustomSettings(count)
+
+
+CUSTOM_SETTINGS_CODEC = FunctionalJsonCodec[CustomSettings](
+    decode_settings, lambda value: {"count": value.count}
+)
+
+
+@registry.register(  # type: ignore[arg-type]
+    "com.example.typed.incompatible.dependencies", settings_codec=CUSTOM_SETTINGS_CODEC
+)
+class TypedNeedsLabel(Action[CustomSettings, ExpectedDependencies]):
+    pass
+
+
+@registry.register(  # type: ignore[arg-type]
+    "com.example.widened.constructor", settings_codec=JSON_SETTINGS_CODEC
+)
+class WidenedSettingsConstructor(Action[CustomSettings, SuppliedDependencies]):
+    def __init__(
+        self,
+        action: str,
+        context: str,
+        settings: object,
+        dependencies: SuppliedDependencies,
+    ) -> None:
+        if not isinstance(settings, CustomSettings):
+            raise TypeError("expected CustomSettings")
+        super().__init__(action, context, settings, dependencies)
+
+
+registry.register("com.example.widened.missing.codec")(
+    WidenedSettingsConstructor  # type: ignore[arg-type]
+)
+
+
+def reject_invalid_settings(
+    action: Action[CustomSettings, SuppliedDependencies],
+    dependencies: SuppliedDependencies,
+) -> None:
+    action.set_settings({"count": 1})  # type: ignore[arg-type]
+    action.settings_codec.encode({"count": 1})  # type: ignore[arg-type]
+    MissingSettingsCodec("action", "button", {}, dependencies)  # type: ignore[arg-type]
 
 
 def reject_invalid_calls(

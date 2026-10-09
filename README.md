@@ -248,7 +248,7 @@ Action helper methods cover the common outbound commands: `set_title()`,
 ### Typed settings
 
 Actions use JSON objects by default. To work with an application-specific type,
-provide a `JsonCodec` on the action class:
+pass a matching `JsonCodec` to `registry.register()`:
 
 ```python
 from dataclasses import dataclass
@@ -274,9 +274,18 @@ COUNTER_SETTINGS_CODEC = FunctionalJsonCodec(
 )
 
 
+@registry.register("com.example.counter.increment", settings_codec=COUNTER_SETTINGS_CODEC)
 class CounterAction(Action[CounterSettings, Dependencies]):
-    settings_codec = COUNTER_SETTINGS_CODEC
+    pass
 ```
+
+Registration binds the codec to the original action class and checks its
+settings and dependency types, including when a custom constructor accepts a
+wider settings argument. `Action.get_settings_codec()` returns the codec with
+its settings type preserved. Typed actions must pass `settings_codec` even
+when their class or a parent class already defines it; registration without
+that argument accepts actions with `JsonObject` settings. Existing typed
+actions should move their codec assignment into the registration call.
 
 The codec boundary verifies that encoded values are valid JSON. Decode errors
 are wrapped with the relevant event name and settings path.

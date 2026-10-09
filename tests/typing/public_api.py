@@ -87,9 +87,41 @@ def encode_settings(settings: CustomSettings) -> JsonObject:
     return {"label": settings.label}
 
 
-@registry.register("com.example.typed.settings")
+CUSTOM_SETTINGS_CODEC = FunctionalJsonCodec[CustomSettings](decode_settings, encode_settings)
+
+
+@registry.register("com.example.typed.settings", settings_codec=CUSTOM_SETTINGS_CODEC)
 class CustomSettingsAction(Action[CustomSettings, Dependencies]):
-    settings_codec = FunctionalJsonCodec[CustomSettings](decode_settings, encode_settings)
+    def read_label(self) -> str:
+        return self.settings.label
+
+
+assert_type(
+    registry.register("com.example.typed.settings.alias", settings_codec=CUSTOM_SETTINGS_CODEC)(
+        CustomSettingsAction
+    ),
+    type[CustomSettingsAction],
+)
+
+
+@registry.register("com.example.typed.settings.child", settings_codec=CUSTOM_SETTINGS_CODEC)
+class ChildSettingsAction(CustomSettingsAction):
+    pass
+
+
+@registry.register("com.example.typed.custom.constructor", settings_codec=CUSTOM_SETTINGS_CODEC)
+class CustomConstructorAction(Action[CustomSettings, Dependencies]):
+    def __init__(
+        self,
+        action_uuid: str,
+        key_context: str,
+        initial_settings: object,
+        services: Dependencies,
+        /,
+    ) -> None:
+        if not isinstance(initial_settings, CustomSettings):
+            raise TypeError("expected CustomSettings")
+        super().__init__(action_uuid, key_context, initial_settings, services)
 
     def read_label(self) -> str:
         return self.settings.label
@@ -106,6 +138,20 @@ def check_registered_classes(dependencies: Dependencies) -> None:
     assert_type(typed_action, CustomSettingsAction)
     assert_type(typed_action.settings, CustomSettings)
     assert_type(typed_action.read_label(), str)
+    assert_type(typed_action.settings_codec, JsonCodec[CustomSettings])
+    assert_type(CustomSettingsAction.settings_codec, JsonCodec[CustomSettings])
+    assert_type(CustomSettingsAction.decode_settings({"label": "decoded"}), CustomSettings)
+    typed_action.set_settings(CustomSettings("next"))
+    child_action = ChildSettingsAction(
+        "com.example.typed.settings.child", "button", CustomSettings("child"), dependencies
+    )
+    assert_type(child_action, ChildSettingsAction)
+    assert_type(child_action.read_label(), str)
+    custom_action = CustomConstructorAction(
+        "com.example.typed.custom.constructor", "button", CustomSettings("custom"), dependencies
+    )
+    assert_type(custom_action, CustomConstructorAction)
+    assert_type(custom_action.read_label(), str)
 
 
 def observe_error(diagnostic: SdkDiagnostic) -> None:

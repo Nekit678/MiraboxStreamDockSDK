@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, ClassVar, Generic, TypeVar, cast
+from typing import Generic, TypeVar, cast
 
 from .codecs import JSON_OBJECT_CODEC, JsonCodec, _decode_owned_with_codec, decode_with_codec
 from .commands import (
@@ -50,6 +50,18 @@ PayloadT = TypeVar("PayloadT")
 DependenciesT = TypeVar("DependenciesT", bound=StreamDockActionDependencies)
 
 
+class _DefaultSettingsCodec:
+    """Expose the JSON default with the owning action's settings type."""
+
+    def __get__(
+        self,
+        instance: Action[SettingsT, DependenciesT] | None,
+        owner: type[Action[SettingsT, DependenciesT]],
+    ) -> JsonCodec[SettingsT]:
+        # Typed registrations replace this descriptor with a matching codec.
+        return cast(JsonCodec[SettingsT], JSON_OBJECT_CODEC)
+
+
 class Action(Generic[SettingsT, DependenciesT]):
     """Base class for one action instance placed on a Stream Dock device.
 
@@ -65,7 +77,7 @@ class Action(Generic[SettingsT, DependenciesT]):
     action instance.
 
     ``SettingsT`` is the plugin-owned settings type. It defaults in practice to
-    :class:`JsonObject`; subclasses can assign a custom :attr:`settings_codec`
+    :class:`JsonObject`; pass a matching codec to :meth:`ActionRegistry.register`
     to use dataclasses or other typed values. ``DependenciesT`` is an
     application-defined dependency container that exposes ``stream_dock``.
 
@@ -79,11 +91,14 @@ class Action(Generic[SettingsT, DependenciesT]):
         title_parameters: Latest title formatting information, or ``None``
             before Stream Dock reports it.
         dependencies: Application-owned services available to callbacks.
-        settings_codec: Class-level codec used to decode and encode settings.
-            The default codec validates and copies a :class:`JsonObject`.
+        settings_codec: Codec used to decode and encode ``SettingsT`` values.
+            Registration binds a custom codec to the action class. The default
+            codec validates and copies a :class:`JsonObject`.
     """
 
-    settings_codec: ClassVar[JsonCodec[Any]] = JSON_OBJECT_CODEC
+    # A descriptor ties both class and instance access to SettingsT without
+    # using a type variable in ClassVar or an ambiguous generic class attribute.
+    settings_codec = _DefaultSettingsCodec()
 
     def __init__(
         self,
@@ -224,6 +239,12 @@ class Action(Generic[SettingsT, DependenciesT]):
         return self._send_async(SetTitleCommand(self.context, title, target, state))
 
     @classmethod
+    def get_settings_codec(cls) -> JsonCodec[SettingsT]:
+        """Return the class codec associated with this action's settings type."""
+
+        return cls.settings_codec
+
+    @classmethod
     def decode_settings(cls, settings: JsonObject) -> SettingsT:
         """Decode wire settings using the class-level settings codec.
 
@@ -238,7 +259,7 @@ class Action(Generic[SettingsT, DependenciesT]):
                 object.
         """
 
-        return cast(SettingsT, decode_with_codec(settings, cls.settings_codec))
+        return decode_with_codec(settings, cls.settings_codec)
 
     def update_settings_from_wire(self, settings: JsonObject) -> None:
         """Replace local settings with a freshly decoded wire value.
@@ -272,7 +293,7 @@ class Action(Generic[SettingsT, DependenciesT]):
                 isolated local settings.
         """
 
-        codec = cast(JsonCodec[SettingsT], self.settings_codec)
+        codec = self.settings_codec
         command = SetSettingsCommand.from_settings(
             context=self.context,
             settings=settings,

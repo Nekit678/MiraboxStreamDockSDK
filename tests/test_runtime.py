@@ -8,13 +8,16 @@ from dataclasses import dataclass, replace
 from unittest.mock import Mock, call, patch
 
 from mirabox_sdk import (
+    JSON_OBJECT_CODEC,
     Action,
     ActionRegistry,
     CommandFuture,
     Controller,
     Coordinates,
     DidReceiveGlobalSettingsEvent,
+    FunctionalJsonCodec,
     InvalidPluginLaunchArgumentsError,
+    JsonCodecDecodeError,
     JsonCodecEncodeError,
     JsonObject,
     KeyDownEvent,
@@ -306,6 +309,67 @@ class ActionTests(unittest.TestCase):
 
 
 class ActionRegistryTests(unittest.TestCase):
+    def test_typed_registration_binds_codec_and_preserves_constructor_and_methods(self) -> None:
+        @dataclass(frozen=True)
+        class Settings:
+            count: int
+
+        def decode(value: JsonObject) -> Settings:
+            count = value.get("count", 0)
+            if type(count) is not int:
+                raise ValueError("count must be an integer")
+            return Settings(count)
+
+        codec = FunctionalJsonCodec[Settings](decode, lambda value: {"count": value.count})
+
+        class TypedAction(Action[Settings, ExampleDependencies]):
+            def __init__(
+                self,
+                action: str,
+                context: str,
+                settings: Settings,
+                dependencies: ExampleDependencies,
+            ) -> None:
+                super().__init__(action, context, settings, dependencies)
+                self.initial_count = settings.count
+
+            def read_count(self) -> int:
+                return self.settings.count
+
+        registry = ActionRegistry[ExampleDependencies]()
+        registered = registry.register(ACTION_UUID, settings_codec=codec)(TypedAction)
+        stream_dock = Mock()
+        dependencies = ExampleDependencies(stream_dock)
+
+        self.assertIs(registered, TypedAction)
+        self.assertIs(registered.settings_codec, codec)
+        self.assertIs(registered.get_settings_codec(), codec)
+        self.assertIs(RecordingAction.settings_codec, JSON_OBJECT_CODEC)
+        action = registry.create(ACTION_UUID, "button", {"count": 1}, dependencies)
+        assert isinstance(action, TypedAction)
+        self.assertEqual(action.initial_count, 1)
+        self.assertIs(action.dependencies, dependencies)
+
+        action.update_settings_from_wire({"count": 2})
+        self.assertEqual(action.read_count(), 2)
+        action.set_settings(Settings(3))
+        self.assertEqual(action.read_count(), 3)
+        self.assertEqual(
+            stream_dock.send.call_args.args[0].to_wire(),
+            {"event": "setSettings", "context": "button", "payload": {"count": 3}},
+        )
+
+        with self.assertRaises(JsonCodecDecodeError):
+            registry.create(ACTION_UUID, "other", {"count": "invalid"}, dependencies)
+        with self.assertRaises(JsonCodecDecodeError):
+            action.update_settings_from_wire({"count": "invalid"})
+        self.assertEqual(action.read_count(), 3)
+
+        replacement = FunctionalJsonCodec[Settings](decode, lambda value: {"count": 0})
+        with self.assertRaisesRegex(ValueError, "already registered"):
+            registry.register(ACTION_UUID, settings_codec=replacement)(TypedAction)
+        self.assertIs(TypedAction.settings_codec, codec)
+
     def test_registration_preserves_the_original_action_class(self) -> None:
         registry = ActionRegistry[ExampleDependencies]()
 

@@ -43,6 +43,10 @@ change public APIs between minor versions.
 
 ### Fixed
 
+- Bind `Action.settings_codec` to its settings type (TYPE-01), including class
+  access. Typed actions register with `settings_codec=...`; reject incompatible
+  or omitted codecs while preserving concrete subclasses, constructors and
+  dependency checks. Default `JsonObject` registrations remain unchanged.
 - Bound UTF-8 frames to 8 MiB and raw/typed queues plus keyed scheduler pending
   work to 16 MiB per buffer by default, with byte metrics and explicit rejection
   outcomes. Limit the PI connecting queue to 1,024 messages / 16 MiB, preserve

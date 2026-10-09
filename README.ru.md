@@ -249,7 +249,7 @@ Stream Dock создаёт и удаляет контексты событиям
 ### Типизированные настройки
 
 По умолчанию действия работают с JSON-объектами. Для собственного типа данных
-задайте `JsonCodec` в классе действия:
+передайте соответствующий `JsonCodec` в `registry.register()`:
 
 ```python
 from dataclasses import dataclass
@@ -275,9 +275,18 @@ COUNTER_SETTINGS_CODEC = FunctionalJsonCodec(
 )
 
 
+@registry.register("com.example.counter.increment", settings_codec=COUNTER_SETTINGS_CODEC)
 class CounterAction(Action[CounterSettings, Dependencies]):
-    settings_codec = COUNTER_SETTINGS_CODEC
+    pass
 ```
+
+Регистрация привязывает кодек к исходному классу действия и проверяет типы
+настроек и зависимостей, в том числе когда пользовательский конструктор
+принимает более широкий тип настроек. `Action.get_settings_codec()` возвращает
+кодек с сохранением типа настроек. Для typed actions нужно передавать `settings_codec`,
+даже если он уже задан в классе или его родителе; регистрация без этого
+аргумента принимает действия с настройками `JsonObject`. В существующих
+typed actions перенесите присваивание кодека в вызов регистрации.
 
 Граница кодека проверяет, что закодированные значения являются корректным JSON.
 Ошибки декодирования дополняются именем события и путём к настройкам.

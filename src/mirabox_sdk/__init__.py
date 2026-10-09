@@ -17,7 +17,12 @@ transport or event-dispatch diagnostics are required.
 __version__ = "0.5.0"
 
 from .action import Action
-from .action_registry import ActionRegistration, ActionRegistry
+from .action_registry import (
+    ActionClass,
+    ActionRegistration,
+    ActionRegistry,
+    TypedActionRegistration,
+)
 from .cli import build_plugin_argument_parser, parse_plugin_cli_arguments, run_plugin_cli
 from .codecs import (
     JSON_OBJECT_CODEC,
@@ -165,6 +170,7 @@ __all__ = [
     "StopSignal",
     "__version__",
     "Action",
+    "ActionClass",
     "ActionContextMetrics",
     "ApplicationContext",
     "ApplicationRuntime",
@@ -271,6 +277,7 @@ __all__ = [
     "TitleParametersDidChangeEvent",
     "TouchTapEvent",
     "TransportQueueMetrics",
+    "TypedActionRegistration",
     "UnknownStreamDockEvent",
     "UnsupportedEventError",
     "ValidatedJsonObject",

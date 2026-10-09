@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any, Generic, Never, Protocol, TypeVar, cast
+from typing import Any, Generic, Protocol, TypeVar, cast, overload
 
 from .action import Action
+from .codecs import JsonCodec
 from .json_types import JsonObject
 from .json_types import JsonValue as JsonValue  # Resolve recursive JSON type hints.
 from .protocols import StreamDockActionDependencies
@@ -13,21 +14,56 @@ from .protocols import StreamDockActionDependencies
 DependenciesT = TypeVar("DependenciesT", bound=StreamDockActionDependencies)
 DependenciesT_co = TypeVar("DependenciesT_co", bound=StreamDockActionDependencies, covariant=True)
 ActionTypeT = TypeVar("ActionTypeT", bound=Action[Any, Any])
+SettingsT = TypeVar("SettingsT")
+ClassDependenciesT_contra = TypeVar(
+    "ClassDependenciesT_contra", bound=StreamDockActionDependencies, contravariant=True
+)
+ClassActionT_co = TypeVar("ClassActionT_co", bound=Action[Any, Any], covariant=True)
 
 
-class ActionRegistration(Protocol[DependenciesT_co]):
-    """Class decorator that checks dependencies and preserves the action subclass."""
+class ActionClass(Protocol[SettingsT, ClassDependenciesT_contra, ClassActionT_co]):
+    """Structural class contract tying a settings codec to an action constructor."""
+
+    def get_settings_codec(self) -> JsonCodec[SettingsT]:
+        """Return the codec for the action's declared settings type."""
+
+        ...
 
     def __call__(
         self,
-        action_type: Callable[[str, str, Never, DependenciesT_co], ActionTypeT],
+        action: str,
+        context: str,
+        settings: SettingsT,
+        dependencies: ClassDependenciesT_contra,
+        /,
+    ) -> ClassActionT_co:
+        """Construct the concrete action with decoded settings and dependencies."""
+
+        ...
+
+
+class ActionRegistration(Protocol[DependenciesT_co]):
+    """Decorator for JSON settings that preserves the action subclass and dependencies."""
+
+    def __call__(
+        self,
+        action_type: ActionClass[JsonObject, DependenciesT_co, ActionTypeT],
         /,
     ) -> type[ActionTypeT]:
-        """Register an Action whose constructor accepts the registry dependencies.
+        """Register an Action accepting JSON settings and the registry dependencies."""
 
-        ``Never`` leaves the settings parameter unconstrained: the registered
-        action's codec supplies its own settings type when creating instances.
-        """
+        ...
+
+
+class TypedActionRegistration(Protocol[SettingsT, DependenciesT_co]):
+    """Decorator binding a codec's settings type while preserving the action subclass."""
+
+    def __call__(
+        self,
+        action_type: ActionClass[SettingsT, DependenciesT_co, ActionTypeT],
+        /,
+    ) -> type[ActionTypeT]:
+        """Register an Action accepting the codec's settings and registry dependencies."""
 
         ...
 
@@ -48,16 +84,35 @@ class ActionRegistry(Generic[DependenciesT]):
 
         self._action_types: dict[str, type[Action[Any, DependenciesT]]] = {}
 
-    def register(self, action_uuid: str) -> ActionRegistration[DependenciesT]:
+    @overload
+    def register(self, action_uuid: str) -> ActionRegistration[DependenciesT]: ...
+
+    @overload
+    def register(
+        self,
+        action_uuid: str,
+        *,
+        settings_codec: JsonCodec[SettingsT],
+    ) -> TypedActionRegistration[SettingsT, DependenciesT]: ...
+
+    def register(
+        self,
+        action_uuid: str,
+        *,
+        settings_codec: JsonCodec[SettingsT] | None = None,
+    ) -> Callable[[ActionClass[Any, DependenciesT, ActionTypeT]], type[ActionTypeT]]:
         """Return a decorator that registers an action class.
 
         Args:
             action_uuid: Exact, non-empty UUID declared for the action in
                 ``manifest.json``.
+            settings_codec: Codec matching the action's declared settings
+                type. Required for settings other than :class:`JsonObject`;
+                registration assigns it to the original action class.
 
         Returns:
-            A class decorator that checks constructor dependency compatibility
-            and returns the original action class with its concrete type.
+            A decorator that checks settings and dependency compatibility and
+            returns the original action class with its concrete type.
 
         Raises:
             ValueError: If ``action_uuid`` is empty or has already been
@@ -74,14 +129,17 @@ class ActionRegistry(Generic[DependenciesT]):
             raise ValueError("Action UUID must not be empty")
 
         def decorator(
-            action_type: Callable[[str, str, Never, DependenciesT], ActionTypeT],
+            action_type: ActionClass[Any, DependenciesT, ActionTypeT],
         ) -> type[ActionTypeT]:
             if action_uuid in self._action_types:
                 raise ValueError(f"Action is already registered: {action_uuid}")
             if not isinstance(action_type, type) or not issubclass(action_type, Action):
                 raise TypeError("Registered action must inherit from Action")
+            if settings_codec is not None:
+                # Replace the descriptor; direct assignment is typed as the descriptor itself.
+                setattr(action_type, "settings_codec", settings_codec)  # noqa: B010
             self._action_types[action_uuid] = action_type
-            # Constructor typing checks dependencies; the runtime check above
+            # Codec and constructor typing check settings and dependencies; the check above
             # establishes that this callable is the original Action class.
             return cast(type[ActionTypeT], action_type)
 
