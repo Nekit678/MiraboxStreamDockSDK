@@ -6,17 +6,22 @@ import unittest
 from dataclasses import dataclass
 from threading import Event
 from threading import enumerate as enumerate_threads
+from time import monotonic, sleep
 from unittest.mock import patch
 
 from mirabox_sdk import (
     Action,
     ActionRegistry,
+    DialRotateEvent,
+    InboundOverflowPolicy,
     JsonObject,
     LogMessageCommand,
     Plugin,
     PluginLaunchArguments,
     SendToPropertyInspectorCommand,
+    SetTitleCommand,
     StreamDockCommand,
+    StreamDockQueueConfig,
     StreamDockSender,
     UnknownStreamDockEvent,
     WillAppearEvent,
@@ -87,6 +92,177 @@ class HarnessTests(unittest.TestCase):
             action_dependencies_factory=lambda ctx: Dependencies(ctx.stream_dock),
             plugin=plugin,
         )
+
+    def test_inbound_coalescing_and_overflow_options_use_the_production_queue(self) -> None:
+        registry = ActionRegistry[Dependencies]()
+        observed: list[int] = []
+
+        @registry.register("com.example.dial")
+        class DialAction(Action[JsonObject, Dependencies]):
+            def on_dial_rotate(self, event: DialRotateEvent) -> None:
+                observed.append(event.ticks)
+
+        cases = (
+            ({}, [1, 2], 0, 1, 0),
+            (
+                {
+                    "coalesce_dial_rotations": False,
+                    "inbound_overflow_policy": InboundOverflowPolicy.DROP_NEWEST,
+                },
+                [1, 2],
+                0,
+                1,
+                0,
+            ),
+            (
+                {
+                    "coalesce_dial_rotations": False,
+                    "inbound_overflow_policy": InboundOverflowPolicy.DROP_OLDEST,
+                },
+                [2, 3],
+                0,
+                0,
+                1,
+            ),
+            (
+                {
+                    "coalesce_dial_rotations": True,
+                    "inbound_overflow_policy": InboundOverflowPolicy.DROP_NEWEST,
+                },
+                [6],
+                2,
+                0,
+                0,
+            ),
+            (
+                {
+                    "coalesce_dial_rotations": True,
+                    "inbound_overflow_policy": InboundOverflowPolicy.DROP_OLDEST,
+                },
+                [6],
+                2,
+                0,
+                0,
+            ),
+        )
+        for options, expected_ticks, coalesced, dropped_newest, dropped_oldest in cases:
+            with self.subTest(options=options):
+                observed.clear()
+                harness = StreamDockHarness(
+                    _launch_arguments(),
+                    action_factory=registry,
+                    action_dependencies_factory=lambda ctx: Dependencies(ctx.stream_dock),
+                    queue_config=StreamDockQueueConfig(8, 3, 8, 8, 8),
+                    **options,
+                )
+                try:
+                    harness.start(connect=False)
+                    harness.send_event(
+                        "willAppear",
+                        action="com.example.dial",
+                        context="dial",
+                        device="device",
+                        payload={
+                            "settings": {},
+                            "coordinates": {"column": 0, "row": 0},
+                            "isInMultiAction": False,
+                            "controller": "Encoder",
+                        },
+                    )
+                    for ticks in (1, 2, 3):
+                        harness.send_event(
+                            "dialRotate",
+                            action="com.example.dial",
+                            context="dial",
+                            device="device",
+                            payload={
+                                "settings": {},
+                                "coordinates": {"column": 0, "row": 0},
+                                "ticks": ticks,
+                                "pressed": False,
+                            },
+                        )
+                    deadline = monotonic() + 2
+                    while True:
+                        reader = harness.application.metrics().boundary.event_reader
+                        if reader.submitted + reader.rejected == 4:
+                            break
+                        self.assertLess(monotonic(), deadline, "reader did not finish the frames")
+                        sleep(0.001)
+                    metrics = harness.application.metrics().boundary.inbound_events
+                    self.assertEqual(metrics.current_depth, 1 + len(expected_ticks))
+                    self.assertEqual(metrics.coalesced, coalesced)
+                    self.assertEqual(metrics.dropped_newest, dropped_newest)
+                    self.assertEqual(metrics.dropped_oldest, dropped_oldest)
+                    harness.connect()
+                    harness.wait_ready()
+                    harness.wait_for_events(1 + len(expected_ticks))
+                    self.assertEqual(observed, expected_ticks)
+                finally:
+                    harness.stop()
+
+    def test_command_coalescing_option_controls_wire_messages_and_completes_senders(self) -> None:
+        class BlockingCommand(StreamDockCommand):
+            def __init__(self) -> None:
+                self.started = Event()
+                self.release = Event()
+
+            def to_wire(self) -> JsonObject:
+                self.started.set()
+                if not self.release.wait(2):
+                    raise TimeoutError("test did not release command serialization")
+                return LogMessageCommand("barrier").to_wire()
+
+        for options, expected_titles in (
+            ({}, ["old", "new"]),
+            ({"coalesce_commands": False}, ["old", "new"]),
+            ({"coalesce_commands": True}, ["new"]),
+        ):
+            with self.subTest(options=options):
+                with StreamDockHarness(
+                    _launch_arguments(),
+                    action_factory=ActionRegistry[Dependencies](),
+                    action_dependencies_factory=lambda ctx: Dependencies(ctx.stream_dock),
+                    **options,
+                ) as harness:
+                    sender = harness.context.stream_dock
+                    command = BlockingCommand()
+                    barrier = sender.send_async(command)
+                    try:
+                        self.assertTrue(command.started.wait(1))
+                        completions = [
+                            sender.send_async(SetTitleCommand("button", title))
+                            for title in ("old", "new")
+                        ]
+                        self.assertEqual(
+                            harness.application.metrics().boundary.outbound_commands.coalesced,
+                            2 - len(expected_titles),
+                        )
+                    finally:
+                        command.release.set()
+                    for completion in (barrier, *completions):
+                        completion.result(timeout=1)
+                    self.assertEqual(
+                        [
+                            message["payload"]["title"]
+                            for message in harness.messages
+                            if message["event"] == "setTitle"
+                        ],
+                        expected_titles,
+                    )
+
+    def test_queue_options_preserve_production_validation(self) -> None:
+        for options, message in (
+            ({"coalesce_dial_rotations": 1}, "coalesce_dial_rotations must be a boolean"),
+            ({"coalesce_commands": 1}, "coalesce_commands must be a boolean"),
+            ({"inbound_overflow_policy": "drop_oldest"}, "InboundOverflowPolicy"),
+        ):
+            with self.subTest(options=options), self.assertRaisesRegex(ValueError, message):
+                StreamDockHarness(
+                    _launch_arguments(),
+                    action_factory=ActionRegistry[Dependencies](),
+                    **options,
+                )
 
     def test_async_global_settings_commit_through_the_production_command_pipeline(self) -> None:
         with self.make_harness() as harness:

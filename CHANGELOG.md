@@ -61,6 +61,9 @@ change public APIs between minor versions.
 
 ### Fixed
 
+- Accept the production `inbound_overflow_policy`, `coalesce_dial_rotations`
+  and `coalesce_commands` options in `StreamDockHarness`, preserving defaults
+  and validation and enabling public queue behavior tests (QA-01).
 - Remove redundant global-settings snapshot/replay copies and transfer the
   runtime's isolated action settings to the default registry decoder (PERF-05).
   Keep public JSON containers native, codec inputs isolated, custom registry

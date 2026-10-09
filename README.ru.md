@@ -586,8 +586,14 @@ scheduler и конкретная реализация runtime остаются 
 ## Тестирование плагинов
 
 `StreamDockHarness` заменяет socket I/O кадрами в памяти, используя production
-registration, settings, codecs, queues и action dispatcher. Передайте те же
-launch arguments и factories, что используются в приложении:
+registration, settings, codecs, queues и action dispatcher. Он принимает
+`inbound_overflow_policy`, `coalesce_dial_rotations` и `coalesce_commands` с тем
+же поведением и значениями по умолчанию, что и `create_stream_dock_application()`:
+`InboundOverflowPolicy.DROP_NEWEST`, `False` и `False` соответственно.
+Используйте эти параметры вместе с `queue_config` для проверки объединения
+событий и команд и поведения при переполнении очередей.
+
+Передайте те же launch arguments и factories, что используются в приложении:
 
 ```python
 from mirabox_sdk import (

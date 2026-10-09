@@ -180,7 +180,9 @@ For application integration tests, `mirabox_sdk.testing.StreamDockHarness`
 provides in-memory session initialization, JSON/event injection and outbound
 wire assertions using the production pipeline. Its context manager waits for
 readiness and shuts down the application; `FakeStreamDockSender` supports
-isolated action tests. See [Testing plugins](../README.md#testing-plugins).
+isolated action tests. The harness accepts the production
+`inbound_overflow_policy`, `coalesce_dial_rotations` and `coalesce_commands`
+options with the same defaults. See [Testing plugins](../README.md#testing-plugins).
 Transport and scheduler injection are private SDK implementation details.
 
 An unknown event is preserved as `UnknownStreamDockEvent` by default and

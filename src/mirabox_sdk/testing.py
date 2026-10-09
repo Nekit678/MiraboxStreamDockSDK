@@ -33,6 +33,7 @@ from .runtime.ports import (
     ApplicationService,
     ApplicationServiceFactory,
     DependencyAwareActionRegistry,
+    InboundOverflowPolicy,
     Plugin,
 )
 
@@ -89,6 +90,8 @@ class StreamDockHarness:
     ``wait_for_events()`` counts acknowledged events since startup, including
     unknown events. Malformed JSON is rejected by the real reader and does not
     contribute to that count.
+    ``inbound_overflow_policy``, ``coalesce_dial_rotations`` and
+    ``coalesce_commands`` use the production queue behavior and defaults.
     """
 
     def __init__(
@@ -107,6 +110,9 @@ class StreamDockHarness:
         shutdown_config: StreamDockShutdownConfig | None = None,
         runtime_config: RuntimeDispatcherConfig | None = None,
         error_observer: Callable[[SdkDiagnostic], None] | None = None,
+        inbound_overflow_policy: InboundOverflowPolicy = InboundOverflowPolicy.DROP_NEWEST,
+        coalesce_dial_rotations: bool = False,
+        coalesce_commands: bool = False,
     ) -> None:
         self._arguments = launch_arguments
         self._context: ApplicationContext | None = None
@@ -129,6 +135,9 @@ class StreamDockHarness:
             shutdown_config=shutdown_config,
             runtime_config=runtime_config,
             error_observer=error_observer,
+            inbound_overflow_policy=inbound_overflow_policy,
+            coalesce_dial_rotations=coalesce_dial_rotations,
+            coalesce_commands=coalesce_commands,
             connector_factory=self._build_connector,
             _context_callback=self._capture_context,
         )

@@ -13,6 +13,7 @@ from mirabox_sdk import (
     ApplicationService,
     FunctionalJsonCodec,
     GlobalSettings,
+    InboundOverflowPolicy,
     JsonCodec,
     JsonObject,
     LogMessageCommand,
@@ -215,4 +216,7 @@ def build_test_harness(arguments: PluginLaunchArguments) -> StreamDockHarness:
         action_dependencies_factory=lambda ctx: Dependencies(ctx.stream_dock),
         plugin_factory=ExamplePlugin,
         error_observer=observe_error,
+        inbound_overflow_policy=InboundOverflowPolicy.DROP_OLDEST,
+        coalesce_dial_rotations=True,
+        coalesce_commands=True,
     )

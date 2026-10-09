@@ -583,6 +583,12 @@ and `WebSocketConnectorMetrics`, are importable from `mirabox_sdk` and
 
 `StreamDockHarness` replaces socket I/O with in-memory frames while exercising
 the production registration, settings, codecs, queues and action dispatcher.
+It accepts `inbound_overflow_policy`, `coalesce_dial_rotations` and
+`coalesce_commands` with the same behavior and defaults as
+`create_stream_dock_application()`: `InboundOverflowPolicy.DROP_NEWEST`, `False`
+and `False`, respectively. Use these options with `queue_config` to test
+coalescing and overflow behavior.
+
 Pass the same launch arguments and factories used by your application:
 
 ```python
