@@ -57,6 +57,7 @@ behavior is verified.
 - [How it works](#how-it-works)
 - [Requirements](#requirements)
 - [Installation](#installation)
+- [New plugin to a validated bundle](#new-plugin-to-a-validated-bundle)
 - [Quick start](#quick-start)
 - [Property Inspector client](#property-inspector-client)
 - [Counter example plugin](#counter-example-plugin)
@@ -153,6 +154,41 @@ python -m pip install -e ".[dev]"
 ```
 
 </details>
+
+## New plugin to a validated bundle
+
+With the SDK installed in an activated Python 3.11+ environment, use this
+Windows PowerShell sequence. For these unreleased changes, first install the
+current checkout with `python -m pip install -e .` from the SDK root.
+
+```powershell
+mirabox-sdk init-plugin hello-plugin --uuid com.example.hello --name "Hello"
+cd hello-plugin
+python -m pip install -e ".[build]"
+python -m unittest discover -s tests -v
+python -m PyInstaller --clean --noconfirm build.spec
+Copy-Item dist\Plugin.exe com.example.hello.sdPlugin\
+mirabox-sdk validate-plugin com.example.hello.sdPlugin --registry dock_plugin.bootstrap:ACTION_REGISTRY
+```
+
+Edit `src/dock_plugin/bootstrap.py` and rerun the harness test before building.
+The generator supplies matching plugin/action UUIDs, manifest, PI client and
+assets, package metadata, a Windows PyInstaller spec and a self-contained README.
+The minimal action uses `ApplicationContext` directly. The destination must be
+new; existing directories and files are never overwritten.
+
+Copy the validated `com.example.hello.sdPlugin` directory into
+`%APPDATA%\HotSpot\StreamDock\plugins\`, restart Stream Dock and add
+**Examples → Hello**. Tests work on Linux/WSL too: install with
+`python -m pip install -e .` and run the same unittest command; build the `.exe`
+on Windows. The source bundle fails validation until the executable is copied.
+Validation checks files and registry UUIDs; it does not run the binary.
+
+For plugin-owned background work, see the complete
+[background service example](examples/background_service/README.md). It uses
+`service_factories`, session readiness, `stop_signal`, finite command waits and
+`join`, error reporting and `shutdown_outcome`. Both examples use the current
+public API and avoid private imports.
 
 ## Quick start
 
@@ -510,7 +546,7 @@ behavior implemented by this SDK.
 | Input events | Typed immutable event models and `InboundOverflowPolicy` |
 | Output commands | Registration, settings, title, image, state, feedback, URL, log, and Property Inspector command models; `ValidatedWireMessage` |
 | Application data | `JsonCodec`, `FunctionalJsonCodec`, `JsonObjectCodec`, `ValidatedJsonObject`, `OwnedJsonPayload`, typed encode/decode helpers |
-| Resources and bundles | `copy_property_inspector_client`, `property_inspector_client_bytes`, `validate_plugin`, `mirabox-sdk` CLI |
+| Resources and bundles | `copy_property_inspector_client`, `property_inspector_client_bytes`, `validate_plugin`, `mirabox-sdk init-plugin` / copying / validation CLI |
 | Parsing | `parse_stream_dock_event`, `parse_registration_info`, typed protocol errors |
 | Logging | `configure_logging` with isolated console, file, and disable controls |
 
@@ -1189,6 +1225,7 @@ MiraboxStreamDockSDK/
 │   ├── logging_config.py              # Isolated SDK logging configuration
 │   └── property_inspector/            # Browser-side SDK resource
 ├── examples/counter_plugin/           # Complete buildable plugin
+├── examples/background_service/       # Complete managed background worker example
 ├── tests/                             # SDK and release-tool tests
 ├── scripts/                           # Version and distribution verification
 └── .github/workflows/                 # CI and Trusted Publishing release jobs
@@ -1203,6 +1240,8 @@ node --test tests/property_inspector.test.js
 python -m unittest discover -s tests -v
 PYTHONPATH=examples/counter_plugin/src \
   python -m unittest discover -s examples/counter_plugin/tests -v
+PYTHONPATH=examples/background_service/src \
+  python -m unittest discover -s examples/background_service/tests -v
 python -m compileall -q src tests scripts examples
 ruff check src tests scripts examples
 ruff format --check src tests scripts examples
@@ -1236,7 +1275,8 @@ The test suite uses fake connections and protocol messages; it does not require
 a running Stream Dock instance. CI runs the SDK on Linux and Windows across all
 supported Python versions.
 
-Mypy follows imports across SDK sources and the Counter example. The wheel
+Mypy follows imports across SDK sources and both examples. CI also checks the
+generated project's sources and builds/validates both new bundles on Windows. The wheel
 typing check installs the built package and pinned mypy in a temporary virtual
 environment outside the checkout. It checks consumer fixtures, rejects invalid
 calls, guards against `Any`, and verifies JSON stubs and public runtime type

@@ -1,0 +1,33 @@
+# -*- mode: python ; coding: utf-8 -*-
+
+from pathlib import Path
+
+# SPECPATH is provided by PyInstaller; input paths do not depend on the caller's cwd.
+project = Path(SPECPATH).resolve()
+a = Analysis(
+    [str(project / "src/dock_plugin/__main__.py")],
+    pathex=[str(project / "src")],
+    binaries=[],
+    datas=[],
+    hiddenimports=[],
+    hookspath=[],
+    hooksconfig={},
+    runtime_hooks=[],
+    excludes=[],
+    noarchive=False,
+    optimize=0,
+)
+pyz = PYZ(a.pure)
+exe = EXE(
+    pyz,
+    a.scripts,
+    a.binaries,
+    a.datas,
+    [],
+    name="Plugin",
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=False,
+    console=False,
+)

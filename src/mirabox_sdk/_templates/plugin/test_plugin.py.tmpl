@@ -1,0 +1,69 @@
+"""Replay real wire events without Stream Dock, sockets or private SDK imports."""
+
+from __future__ import annotations
+
+import unittest
+from typing import cast
+from unittest.mock import patch
+
+from mirabox_sdk import JsonObject, PluginLaunchArguments, parse_registration_info
+from mirabox_sdk.testing import StreamDockHarness
+
+from dock_plugin import bootstrap
+from dock_plugin.bootstrap import ACTION_UUID, PLUGIN_UUID
+
+
+class PluginTests(unittest.TestCase):
+    def test_registration_press_reset_and_shutdown(self) -> None:
+        arguments = PluginLaunchArguments(
+            port=12345,
+            plugin_uuid=PLUGIN_UUID,
+            register_event="registerPlugin",
+            info=parse_registration_info(
+                {
+                    "application": {
+                        "language": "en",
+                        "platform": "windows",
+                        "platformVersion": "11",
+                        "version": "2.10.179.426",
+                    },
+                    "colors": {},
+                    "devicePixelRatio": 1,
+                    "devices": [],
+                    "plugin": {"uuid": PLUGIN_UUID, "version": "0.1.0"},
+                }
+            ),
+        )
+        # Exercise the production bootstrap's options with the public harness.
+        with patch.object(bootstrap, "create_stream_dock_application", StreamDockHarness):
+            harness = cast(StreamDockHarness, bootstrap.build_application(arguments))
+        with harness:
+            harness.assert_registration()
+            identity: JsonObject = {"action": ACTION_UUID, "context": "button", "device": "device"}
+            payload: JsonObject = {
+                "settings": {},
+                "coordinates": {"column": 0, "row": 0},
+                "isInMultiAction": False,
+            }
+            harness.send_event(
+                "willAppear", **identity, payload={**payload, "controller": "Keypad"}
+            )
+            harness.send_event("keyDown", **identity, payload=payload)
+            harness.wait_for_events(2)
+            harness.assert_command(
+                "setTitle", context="button", payload={"title": "Pressed", "target": 0}
+            )
+            harness.send_event(
+                "sendToPlugin", action=ACTION_UUID, context="button", payload={"event": "reset"}
+            )
+            harness.wait_for_events(3)
+            titles = [message for message in harness.messages if message.get("event") == "setTitle"]
+            self.assertEqual(titles[-1]["payload"]["title"], "Ready")
+        outcome = harness.application.shutdown_outcome
+        self.assertIsNotNone(outcome)
+        assert outcome is not None
+        self.assertTrue(outcome.successful)
+
+
+if __name__ == "__main__":
+    unittest.main()

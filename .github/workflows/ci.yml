@@ -153,6 +153,11 @@ jobs:
       - name: Compile Python sources
         run: python -m compileall -q src tests scripts examples
 
+      - name: Test background-service example
+        run: python -m unittest discover -s examples/background_service/tests -v
+        env:
+          PYTHONPATH: examples/background_service/src
+
   typecheck:
     name: Static typing (Python 3.11)
     runs-on: ubuntu-latest
@@ -172,8 +177,15 @@ jobs:
       - name: Install SDK and development tools
         run: python -m pip install -e ".[dev]"
 
-      - name: Type check SDK sources and Counter example
+      - name: Type check SDK sources and examples
         run: python -m mypy
+
+      - name: Check generated project sources
+        run: |
+          mirabox-sdk init-plugin build/typecheck-plugin --uuid com.example.typecheck --name "Typing"
+          python -m mypy build/typecheck-plugin/src
+          ruff check build/typecheck-plugin/src build/typecheck-plugin/tests
+          ruff format --check build/typecheck-plugin/src build/typecheck-plugin/tests
 
       - name: Build wheel for consumer typing checks
         run: python -m build --wheel
@@ -215,7 +227,7 @@ jobs:
           python -m pip install --no-deps dist/*.whl
           python -c "from importlib.metadata import version; import mirabox_sdk; assert mirabox_sdk.__version__ == version('mirabox-stream-dock-sdk')"
           mirabox-sdk copy-property-inspector build/property-inspector
-          python -m unittest tests.test_public_api tests.test_testing tests.test_plugin_validation -v
+          python -m unittest tests.test_public_api tests.test_testing tests.test_plugin_validation tests.test_scaffolding -v
 
       - name: Upload distributions
         uses: actions/upload-artifact@v7
@@ -224,3 +236,42 @@ jobs:
           path: dist/*
           if-no-files-found: error
           retention-days: 14
+
+  plugin-bundles:
+    name: Generated and service bundles (Windows, Python 3.11)
+    runs-on: windows-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install SDK and PyInstaller
+        run: python -m pip install -e . "pyinstaller>=6,<7"
+
+      - name: Create and test a new plugin
+        run: |
+          mirabox-sdk init-plugin build/scaffold --uuid com.example.scaffold --name "Scaffold"
+          python -m pip install -e build/scaffold
+          python -m unittest discover -s build/scaffold/tests -v
+
+      - name: Build and validate the generated bundle
+        run: |
+          python -m PyInstaller --clean --noconfirm --distpath build/scaffold/dist --workpath build/scaffold/build build/scaffold/build.spec
+          Copy-Item build/scaffold/dist/Plugin.exe build/scaffold/com.example.scaffold.sdPlugin/
+          mirabox-sdk validate-plugin build/scaffold/com.example.scaffold.sdPlugin --registry dock_plugin.bootstrap:ACTION_REGISTRY
+
+      - name: Build and validate the service bundle
+        run: |
+          python -m PyInstaller --clean --noconfirm --distpath build/heartbeat-dist --workpath build/heartbeat-work examples/background_service/build.spec
+          Copy-Item build/heartbeat-dist/HeartbeatPlugin.exe examples/background_service/com.example.heartbeat.sdPlugin/
+          mirabox-sdk validate-plugin examples/background_service/com.example.heartbeat.sdPlugin --registry heartbeat_plugin.bootstrap:ACTION_REGISTRY
+        env:
+          PYTHONPATH: examples/background_service/src

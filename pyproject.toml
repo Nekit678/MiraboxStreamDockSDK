@@ -65,6 +65,7 @@ mirabox_sdk = [
   "py.typed",
   "*.pyi",
   "property_inspector/*.js",
+  "_templates/plugin/*.tmpl",
 ]
 
 [tool.ruff]
@@ -75,7 +76,7 @@ target-version = "py311"
 select = ["E", "F", "I", "UP", "B"]
 
 [tool.mypy]
-files = ["src/mirabox_sdk", "examples/counter_plugin/src", "tests/typing"]
+files = ["src/mirabox_sdk", "examples/counter_plugin/src", "examples/background_service/src", "tests/typing"]
 follow_imports = "normal"
 python_version = "3.11"
 warn_unused_ignores = true

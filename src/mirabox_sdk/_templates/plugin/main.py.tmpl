@@ -1,0 +1,16 @@
+"""Entry point used both by python -m dock_plugin and the packaged executable."""
+
+from __future__ import annotations
+
+from mirabox_sdk import run_plugin_cli
+
+from dock_plugin.bootstrap import build_application
+
+
+def main(argv: list[str] | None = None) -> int:
+    # The CLI checks shutdown_outcome and returns 1 for failed/incomplete cleanup.
+    return run_plugin_cli(build_application, argv)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,44 @@
+"""Registered action and application composition; importing never starts workers."""
+
+from __future__ import annotations
+
+from mirabox_sdk import (
+    Action,
+    ActionRegistry,
+    ApplicationContext,
+    JsonObject,
+    KeyDownEvent,
+    PluginLaunchArguments,
+    RuntimeDispatcherConfig,
+    SendToPluginEvent,
+    StreamDockApplication,
+    WillAppearEvent,
+    create_stream_dock_application,
+)
+
+PLUGIN_UUID = @@UUID_JSON@@
+ACTION_UUID = @@ACTION_JSON@@
+ACTION_REGISTRY = ActionRegistry[ApplicationContext]()
+RUNTIME_CONFIG = RuntimeDispatcherConfig(callback_drain_timeout=1.0, shutdown_timeout=5.0)
+
+
+@ACTION_REGISTRY.register(ACTION_UUID)
+class PressAction(Action[JsonObject, ApplicationContext]):
+    def on_will_appear(self, event: WillAppearEvent) -> None:
+        self.set_title("Ready")
+
+    def on_key_down(self, event: KeyDownEvent) -> None:
+        self.set_title("Pressed")
+
+    def on_send_to_plugin(self, event: SendToPluginEvent) -> None:
+        if event.message.name == "reset":
+            self.set_title("Ready")
+
+
+def build_application(arguments: PluginLaunchArguments) -> StreamDockApplication:
+    return create_stream_dock_application(
+        arguments,
+        action_factory=ACTION_REGISTRY,
+        action_dependencies_factory=lambda context: context,
+        runtime_config=RUNTIME_CONFIG,
+    )

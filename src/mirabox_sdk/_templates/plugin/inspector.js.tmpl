@@ -1,0 +1,11 @@
+(() => {
+  "use strict";
+
+  const client = window.MiraBoxPropertyInspector;
+  const reset = document.getElementById("reset");
+  client.on("connected", () => { reset.disabled = false; });
+  client.on("disconnected", () => { reset.disabled = true; });
+  reset.addEventListener("click", () => {
+    client.sendToPlugin({ event: "reset" });
+  });
+})();

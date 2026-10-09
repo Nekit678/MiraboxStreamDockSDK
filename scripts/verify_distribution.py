@@ -14,6 +14,19 @@ except ImportError:  # pragma: no cover - direct script execution
     from verify_version import verify_version
 
 WHEEL_REQUIRED_SUFFIXES = {
+    "mirabox_sdk/scaffolding.py",
+    "mirabox_sdk/_templates/plugin/bootstrap.py.tmpl",
+    "mirabox_sdk/_templates/plugin/main.py.tmpl",
+    "mirabox_sdk/_templates/plugin/init.py.tmpl",
+    "mirabox_sdk/_templates/plugin/test_plugin.py.tmpl",
+    "mirabox_sdk/_templates/plugin/build.spec.tmpl",
+    "mirabox_sdk/_templates/plugin/pyproject.toml.tmpl",
+    "mirabox_sdk/_templates/plugin/README.md.tmpl",
+    "mirabox_sdk/_templates/plugin/gitignore.tmpl",
+    "mirabox_sdk/_templates/plugin/manifest.json.tmpl",
+    "mirabox_sdk/_templates/plugin/inspector.html.tmpl",
+    "mirabox_sdk/_templates/plugin/inspector.js.tmpl",
+    "mirabox_sdk/_templates/plugin/icon.svg.tmpl",
     "mirabox_sdk/__init__.py",
     "mirabox_sdk/_internal/boundary/composition.py",
     "mirabox_sdk/_internal/runtime/adapters/action_registry.py",
@@ -46,6 +59,11 @@ WHEEL_FORBIDDEN_SUFFIXES = {
 }
 WHEEL_FORBIDDEN_PREFIXES = {"mirabox_sdk/_next/"}
 SDIST_REQUIRED_SUFFIXES = {
+    "examples/background_service/README.md",
+    "examples/background_service/build.spec",
+    "examples/background_service/com.example.heartbeat.sdPlugin/manifest.json",
+    "examples/background_service/src/heartbeat_plugin/service.py",
+    "examples/background_service/tests/test_background_service.py",
     "CHANGELOG.md",
     "CONTRIBUTING.md",
     "LICENSE",
@@ -79,6 +97,7 @@ SDIST_REQUIRED_SUFFIXES = {
     "tests/typing/public_api.py",
     "tests/typing/public_api_errors.py",
 }
+SDIST_REQUIRED_SUFFIXES.update(f"src/{path}" for path in WHEEL_REQUIRED_SUFFIXES)
 SDIST_FORBIDDEN_SUFFIXES = {
     "examples/counter_plugin/src/counter_plugin/plugin.py",
     "src/mirabox_sdk/connection.py",

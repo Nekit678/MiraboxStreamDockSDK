@@ -8,6 +8,10 @@ change public APIs between minor versions.
 
 ### Added
 
+- Add `mirabox-sdk init-plugin` with version-matched, distributable project
+  templates, public harness replay tests and a short test/build/validate/install
+  guide (DX-03). Add a buildable background-service example showing readiness,
+  cooperative cancellation, bounded command waits/join and failure diagnostics.
 - Add a settings-copy benchmark for small, wide and nested payloads, recording
   parse/action creation, global snapshot/replay latency, clone counts and
   transient memory with a local before/after baseline (PERF-05).

@@ -57,6 +57,7 @@
 - [Как это работает](#как-это-работает)
 - [Требования](#требования)
 - [Установка](#установка)
+- [Новый плагин до проверенного bundle](#новый-плагин-до-проверенного-bundle)
 - [Быстрый старт](#быстрый-старт)
 - [Клиент Property Inspector](#клиент-property-inspector)
 - [Пример плагина Counter](#пример-плагина-counter)
@@ -153,6 +154,41 @@ python -m pip install -e ".[dev]"
 ```
 
 </details>
+
+## Новый плагин до проверенного bundle
+
+После установки SDK в активированное окружение Python 3.11+ выполните эту
+последовательность в Windows PowerShell. Для ещё не выпущенных изменений сначала
+установите текущий checkout командой `python -m pip install -e .` из корня SDK.
+
+```powershell
+mirabox-sdk init-plugin hello-plugin --uuid com.example.hello --name "Hello"
+cd hello-plugin
+python -m pip install -e ".[build]"
+python -m unittest discover -s tests -v
+python -m PyInstaller --clean --noconfirm build.spec
+Copy-Item dist\Plugin.exe com.example.hello.sdPlugin\
+mirabox-sdk validate-plugin com.example.hello.sdPlugin --registry dock_plugin.bootstrap:ACTION_REGISTRY
+```
+
+Измените `src/dock_plugin/bootstrap.py` и повторите harness test перед сборкой.
+Генератор создаёт согласованные UUID плагина и action, manifest, PI client,
+ресурсы, метаданные пакета, Windows PyInstaller spec и самостоятельный README.
+Минимальный action использует `ApplicationContext` напрямую. Каталог назначения
+должен быть новым; существующие файлы и каталоги не перезаписываются.
+
+Скопируйте проверенный `com.example.hello.sdPlugin` в
+`%APPDATA%\HotSpot\StreamDock\plugins\`, перезапустите Stream Dock и добавьте
+**Examples → Hello**. Тесты работают и в Linux/WSL: установите проект через
+`python -m pip install -e .` и выполните ту же команду unittest; `.exe` собирайте
+в Windows. Исходный bundle не проходит validation до копирования executable.
+Validator проверяет файлы и UUID registry, но не запускает бинарник.
+
+Для фоновой работы используйте полный
+[пример сервиса](examples/background_service/README.md). Он показывает
+`service_factories`, readiness сессии, `stop_signal`, конечные ожидания команд и
+`join`, обработку ошибок и `shutdown_outcome`. Оба примера используют актуальный
+публичный API без приватных импортов.
 
 ## Быстрый старт
 
@@ -515,7 +551,7 @@ wire-событие и команду с Python-моделью или вспом
 | Входящие события | Типизированные immutable-модели и `InboundOverflowPolicy` |
 | Исходящие команды | Модели регистрации, настроек, заголовка, изображения, состояния, обратной связи, URL, логов и Property Inspector; `ValidatedWireMessage` |
 | Данные приложения | `JsonCodec`, `FunctionalJsonCodec`, `JsonObjectCodec`, `ValidatedJsonObject`, `OwnedJsonPayload`, типизированные функции кодирования и декодирования |
-| Ресурсы и пакеты | `copy_property_inspector_client`, `property_inspector_client_bytes`, `validate_plugin`, CLI `mirabox-sdk` |
+| Ресурсы и пакеты | `copy_property_inspector_client`, `property_inspector_client_bytes`, `validate_plugin`, CLI `mirabox-sdk init-plugin` / copy / validate |
 | Разбор протокола | `parse_stream_dock_event`, `parse_registration_info`, типизированные ошибки протокола |
 | Логирование | `configure_logging` с управлением консолью, файлом и отключением |
 
@@ -1201,6 +1237,7 @@ MiraboxStreamDockSDK/
 │   ├── logging_config.py              # Изолированная настройка логирования SDK
 │   └── property_inspector/            # Ресурс браузерного SDK
 ├── examples/counter_plugin/           # Полный собираемый плагин
+├── examples/background_service/       # Полный пример управляемого фонового worker
 ├── tests/                             # Тесты SDK и release-инструментов
 ├── scripts/                           # Проверка версий и дистрибутивов
 └── .github/workflows/                 # CI и релизы через Trusted Publishing
@@ -1216,6 +1253,8 @@ node --test tests/property_inspector.test.js
 python -m unittest discover -s tests -v
 PYTHONPATH=examples/counter_plugin/src \
   python -m unittest discover -s examples/counter_plugin/tests -v
+PYTHONPATH=examples/background_service/src \
+  python -m unittest discover -s examples/background_service/tests -v
 python -m compileall -q src tests scripts examples
 ruff check src tests scripts examples
 ruff format --check src tests scripts examples
@@ -1250,7 +1289,9 @@ registry использует изолированные settings context manage
 Dock не требуется. CI проверяет SDK в Linux и Windows на всех поддерживаемых
 версиях Python.
 
-Mypy следует по импортам исходников SDK и Counter example. Проверка типов wheel
+Mypy следует по импортам исходников SDK и обоих примеров. CI также проверяет
+исходники созданного проекта и собирает/валидирует оба новых bundle в Windows.
+Проверка типов wheel
 устанавливает собранный пакет и закреплённую версию mypy во временное виртуальное
 окружение вне репозитория. Она проверяет consumer fixtures, отклоняет неверные
 вызовы, защищает от `Any`, сверяет JSON stubs с runtime и разрешает публичные

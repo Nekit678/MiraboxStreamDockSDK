@@ -129,6 +129,12 @@ the Property Inspector to reset the persisted count.
 
 ## Use as a starting point
 
+For a minimal new project with automatically matched UUIDs and resources, use
+`mirabox-sdk init-plugin PATH --uuid com.example.plugin --name "My plugin"` and
+follow its generated README. See the SDK README's short bundle guide and the
+[background service example](../background_service/README.md) for readiness,
+cancellation and shutdown handling.
+
 Before turning the example into a new plugin:
 
 1. replace `com.example.counter` and the action UUID everywhere in the Python

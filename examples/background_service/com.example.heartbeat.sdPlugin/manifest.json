@@ -1,0 +1,27 @@
+{
+  "Actions": [
+    {
+      "UUID": "com.example.heartbeat.status",
+      "Name": "Heartbeat",
+      "Tooltip": "Run a plugin-owned heartbeat service",
+      "Icon": "assets/icon.svg",
+      "SupportedInMultiActions": true,
+      "UserTitleEnabled": false,
+      "Controllers": ["Keypad"],
+      "States": [
+        {"Image": "assets/icon.svg", "ShowTitle": true, "TitleAlignment": "bottom", "FontSize": "18"}
+      ]
+    }
+  ],
+  "Version": "0.1.0",
+  "Name": "Heartbeat",
+  "Icon": "assets/icon.svg",
+  "CategoryIcon": "assets/icon.svg",
+  "Category": "Examples",
+  "Description": "Background service example built with mirabox-stream-dock-sdk",
+  "CodePath": "HeartbeatPlugin.exe",
+  "SDKVersion": 1,
+  "Author": "Nekit678",
+  "OS": [{"Platform": "windows", "MinimumVersion": "11"}],
+  "Software": {"MinimumVersion": "2.10.179.426"}
+}

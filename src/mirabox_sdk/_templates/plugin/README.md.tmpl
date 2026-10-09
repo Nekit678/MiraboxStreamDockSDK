@@ -1,0 +1,66 @@
+# Generated Stream Dock plugin
+
+The plugin UUID is `@@UUID@@`; its action is `@@UUID@@.press`.
+`src/dock_plugin/bootstrap.py` registers the action and builds the application.
+Imports only use the supported SDK and testing API. Pressing a key sets its
+title to **Pressed**; the Property Inspector resets it to **Ready**.
+
+Run these steps from this directory. Python 3.11+ is required; the final
+executable must be built on Windows with PyInstaller 6.
+
+1. Create a virtual environment and install the generated project:
+
+   ```powershell
+   python -m venv .venv
+   .\.venv\Scripts\Activate.ps1
+   python -m pip install -e ".[build]"
+   ```
+
+   For an unreleased SDK checkout, install that checkout into this environment
+   first: `python -m pip install -e /path/to/MiraboxStreamDockSDK`.
+   On Linux/macOS, activate with `source .venv/bin/activate` and install with
+   `python -m pip install -e .`; replay tests work without a device.
+
+2. Run the local harness replay; edit the action and rerun it:
+
+   ```powershell
+   python -m unittest discover -s tests -v
+   ```
+
+   This exercises registration, `willAppear`, `keyDown`, PI reset and successful
+   shutdown through the real runtime. No socket or Stream Dock is required.
+
+3. Build and assemble the Windows bundle:
+
+   ```powershell
+   python -m PyInstaller --clean --noconfirm build.spec
+   Copy-Item dist\Plugin.exe @@BUNDLE@@\
+   ```
+
+4. Validate the assembled bundle, including the Python registry:
+
+   ```powershell
+   mirabox-sdk validate-plugin @@BUNDLE@@ --registry dock_plugin.bootstrap:ACTION_REGISTRY
+   ```
+
+   The source bundle fails validation until `Plugin.exe` is present. Validation
+   checks files and UUIDs; it does not execute the binary or verify a device.
+   The included `mirabox-sdk.js` matches SDK @@SDK_VERSION@@. After an SDK upgrade,
+   refresh it with `mirabox-sdk copy-property-inspector @@BUNDLE@@/property-inspector --force`.
+
+5. Copy `@@BUNDLE@@` into `%APPDATA%\HotSpot\StreamDock\plugins\`,
+   restart Stream Dock and add the action from **Examples**.
+
+UUIDs, bundle paths and `CodePath` are generated together. Before distribution,
+edit the author, category, tooltip and supported platforms in `manifest.json`.
+Create another project with `init-plugin` to choose a different UUID.
+
+## Lifecycle
+
+`run_plugin_cli` owns `run()` / `stop()` and returns exit code 1 for an incomplete
+or failed `shutdown_outcome`. `callback_drain_timeout` bounds shutdown waiting;
+it does not cancel a callback. `shutdown_timeout` is the shared SDK cleanup budget.
+For background work, use a service factory and `ApplicationContext.stop_signal`,
+wait for session readiness in the worker, bound I/O and join before releasing
+resources. See the SDK's `examples/background_service` for an executable example
+with failure and cancellation tests.
