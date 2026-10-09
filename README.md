@@ -1096,6 +1096,7 @@ PYTHONPATH=examples/counter_plugin/src \
 python -m compileall -q src tests scripts examples
 ruff check src tests scripts examples
 ruff format --check src tests scripts examples
+PYTHONPATH=src python scripts/benchmark_runtime_scheduler.py --check
 python -m mypy
 python -m build
 python scripts/verify_distribution.py dist

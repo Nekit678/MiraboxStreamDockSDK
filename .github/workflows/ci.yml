@@ -32,6 +32,82 @@ jobs:
       - name: Test Property Inspector client and documentation examples
         run: node --test tests/property_inspector.test.js
 
+  performance:
+    name: Scheduler performance (Python 3.13.11 on Ubuntu 24.04)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      PYTHONPATH: src
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install SDK
+        run: python -m pip install -e .
+
+      - name: Record benchmark environment
+        run: |
+          mkdir -p build/runtime-scheduler-benchmark
+          python - <<'PY' > build/runtime-scheduler-benchmark/environment.json
+          import json
+          import os
+          import platform
+          import subprocess
+          import sys
+          import sysconfig
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          import mirabox_sdk
+
+          print(json.dumps({
+              "captured_at_utc": datetime.now(timezone.utc).isoformat(),
+              "revision": subprocess.check_output(
+                  ["git", "rev-parse", "HEAD"], text=True
+              ).strip(),
+              "sdk_version": mirabox_sdk.__version__,
+              "sdk_source": Path(mirabox_sdk.__file__).relative_to(Path.cwd()).as_posix(),
+              "python": sys.version,
+              "implementation": platform.python_implementation(),
+              "platform": platform.platform(),
+              "machine": platform.machine(),
+              "cpu_count": os.cpu_count(),
+              "python_gil_disabled": sysconfig.get_config_var("Py_GIL_DISABLED"),
+              "runner": {key: os.environ.get(key) for key in (
+                  "RUNNER_OS", "RUNNER_ARCH", "ImageOS", "ImageVersion",
+                  "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT",
+              )},
+          }, indent=2, sort_keys=True))
+          PY
+          python -m pip list --format=json > build/runtime-scheduler-benchmark/dependencies.json
+          lscpu > build/runtime-scheduler-benchmark/cpu.txt
+
+      - name: Check scheduler performance budgets
+        run: |
+          python scripts/benchmark_runtime_scheduler.py \
+            --events 10000 --repeats 3 --callback-delay 0.0001 \
+            --workers 4 --pending-limit 64 --coalescing-events 512 \
+            --coalescing-pending-limits 1,4,16,64 --check --json \
+            > build/runtime-scheduler-benchmark/results.json \
+            2> build/runtime-scheduler-benchmark/diagnostics.log
+
+      - name: Upload benchmark results and environment
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: runtime-scheduler-benchmark
+          path: build/runtime-scheduler-benchmark/
+          if-no-files-found: error
+          retention-days: 90
+
   test:
     name: Python ${{ matrix.python-version }} on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}

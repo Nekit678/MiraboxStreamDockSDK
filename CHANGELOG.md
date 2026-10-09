@@ -8,6 +8,10 @@ change public APIs between minor versions.
 
 ### Added
 
+- Run the existing scheduler performance gate in a dedicated CI job on Ubuntu
+  24.04 with CPython 3.13.11; retain results, diagnostics and runner/dependency
+  metadata for 90 days, including failed gates. Record a local baseline before
+  further runtime changes (QA-01).
 - Add public `SdkDiagnostic` / `SourceLocation` and an application/harness
   `error_observer` for protocol and action/plugin callback failures (DX-02).
   Default error logs identify schema paths and traceback locations without

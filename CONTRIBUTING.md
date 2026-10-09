@@ -98,11 +98,36 @@ release checklist in `RELEASING.md` aligned with `.github/workflows/ci.yml` and
 For scheduler or queue-prefetch changes, also run the current performance gate:
 
 ```bash
-python scripts/benchmark_runtime_scheduler.py --check
+PYTHONPATH=src python scripts/benchmark_runtime_scheduler.py \
+  --events 10000 --repeats 3 --callback-delay 0.0001 \
+  --workers 4 --pending-limit 64 --coalescing-events 512 \
+  --coalescing-pending-limits 1,4,16,64 --check --json
 ```
 
-It compares sequential and keyed scheduling in the current runtime and measures
-dial-rotation coalescing at different pending limits. Its skewed-load scenario
+CI runs this command in a separate `performance` job on Ubuntu 24.04 with
+CPython 3.13.11 for pull requests, pushes to `main` and manual runs. The
+`runtime-scheduler-benchmark` artifact is retained for 90 days and uploaded even
+when the gate fails. It contains `results.json`, `diagnostics.log`,
+`environment.json` (source revision, SDK/Python/platform, GIL and runner image),
+`dependencies.json` and `cpu.txt`. A budget violation fails the job; use the
+artifact to inspect the measurements and runner rather than ignoring failures.
+
+The command keeps the benchmark's existing budgets and takes the median of
+three scheduler runs. Throughput budgets compare keyed scheduling with the
+sequential reference measured in the same run; latency limits remain absolute.
+The OS label and Python patch version are fixed, while hosted runner hardware
+and image updates are recorded for interpreting timing variation.
+
+The [QA-01 local baseline](docs/benchmarks/runtime_scheduler_baseline.json)
+records the full report, command and environment from source revision
+`73209b8fbca2a0747ecfff5c629eb5e7bcf6ee17`, before this CI change. It was measured
+on WSL2 with CPython 3.13.11 and is a reference for subsequent runtime changes.
+Compare results from matching environments; the first GitHub Actions artifact
+establishes the hosted runner baseline. This job uses the existing scenarios;
+add further coverage with the tasks that change the corresponding behavior.
+
+The benchmark compares sequential and keyed scheduling in the current runtime
+and measures dial-rotation coalescing at different pending limits. Its skewed-load scenario
 holds one hot context blocked behind a burst and requires another context to
 start within 100 ms, reporting source and scheduler occupancy and checking
 their configured bounds. All scenarios use typed

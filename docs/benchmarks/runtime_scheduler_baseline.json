@@ -1,0 +1,376 @@
+{
+  "baseline": {
+    "captured_at_utc": "2026-10-09T15:50:06.148341+00:00",
+    "command": "PYTHONPATH=src python scripts/benchmark_runtime_scheduler.py --events 10000 --repeats 3 --callback-delay 0.0001 --workers 4 --pending-limit 64 --coalescing-events 512 --coalescing-pending-limits 1,4,16,64 --check --json",
+    "cpu_count": 16,
+    "cpu_model": "AMD Ryzen 7 7700 8-Core Processor",
+    "execution": "local-source-checkout",
+    "exit_code": 0,
+    "implementation": "CPython",
+    "machine": "x86_64",
+    "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+    "python": "3.13.11 (main, Dec 20 2025, 00:48:47) [GCC 13.3.0]",
+    "python_gil_disabled": 0,
+    "revision": "73209b8fbca2a0747ecfff5c629eb5e7bcf6ee17",
+    "runtime_dependencies": {
+      "websocket-client": "1.8.0"
+    },
+    "sdk_source": "src/mirabox_sdk/__init__.py",
+    "sdk_version": "0.5.0"
+  },
+  "coalescing": [
+    {
+      "coalesced_rotations": 510,
+      "coalescing_ratio": 0.99609375,
+      "dispatched_events": 3,
+      "peak_boundary_depth": 1,
+      "peak_scheduler_pending": 1,
+      "pending_limit": 1,
+      "scheduler_backpressure": 1,
+      "submitted_rotations": 512
+    },
+    {
+      "coalesced_rotations": 507,
+      "coalescing_ratio": 0.990234375,
+      "dispatched_events": 6,
+      "peak_boundary_depth": 1,
+      "peak_scheduler_pending": 4,
+      "pending_limit": 4,
+      "scheduler_backpressure": 1,
+      "submitted_rotations": 512
+    },
+    {
+      "coalesced_rotations": 495,
+      "coalescing_ratio": 0.966796875,
+      "dispatched_events": 18,
+      "peak_boundary_depth": 1,
+      "peak_scheduler_pending": 16,
+      "pending_limit": 16,
+      "scheduler_backpressure": 1,
+      "submitted_rotations": 512
+    },
+    {
+      "coalesced_rotations": 447,
+      "coalescing_ratio": 0.873046875,
+      "dispatched_events": 66,
+      "peak_boundary_depth": 1,
+      "peak_scheduler_pending": 64,
+      "pending_limit": 64,
+      "scheduler_backpressure": 1,
+      "submitted_rotations": 512
+    }
+  ],
+  "environment": {
+    "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+    "python": "3.13.11"
+  },
+  "performance_gate": {
+    "coalescing": [
+      {
+        "budget_reason": "minimal scheduler prefetch leaves nearly the entire rotation burst at the boundary",
+        "coalescing_ratio": 0.99609375,
+        "min_coalescing_ratio": 0.99,
+        "pending_limit": 1,
+        "violations": [],
+        "within_budget": true
+      },
+      {
+        "budget_reason": "small prefetch trades a few retained rotations for worker availability",
+        "coalescing_ratio": 0.990234375,
+        "min_coalescing_ratio": 0.98,
+        "pending_limit": 4,
+        "violations": [],
+        "within_budget": true
+      },
+      {
+        "budget_reason": "moderate prefetch may retain one bounded window of individual rotations",
+        "coalescing_ratio": 0.966796875,
+        "min_coalescing_ratio": 0.95,
+        "pending_limit": 16,
+        "violations": [],
+        "within_budget": true
+      },
+      {
+        "budget_reason": "the largest measured prefetch remains bounded and preserves most burst coalescing",
+        "coalescing_ratio": 0.873046875,
+        "min_coalescing_ratio": 0.85,
+        "pending_limit": 64,
+        "violations": [],
+        "within_budget": true
+      }
+    ],
+    "passed": true,
+    "scheduler": [
+      {
+        "budget_reason": "keyed scheduling preserves serial context order and pays worker handoff overhead",
+        "callback_start_p95_ms": 18.403538230631966,
+        "keyed_to_sequential_throughput_ratio": 0.7294605380768016,
+        "max_callback_start_p95_ms": 30.0,
+        "min_throughput_ratio": 0.55,
+        "scenario": "single_context",
+        "violations": [],
+        "within_budget": true
+      },
+      {
+        "budget_reason": "four workers should overlap callbacks across four independent contexts",
+        "callback_start_p95_ms": 10.043320149998177,
+        "keyed_to_sequential_throughput_ratio": 2.643189403848226,
+        "max_callback_start_p95_ms": 15.0,
+        "min_throughput_ratio": 1.75,
+        "scenario": "contexts_4",
+        "violations": [],
+        "within_budget": true
+      },
+      {
+        "budget_reason": "bounded prefetch should keep four workers supplied across sixteen contexts",
+        "callback_start_p95_ms": 5.380949191749096,
+        "keyed_to_sequential_throughput_ratio": 2.5829358106750395,
+        "max_callback_start_p95_ms": 10.0,
+        "min_throughput_ratio": 1.75,
+        "scenario": "contexts_16",
+        "violations": [],
+        "within_budget": true
+      },
+      {
+        "budget_reason": "bounded prefetch should keep four workers supplied across sixty-four contexts",
+        "callback_start_p95_ms": 4.959349991986528,
+        "keyed_to_sequential_throughput_ratio": 2.7416065583789297,
+        "max_callback_start_p95_ms": 10.0,
+        "min_throughput_ratio": 1.75,
+        "scenario": "contexts_64",
+        "violations": [],
+        "within_budget": true
+      }
+    ],
+    "skewed_load": [
+      {
+        "acknowledged_events": 514,
+        "active_callbacks_while_hot_blocked": 1,
+        "cold_callback_start_ms": 0.452866981504485,
+        "cold_started_before_hot_release": true,
+        "hot_event_count": 512,
+        "max_cold_callback_start_ms": 100.0,
+        "peak_scheduler_pending": 1,
+        "peak_source_depth": 513,
+        "pending_limit": 1,
+        "scheduler_pending_while_hot_blocked": 0,
+        "source_depth_while_hot_blocked": 512,
+        "source_limit": 513,
+        "within_budget": true
+      },
+      {
+        "acknowledged_events": 514,
+        "active_callbacks_while_hot_blocked": 1,
+        "cold_callback_start_ms": 0.47994498163461685,
+        "cold_started_before_hot_release": true,
+        "hot_event_count": 512,
+        "max_cold_callback_start_ms": 100.0,
+        "peak_scheduler_pending": 1,
+        "peak_source_depth": 513,
+        "pending_limit": 4,
+        "scheduler_pending_while_hot_blocked": 0,
+        "source_depth_while_hot_blocked": 512,
+        "source_limit": 513,
+        "within_budget": true
+      },
+      {
+        "acknowledged_events": 514,
+        "active_callbacks_while_hot_blocked": 1,
+        "cold_callback_start_ms": 0.5571430083364248,
+        "cold_started_before_hot_release": true,
+        "hot_event_count": 512,
+        "max_cold_callback_start_ms": 100.0,
+        "peak_scheduler_pending": 4,
+        "peak_source_depth": 513,
+        "pending_limit": 16,
+        "scheduler_pending_while_hot_blocked": 3,
+        "source_depth_while_hot_blocked": 509,
+        "source_limit": 513,
+        "within_budget": true
+      },
+      {
+        "acknowledged_events": 514,
+        "active_callbacks_while_hot_blocked": 1,
+        "cold_callback_start_ms": 0.6390660128090531,
+        "cold_started_before_hot_release": true,
+        "hot_event_count": 512,
+        "max_cold_callback_start_ms": 100.0,
+        "peak_scheduler_pending": 16,
+        "peak_source_depth": 513,
+        "pending_limit": 64,
+        "scheduler_pending_while_hot_blocked": 15,
+        "source_depth_while_hot_blocked": 497,
+        "source_limit": 513,
+        "within_budget": true
+      }
+    ]
+  },
+  "scheduler": [
+    {
+      "admission_backpressure": 0.0,
+      "callback_start_p50_ms": 0.010211981134489179,
+      "callback_start_p95_ms": 0.01843002100940791,
+      "callback_start_p99_ms": 0.05227804882451894,
+      "duration_seconds": 1.9723032609908842,
+      "event_count": 10000,
+      "peak_active_callbacks": 1.0,
+      "peak_pending": 0.0,
+      "scenario": "single_context",
+      "scheduler": "sequential",
+      "throughput_per_second": 5070.214199704768
+    },
+    {
+      "admission_backpressure": 9794.0,
+      "callback_start_p50_ms": 17.361436010105535,
+      "callback_start_p95_ms": 18.403538230631966,
+      "callback_start_p99_ms": 18.92371990776155,
+      "duration_seconds": 2.7037833550130017,
+      "event_count": 10000,
+      "peak_active_callbacks": 1.0,
+      "peak_pending": 64.0,
+      "scenario": "single_context",
+      "scheduler": "keyed_serial",
+      "throughput_per_second": 3698.5211782812803
+    },
+    {
+      "admission_backpressure": 0.0,
+      "callback_start_p50_ms": 0.009830982889980078,
+      "callback_start_p95_ms": 0.015887495828792446,
+      "callback_start_p99_ms": 0.05771874217316521,
+      "duration_seconds": 1.9835641249956097,
+      "event_count": 10000,
+      "peak_active_callbacks": 1.0,
+      "peak_pending": 0.0,
+      "scenario": "contexts_4",
+      "scheduler": "sequential",
+      "throughput_per_second": 5041.430157959795
+    },
+    {
+      "admission_backpressure": 3511.0,
+      "callback_start_p50_ms": 4.571509009110741,
+      "callback_start_p95_ms": 10.043320149998177,
+      "callback_start_p99_ms": 11.528644435747992,
+      "duration_seconds": 0.7504434309958015,
+      "event_count": 10000,
+      "peak_active_callbacks": 4.0,
+      "peak_pending": 64.0,
+      "scenario": "contexts_4",
+      "scheduler": "keyed_serial",
+      "throughput_per_second": 13325.454773760219
+    },
+    {
+      "admission_backpressure": 0.0,
+      "callback_start_p50_ms": 0.009920011507347226,
+      "callback_start_p95_ms": 0.015660462668165558,
+      "callback_start_p99_ms": 0.055060905287973645,
+      "duration_seconds": 1.9983975919894874,
+      "event_count": 10000,
+      "peak_active_callbacks": 1.0,
+      "peak_pending": 0.0,
+      "scenario": "contexts_16",
+      "scheduler": "sequential",
+      "throughput_per_second": 5004.009232239209
+    },
+    {
+      "admission_backpressure": 3484.0,
+      "callback_start_p50_ms": 4.85707150073722,
+      "callback_start_p95_ms": 5.380949191749096,
+      "callback_start_p99_ms": 5.81123026116984,
+      "duration_seconds": 0.7736923169868533,
+      "event_count": 10000,
+      "peak_active_callbacks": 4.0,
+      "peak_pending": 64.0,
+      "scenario": "contexts_16",
+      "scheduler": "keyed_serial",
+      "throughput_per_second": 12925.034642899165
+    },
+    {
+      "admission_backpressure": 0.0,
+      "callback_start_p50_ms": 0.00994600122794509,
+      "callback_start_p95_ms": 0.014770490815863006,
+      "callback_start_p99_ms": 0.04444679245352751,
+      "duration_seconds": 1.9790438470081426,
+      "event_count": 10000,
+      "peak_active_callbacks": 1.0,
+      "peak_pending": 0.0,
+      "scenario": "contexts_64",
+      "scheduler": "sequential",
+      "throughput_per_second": 5052.945145767079
+    },
+    {
+      "admission_backpressure": 3488.0,
+      "callback_start_p50_ms": 4.4900304928887635,
+      "callback_start_p95_ms": 4.959349991986528,
+      "callback_start_p99_ms": 5.257435096427798,
+      "duration_seconds": 0.7218555269937497,
+      "event_count": 10000,
+      "peak_active_callbacks": 4.0,
+      "peak_pending": 64.0,
+      "scenario": "contexts_64",
+      "scheduler": "keyed_serial",
+      "throughput_per_second": 13853.187550764002
+    }
+  ],
+  "skewed_load": [
+    {
+      "acknowledged_events": 514,
+      "active_callbacks_while_hot_blocked": 1,
+      "cold_callback_start_ms": 0.452866981504485,
+      "cold_started_before_hot_release": true,
+      "hot_event_count": 512,
+      "max_cold_callback_start_ms": 100.0,
+      "peak_scheduler_pending": 1,
+      "peak_source_depth": 513,
+      "pending_limit": 1,
+      "scheduler_pending_while_hot_blocked": 0,
+      "source_depth_while_hot_blocked": 512,
+      "source_limit": 513,
+      "within_budget": true
+    },
+    {
+      "acknowledged_events": 514,
+      "active_callbacks_while_hot_blocked": 1,
+      "cold_callback_start_ms": 0.47994498163461685,
+      "cold_started_before_hot_release": true,
+      "hot_event_count": 512,
+      "max_cold_callback_start_ms": 100.0,
+      "peak_scheduler_pending": 1,
+      "peak_source_depth": 513,
+      "pending_limit": 4,
+      "scheduler_pending_while_hot_blocked": 0,
+      "source_depth_while_hot_blocked": 512,
+      "source_limit": 513,
+      "within_budget": true
+    },
+    {
+      "acknowledged_events": 514,
+      "active_callbacks_while_hot_blocked": 1,
+      "cold_callback_start_ms": 0.5571430083364248,
+      "cold_started_before_hot_release": true,
+      "hot_event_count": 512,
+      "max_cold_callback_start_ms": 100.0,
+      "peak_scheduler_pending": 4,
+      "peak_source_depth": 513,
+      "pending_limit": 16,
+      "scheduler_pending_while_hot_blocked": 3,
+      "source_depth_while_hot_blocked": 509,
+      "source_limit": 513,
+      "within_budget": true
+    },
+    {
+      "acknowledged_events": 514,
+      "active_callbacks_while_hot_blocked": 1,
+      "cold_callback_start_ms": 0.6390660128090531,
+      "cold_started_before_hot_release": true,
+      "hot_event_count": 512,
+      "max_cold_callback_start_ms": 100.0,
+      "peak_scheduler_pending": 16,
+      "peak_source_depth": 513,
+      "pending_limit": 64,
+      "scheduler_pending_while_hot_blocked": 15,
+      "source_depth_while_hot_blocked": 497,
+      "source_limit": 513,
+      "within_budget": true
+    }
+  ]
+}
