@@ -66,6 +66,11 @@ change public APIs between minor versions.
 
 ### Fixed
 
+- Limit validated JSON objects to 64 nested containers and preserve explicit
+  depth diagnostics through commands, codecs and event parsing instead of
+  leaking `RecursionError`. Return `False` for excessive nesting or cycles in
+  `is_json_value()` and normalize inbound JSON decoder recursion failures to
+  `MalformedEventError` (PERF-03).
 - Reduce scalar byte-accounting and unused admission-notification overhead in
   runtime scheduling without changing budgets. Print benchmark diagnostics
   in CI step logs.

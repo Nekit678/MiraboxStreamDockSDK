@@ -39,7 +39,7 @@ from .events import (
     WillAppearEvent,
     WillDisappearEvent,
 )
-from .json_types import JsonObject, clone_json_object, is_json_value
+from .json_types import JsonObject, _JsonDepthError, clone_json_object, is_json_value
 
 VisibilityEventT = TypeVar("VisibilityEventT", WillAppearEvent, WillDisappearEvent)
 KeyEventT = TypeVar("KeyEventT", KeyDownEvent, KeyUpEvent, TouchTapEvent)
@@ -63,6 +63,8 @@ def _invalid(
 def _clone_event_object(value: object) -> JsonObject:
     try:
         return clone_json_object(value)
+    except _JsonDepthError as exc:
+        raise MalformedEventError(str(exc)) from exc
     except ValueError:
         raise MalformedEventError("message contains a non-JSON value") from None
 

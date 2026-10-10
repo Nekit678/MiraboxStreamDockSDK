@@ -8,6 +8,7 @@ from typing import NoReturn
 
 from ...errors import MalformedEventError
 from ...events import StreamDockEvent
+from ...json_types import _JSON_DEPTH_ERROR
 from ...logging_config import _log_protocol_frame
 from .ports import DecodedEventParser, StreamDockEventDecoder
 
@@ -55,6 +56,8 @@ class JsonStreamDockEventDecoder(StreamDockEventDecoder):
             ) from exc
         except ValueError as exc:
             raise MalformedEventError(f"invalid JSON: {exc}") from exc
+        except RecursionError as exc:
+            raise MalformedEventError(f"invalid JSON: {_JSON_DEPTH_ERROR}") from exc
 
         event = self._event_parser.parse(value)
         _log_protocol_frame(

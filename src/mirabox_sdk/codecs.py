@@ -12,6 +12,7 @@ from .json_types import (
     OwnedJsonPayload,
     _clone_json_object_source,
     _CopyOnWriteJsonSource,
+    _JsonDepthError,
     clone_json_object,
 )
 from .json_types import (
@@ -192,6 +193,8 @@ def _encode_with_codec_source(
 
     try:
         return _clone_json_object_source(encoded)
+    except _JsonDepthError as exc:
+        raise JsonCodecEncodeError(str(exc)) from exc
     except ValueError:
         raise JsonCodecEncodeError("expected a JSON object") from None
 
@@ -237,6 +240,8 @@ def _copy_json_object(value: object, *, decoding: bool) -> JsonObject:
     error_type = JsonCodecDecodeError if decoding else JsonCodecEncodeError
     try:
         return clone_json_object(value)
+    except _JsonDepthError as exc:
+        raise error_type(str(exc)) from exc
     except ValueError:
         raise error_type("expected a JSON object") from None
 

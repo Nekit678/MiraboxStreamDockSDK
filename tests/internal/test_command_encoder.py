@@ -73,6 +73,36 @@ class JsonStreamDockCommandEncoderTests(unittest.TestCase):
         ):
             self.encoder.encode(_InvalidValidatedCommand())
 
+    def test_encodes_settings_at_the_container_depth_limit(self) -> None:
+        settings: JsonObject = {"value": 1}
+        for _ in range(63):
+            settings = {"child": settings}
+
+        encoded = self.encoder.encode(SetSettingsCommand("button", settings))
+
+        self.assertEqual(json.loads(encoded)["payload"], settings)
+
+    def test_rejects_excessive_depth_after_native_payload_mutation(self) -> None:
+        nested: JsonObject = {}
+        for _ in range(600):
+            nested = {"child": nested}
+        for command in (
+            SetSettingsCommand("button", {}),
+            SetGlobalSettingsCommand("plugin", {}),
+            SendToPropertyInspectorCommand("action", "button", {}),
+        ):
+            with self.subTest(command=type(command).__name__):
+                command.to_wire()["payload"]["nested"] = nested
+                with self.assertRaisesRegex(ValueError, "JSON nesting depth.*64"):
+                    self.encoder.encode(command)
+
+    def test_rejects_excessive_depth_in_custom_command(self) -> None:
+        message: JsonObject = {"event": "custom"}
+        for _ in range(600):
+            message = {"child": message}
+        with self.assertRaisesRegex(ValueError, "JSON nesting depth.*64"):
+            self.encoder.encode(_CustomCommand(message))
+
     def test_preserves_nested_payload_ownership(self) -> None:
         source: JsonObject = {"profile": {"level": 1}}
         command = SetSettingsCommand("button", source)

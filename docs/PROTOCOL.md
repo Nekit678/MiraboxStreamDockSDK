@@ -268,6 +268,15 @@ validates and owns that output before the transport receives it. The transport
 therefore serializes one uniform validated-message contract and retains
 `allow_nan=False` as a final encoder safeguard.
 
+JSON validation accepts at most 64 nested dictionaries/lists, with the object
+being validated counted as level one and scalars adding no levels. This applies
+to settings, Property Inspector payloads, snapshots and custom wire objects;
+the routing envelope added to an owned command payload does not consume its
+depth budget. Excessive nesting raises `ValueError` or the existing
+codec/protocol error with `JSON nesting depth exceeds maximum of 64 containers`.
+`is_json_value()` returns `False` for excessive nesting or cycles. Inbound JSON
+decoder recursion failures are translated to `MalformedEventError`.
+
 Migration (API-02): COW views are private SDK state/serialization details.
 Public mutations no longer validate or clone inserted values immediately;
 use `.isolated_copy()` for immediate validation and isolation. Public deep

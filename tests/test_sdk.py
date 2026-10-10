@@ -29,6 +29,7 @@ from mirabox_sdk import (
     JsonCodecEncodeError,
     JsonObject,
     JsonObjectCodec,
+    JsonValue,
     KeyDownEvent,
     LogMessageCommand,
     MalformedEventError,
@@ -61,7 +62,7 @@ from mirabox_sdk import (
     parse_registration_info,
     parse_stream_dock_event,
 )
-from mirabox_sdk.json_types import clone_json_object
+from mirabox_sdk.json_types import clone_json_object, is_json_value
 from mirabox_sdk.parser import EVENT_CODEC_REGISTRY
 
 
@@ -245,6 +246,91 @@ class StreamDockRegistrationTests(unittest.TestCase):
 
         self.assertEqual(arguments.plugin_uuid, "runtime-registration-uuid")
         self.assertEqual(arguments.info.plugin.uuid, "plugin-uuid")
+
+
+class JsonDepthTests(unittest.TestCase):
+    @staticmethod
+    def nested_object(depth: int, kind: str, leaf: JsonValue = 1) -> JsonObject:
+        value = leaf
+        for level in range(depth - 1):
+            value = (
+                [value] if kind == "lists" or (kind == "mixed" and level % 2) else {"child": value}
+            )
+        return {"child": value}
+
+    def test_accepts_json_at_the_container_depth_limit(self) -> None:
+        for kind in ("dicts", "lists", "mixed"):
+            for leaf in (1, {}, []):
+                depth = 63 if isinstance(leaf, (dict, list)) else 64
+                source = self.nested_object(depth, kind, leaf)
+                with self.subTest(kind=kind, leaf=leaf):
+                    self.assertTrue(is_json_value(source))
+                    for copy in (
+                        clone_json_object(source),
+                        ValidatedJsonObject(source).isolated_copy(),
+                        OwnedJsonPayload(source).isolated_copy(),
+                    ):
+                        self.assertEqual(copy, source)
+                        self.assertIsNot(copy["child"], source["child"])
+
+    def test_rejects_json_beyond_the_container_depth_limit(self) -> None:
+        for depth in (65, 600):
+            for kind in ("dicts", "lists", "mixed"):
+                source = self.nested_object(depth, kind)
+                with self.subTest(depth=depth, kind=kind):
+                    self.assertFalse(is_json_value(source))
+                    for validate in (clone_json_object, ValidatedJsonObject, OwnedJsonPayload):
+                        with self.assertRaisesRegex(ValueError, "JSON nesting depth.*64"):
+                            validate(source)
+
+    def test_json_predicate_rejects_cycles_and_accepts_shared_containers(self) -> None:
+        cyclic_list: list[JsonValue] = []
+        cyclic_list.append(cyclic_list)
+        cyclic_dict: JsonObject = {}
+        cyclic_dict["self"] = cyclic_dict
+        for value in (cyclic_list, cyclic_dict):
+            with self.subTest(container=type(value).__name__):
+                self.assertFalse(is_json_value(value))
+
+        shared = self.nested_object(63, "mixed")
+        source: JsonObject = {"first": shared, "second": shared}
+        self.assertTrue(is_json_value(source))
+        cloned = clone_json_object(source)
+        self.assertEqual(cloned, source)
+        self.assertIsNot(cloned["first"], cloned["second"])
+
+    def test_extensible_commands_preserve_depth_diagnostics(self) -> None:
+        source = self.nested_object(600, "dicts")
+        for build in (
+            lambda: SetSettingsCommand("button", source),
+            lambda: SetGlobalSettingsCommand("plugin", source),
+            lambda: SendToPropertyInspectorCommand("action", "button", source),
+        ):
+            with self.assertRaisesRegex(ValueError, "JSON nesting depth.*64"):
+                build()
+
+    def test_codecs_preserve_depth_diagnostics(self) -> None:
+        source = self.nested_object(600, "mixed")
+        for codec in (
+            JSON_OBJECT_CODEC,
+            FunctionalJsonCodec[JsonObject](
+                decoder=lambda value: value, encoder=lambda value: value
+            ),
+        ):
+            with self.subTest(codec=type(codec).__name__):
+                with self.assertRaisesRegex(JsonCodecDecodeError, "JSON nesting depth.*64"):
+                    decode_with_codec(source, codec)
+                with self.assertRaisesRegex(JsonCodecEncodeError, "JSON nesting depth.*64"):
+                    encode_with_codec(source, codec)
+                with self.assertRaisesRegex(JsonCodecEncodeError, "JSON nesting depth.*64"):
+                    SetSettingsCommand.from_settings("button", source, codec)
+
+    def test_event_parser_preserves_depth_diagnostics(self) -> None:
+        source = self.nested_object(600, "dicts")
+        with self.assertRaisesRegex(MalformedEventError, "JSON nesting depth.*64"):
+            parse_stream_dock_event(
+                {"event": "didReceiveGlobalSettings", "payload": {"settings": source}}
+            )
 
 
 class JsonCodecTests(unittest.TestCase):

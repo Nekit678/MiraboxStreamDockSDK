@@ -5,6 +5,10 @@ from typing import TypeAlias, TypeGuard
 JsonValue: TypeAlias = None | bool | int | float | str | list[JsonValue] | dict[str, JsonValue]
 JsonObject: TypeAlias = dict[str, JsonValue]
 
+_JSON_DEPTH_ERROR: str
+
+class _JsonDepthError(ValueError): ...
+
 def clone_json_object(value: object) -> JsonObject: ...
 def is_json_value(value: object) -> TypeGuard[JsonValue]: ...
 

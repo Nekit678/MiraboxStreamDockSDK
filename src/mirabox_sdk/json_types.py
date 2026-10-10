@@ -18,12 +18,20 @@ from typing import Any, TypeAlias, TypeGuard, overload
 JsonValue: TypeAlias = None | bool | int | float | str | list["JsonValue"] | dict[str, "JsonValue"]
 JsonObject: TypeAlias = dict[str, JsonValue]
 
+_MAX_JSON_DEPTH = 64
+_JSON_DEPTH_ERROR = f"JSON nesting depth exceeds maximum of {_MAX_JSON_DEPTH} containers"
+
+
+class _JsonDepthError(ValueError):
+    """Keep depth failures distinguishable when boundaries translate validation errors."""
+
 
 def clone_json_object(value: object) -> JsonObject:
     """Validate a JSON object while cloning its mutable containers.
 
     The validation and cloning happen in the same recursive traversal. Immutable
     scalar values are reused, while every nested list and dictionary is rebuilt.
+    At most 64 containers may be nested, counting the root object as level one.
 
     Args:
         value: Arbitrary value expected to contain a finite JSON object.
@@ -32,7 +40,8 @@ def clone_json_object(value: object) -> JsonObject:
         An isolated JSON object containing only plain dict/list containers.
 
     Raises:
-        ValueError: If ``value`` is not a finite, acyclic JSON object.
+        ValueError: If ``value`` is not a finite, acyclic JSON object or exceeds
+            the container-depth limit.
     """
 
     if not isinstance(value, dict):
@@ -44,6 +53,7 @@ def _clone_json_value(
     value: object,
     container_has_only_scalars: dict[int, bool] | None = None,
     active_containers: set[int] | None = None,
+    depth: int = 0,
 ) -> JsonValue:
     if value is None or isinstance(value, (bool, int, str)):
         return value
@@ -52,6 +62,8 @@ def _clone_json_value(
             raise ValueError("expected a finite JSON value")
         return value
     if isinstance(value, list):
+        if depth >= _MAX_JSON_DEPTH:
+            raise _JsonDepthError(_JSON_DEPTH_ERROR)
         if active_containers is None:
             active_containers = set()
         identity = id(value)
@@ -62,7 +74,9 @@ def _clone_json_value(
         has_only_scalars = True
         try:
             for item in value:
-                cloned_item = _clone_json_value(item, container_has_only_scalars, active_containers)
+                cloned_item = _clone_json_value(
+                    item, container_has_only_scalars, active_containers, depth + 1
+                )
                 if isinstance(cloned_item, (dict, list)):
                     has_only_scalars = False
                 cloned_list.append(cloned_item)
@@ -72,7 +86,7 @@ def _clone_json_value(
             container_has_only_scalars[id(cloned_list)] = has_only_scalars
         return cloned_list
     if isinstance(value, dict):
-        return _clone_json_dict(value, container_has_only_scalars, active_containers)
+        return _clone_json_dict(value, container_has_only_scalars, active_containers, depth)
     raise ValueError("expected a JSON value")
 
 
@@ -80,7 +94,10 @@ def _clone_json_dict(
     value: dict[object, object],
     container_has_only_scalars: dict[int, bool] | None = None,
     active_containers: set[int] | None = None,
+    depth: int = 0,
 ) -> JsonObject:
+    if depth >= _MAX_JSON_DEPTH:
+        raise _JsonDepthError(_JSON_DEPTH_ERROR)
     if active_containers is None:
         active_containers = set()
     identity = id(value)
@@ -93,7 +110,9 @@ def _clone_json_dict(
         for key, item in value.items():
             if not isinstance(key, str):
                 raise ValueError("expected JSON object keys to be strings")
-            cloned_item = _clone_json_value(item, container_has_only_scalars, active_containers)
+            cloned_item = _clone_json_value(
+                item, container_has_only_scalars, active_containers, depth + 1
+            )
             if isinstance(cloned_item, (dict, list)):
                 has_only_scalars = False
             cloned[key] = cloned_item
@@ -877,21 +896,28 @@ def is_json_value(value: object) -> TypeGuard[JsonValue]:
     lists of accepted values, and dictionaries with string keys and accepted
     values. ``NaN`` and positive or negative infinity are rejected even though
     Python's default JSON encoder can emit them as non-standard tokens.
+    Cycles and nesting beyond 64 containers (including the root) return ``False``.
 
     Args:
-        value: Arbitrary value to inspect recursively.
+        value: Arbitrary value to inspect.
 
     Returns:
         ``True`` when ``value`` satisfies :data:`JsonValue`. Type checkers also
         narrow the value to that alias in the true branch.
     """
 
+    return _is_json_value(value, 0)
+
+
+def _is_json_value(value: object, depth: int) -> bool:
     if value is None or isinstance(value, (bool, int, str)):
         return True
     if isinstance(value, float):
         return math.isfinite(value)
     if isinstance(value, list):
-        return all(is_json_value(item) for item in value)
+        return depth < _MAX_JSON_DEPTH and all(_is_json_value(item, depth + 1) for item in value)
     if isinstance(value, dict):
-        return all(isinstance(key, str) and is_json_value(item) for key, item in value.items())
+        return depth < _MAX_JSON_DEPTH and all(
+            isinstance(key, str) and _is_json_value(item, depth + 1) for key, item in value.items()
+        )
     return False

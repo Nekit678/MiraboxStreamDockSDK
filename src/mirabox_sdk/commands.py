@@ -11,6 +11,7 @@ from .json_types import (
     JsonObject,
     OwnedJsonPayload,
     _CopyOnWriteJsonSource,
+    _JsonDepthError,
     clone_json_object,
 )
 from .json_types import (
@@ -50,6 +51,8 @@ class ValidatedWireMessage:
         message: JsonObject = dict(routing_fields)
         try:
             snapshot = payload._validated_object()
+        except _JsonDepthError:
+            raise
         except ValueError:
             raise ValueError("Stream Dock command contains a non-JSON value") from None
         message["payload"] = snapshot._copy_on_write_view()
@@ -89,6 +92,8 @@ class StreamDockCommand(ABC):
 
         try:
             return ValidatedWireMessage(self.to_wire())
+        except _JsonDepthError:
+            raise
         except ValueError:
             raise ValueError("Stream Dock command contains a non-JSON value") from None
 
@@ -132,6 +137,8 @@ class SendToPropertyInspectorCommand(StreamDockCommand):
 
         try:
             owned_payload = OwnedJsonPayload(payload)
+        except _JsonDepthError:
+            raise
         except ValueError:
             raise ValueError("payload must be a finite JSON object") from None
         self._initialize(action, context, owned_payload)
@@ -277,6 +284,8 @@ class SetSettingsCommand(StreamDockCommand):
 
         try:
             owned_settings = OwnedJsonPayload(settings)
+        except _JsonDepthError:
+            raise
         except ValueError:
             raise ValueError("settings must be a finite JSON object") from None
         self._initialize(context, owned_settings)
@@ -468,6 +477,8 @@ class SetGlobalSettingsCommand(StreamDockCommand):
 
         try:
             owned_settings = OwnedJsonPayload(settings)
+        except _JsonDepthError:
+            raise
         except ValueError:
             raise ValueError("settings must be a finite JSON object") from None
         self._initialize(context, owned_settings)

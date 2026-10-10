@@ -1075,6 +1075,13 @@ rejected there. Call `.isolated_copy()` when immediate validation is needed.
 `to_validated_wire()` captures an independent, validated wire snapshot.
 Large public snapshots now require a full container copy; COW remains internal.
 
+Validated JSON objects are limited to 64 nested containers, counting the root
+object as level one. Each dictionary or list adds one level; scalar values do
+not. The limit applies to settings, Property Inspector payloads and validated
+snapshots; a command's routing envelope does not add to its owned payload's
+depth. Excessive nesting raises `ValueError` (or the boundary's codec/protocol
+error) with `JSON nesting depth exceeds maximum of 64 containers`.
+
 Scalar-only frozen command objects may be shared between threads.
 Payload-bearing commands own mutable `OwnedJsonPayload` data: do not mutate a
 command or any mutable object reachable from its payload from the start of

@@ -56,6 +56,22 @@ class JsonStreamDockEventDecoderTests(unittest.TestCase):
         self.assertIn("line 1 column", caught.exception.reason)
         self.assertIsInstance(caught.exception.__cause__, json.JSONDecodeError)
 
+    def test_reports_excessive_json_depth_as_structured_protocol_error(self) -> None:
+        for depth in (65, 600, 2000):
+            frame = '{"event":"futureEvent","payload":' + "[" * (depth - 1)
+            frame += "0" + "]" * (depth - 1) + "}"
+            with self.subTest(depth=depth):
+                with self.assertRaisesRegex(MalformedEventError, "JSON nesting depth.*64"):
+                    self.decoder.decode(frame)
+
+    def test_decodes_unknown_event_at_the_container_depth_limit(self) -> None:
+        frame = '{"event":"futureEvent","payload":' + "[" * 63 + "0" + "]" * 63 + "}"
+
+        event = self.decoder.decode(frame)
+
+        self.assertIsInstance(event, UnknownStreamDockEvent)
+        self.assertEqual(event.data, json.loads(frame))
+
     def test_preserves_invalid_known_field_path(self) -> None:
         frame = json.dumps(
             {
