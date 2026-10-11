@@ -201,6 +201,15 @@ so the other recipients still receive the broadcast. Action callbacks are serial
 for one context and may overlap for different contexts; lifecycle, broadcast,
 and unknown events are ordering barriers.
 
+`application.metrics().routing.active_callbacks` identifies each executing
+handler by event, method, action context and elapsed seconds, including individual
+broadcast recipients. Scheduler metrics report the first admitted pending
+barrier and its current/peak wait in seconds. The wait includes earlier queued
+events. `RuntimeDispatcherConfig.slow_callback_threshold` (one second by default,
+or `None` to disable) logs metadata after slow handlers finish; these diagnostics
+preserve ordering and do not interrupt callbacks. `callback_timeouts` counts
+shutdown drain timeouts only.
+
 ## Global settings
 
 `application.global_settings` is the canonical runtime-owned `GlobalSettings`
@@ -304,6 +313,16 @@ overflow explicitly instead of silently dropping protocol commands. Optional
 coalescing replaces only compatible adjacent pending state-setting commands,
 so intervening commands remain ordering barriers. `send()` waits for the
 writer's result and propagates serialization and transport errors to its caller.
+
+All action command helpers accept a monotonic `deadline` and provide `_async`
+variants, including success/failure indicators and Property Inspector messages.
+Async helpers release the callback worker after queue acceptance; observe every
+future for eventual failures and keep completion observers short. Preparation
+and queue-acceptance failures propagate immediately. FIFO orders submissions;
+a success-dependent continuation must check the first future and submit the
+follow-up asynchronously. Callback/barrier completion does not wait for its
+async commands. See the README's `ResponsiveAction` recipe and the generated
+plugin for finite deadlines and error observers.
 
 `send()` supports overlapping calls from action callbacks and application
 services after the outbound writer starts. Before the writer starts, both

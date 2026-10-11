@@ -18,6 +18,7 @@ from ...events import (
 )
 from ...json_types import clone_json_object
 from ..diagnostics import report_error
+from .callbacks import _CallbackMonitor
 from .global_settings import GlobalSettingsCoordinator
 from .metrics import ActionContextMetrics, _ActionContextMetricRecorder
 from .models import DispatchOutcome, DispatchResult
@@ -150,12 +151,14 @@ class BroadcastDispatcher:
         *,
         metrics: _ActionContextMetricRecorder | None = None,
         error_observer: Callable[[SdkDiagnostic], None] | None = None,
+        callback_monitor: _CallbackMonitor | None = None,
     ) -> None:
         if not isinstance(contexts, ActionContextManager):
             raise TypeError("contexts must implement ActionContextManager")
         self._contexts = contexts
         self._metrics = metrics or _ActionContextMetricRecorder()
         self._error_observer = error_observer
+        self._callback_monitor = callback_monitor or _CallbackMonitor()
 
     def dispatch(
         self,
@@ -190,7 +193,7 @@ class BroadcastDispatcher:
 
         self._validate_route(event, route)
         try:
-            _invoke(action, event, route)
+            _invoke(action, event, route, self._callback_monitor)
         except Exception as exc:
             self._metrics.increment("broadcast_failures")
             report_error(
@@ -231,6 +234,7 @@ class ActionEventDispatcher:
         global_settings_route: RuntimeEventRoute | None,
         metrics: _ActionContextMetricRecorder | None = None,
         error_observer: Callable[[SdkDiagnostic], None] | None = None,
+        callback_monitor: _CallbackMonitor | None = None,
     ) -> None:
         if not isinstance(contexts, ActionContextManager):
             raise TypeError("contexts must implement ActionContextManager")
@@ -242,6 +246,7 @@ class ActionEventDispatcher:
         self._broadcasts = broadcasts
         self._global_settings = global_settings
         self._error_observer = error_observer
+        self._callback_monitor = callback_monitor or _CallbackMonitor()
         self._global_settings_route = global_settings_route
         if (
             self._global_settings_route is not None
@@ -280,7 +285,12 @@ class ActionEventDispatcher:
         if not isinstance(event, WillAppearEvent):
             raise RuntimeEventDispatchError("CREATE_ACTION requires WillAppearEvent")
         try:
-            action = self._contexts.create(event)
+            action = self._callback_monitor.invoke(
+                lambda: self._contexts.create(event),
+                event_name=event.event_name,
+                callback="create",
+                context=event.context,
+            )
         except RuntimeActionIdentityError:
             raise
         except Exception as exc:
@@ -301,7 +311,12 @@ class ActionEventDispatcher:
             if self._contexts.remove(event.context, expected=action) is not None:
                 self._metrics.increment("appearance_rollbacks")
             try:
-                action.on_will_disappear()
+                self._callback_monitor.invoke(
+                    action.on_will_disappear,
+                    event_name=event.event_name,
+                    callback="on_will_disappear",
+                    context=action.context,
+                )
             except Exception as exc:
                 report_error(
                     logger,
@@ -339,7 +354,12 @@ class ActionEventDispatcher:
         if action is None:
             return self._missing_context(event)
         try:
-            action.update_settings_from_wire(event.settings)
+            self._callback_monitor.invoke(
+                lambda: action.update_settings_from_wire(event.settings),
+                event_name=event.event_name,
+                callback="update_settings_from_wire",
+                context=event.context,
+            )
         except JsonCodecDecodeError as exc:
             error = JsonCodecDecodeError(
                 exc.reason,
@@ -426,7 +446,7 @@ class ActionEventDispatcher:
         route: RuntimeEventRoute,
     ) -> DispatchResult:
         try:
-            _invoke(action, event, route)
+            _invoke(action, event, route, self._callback_monitor)
         except Exception as exc:
             report_error(
                 logger,
@@ -449,6 +469,12 @@ def _invoke(
     action: RuntimeActionCallbacks,
     event: StreamDockEvent,
     route: RuntimeEventRoute,
+    monitor: _CallbackMonitor,
 ) -> None:
     callback = getattr(action, route.callback)
-    callback(event)
+    monitor.invoke(
+        lambda: callback(event),
+        event_name=event.event_name,
+        callback=route.callback,
+        context=action.context,
+    )

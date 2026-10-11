@@ -241,6 +241,7 @@ class StableRuntimeApiTests(unittest.TestCase):
     def test_runtime_package_exports_only_stable_application_capabilities(self) -> None:
         expected = {
             "ActionContextMetrics",
+            "ActiveCallbackMetrics",
             "CommandWriterMetrics",
             "EventReaderMetrics",
             "InboundEventQueueMetrics",

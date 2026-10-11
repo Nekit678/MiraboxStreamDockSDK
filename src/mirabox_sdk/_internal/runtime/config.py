@@ -43,6 +43,8 @@ class RuntimeDispatcherConfig:
 
     ``callback_drain_timeout`` only bounds shutdown drain; it does not monitor
     callbacks during normal dispatch. ``callback_timeout`` is its deprecated alias.
+    ``slow_callback_threshold`` logs handlers exceeding this duration after they
+    finish (seconds, or None to disable). It does not interrupt user code.
     ``scheduler_pending_byte_limit`` bounds estimated retained DTO/JSON bytes in
     the keyed scheduler's pending deque; active callbacks are counted separately.
     """
@@ -58,6 +60,7 @@ class RuntimeDispatcherConfig:
     callback_drain_timeout: float | None = None
     shutdown_timeout: float | None = 5.0
     scheduler_pending_byte_limit: int = DEFAULT_QUEUE_BYTE_LIMIT
+    slow_callback_threshold: float | None = 1.0
 
     def __post_init__(self) -> None:
         _require_positive_finite_number("session_poll_interval", self.session_poll_interval)
@@ -75,6 +78,8 @@ class RuntimeDispatcherConfig:
         _require_optional_timeout("callback_timeout", self.callback_timeout)
         _require_optional_timeout("callback_drain_timeout", self.callback_drain_timeout)
         _require_optional_timeout("shutdown_timeout", self.shutdown_timeout)
+        if self.slow_callback_threshold is not None:
+            _require_positive_finite_number("slow_callback_threshold", self.slow_callback_threshold)
         if self.callback_timeout is not None:
             if self.callback_drain_timeout is not None:
                 raise ValueError(

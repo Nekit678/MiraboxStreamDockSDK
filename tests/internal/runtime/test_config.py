@@ -20,12 +20,17 @@ class RuntimeDispatcherConfigTests(unittest.TestCase):
         self.assertEqual(config.runtime_drain_timeout, 5.0)
         self.assertEqual(config.worker_stop_timeout, 5.0)
         self.assertIsNone(config.callback_timeout)
+        self.assertEqual(config.slow_callback_threshold, 1.0)
 
         with self.assertRaises(FrozenInstanceError):
             config.worker_count = 2  # type: ignore[misc]
 
     def test_intervals_require_positive_finite_numbers(self) -> None:
-        for field_name in ("session_poll_interval", "event_poll_interval"):
+        for field_name in (
+            "session_poll_interval",
+            "event_poll_interval",
+            "slow_callback_threshold",
+        ):
             for invalid in (0, -1, True, float("inf"), float("nan"), "0.1"):
                 with (
                     self.subTest(field_name=field_name, invalid=invalid),
@@ -35,6 +40,9 @@ class RuntimeDispatcherConfigTests(unittest.TestCase):
                     ),
                 ):
                     replace(RuntimeDispatcherConfig(), **{field_name: invalid})
+        self.assertIsNone(
+            RuntimeDispatcherConfig(slow_callback_threshold=None).slow_callback_threshold
+        )
 
     def test_capacity_values_require_positive_non_boolean_integers(self) -> None:
         for field_name in (

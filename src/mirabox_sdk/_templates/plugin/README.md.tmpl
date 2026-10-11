@@ -4,6 +4,13 @@ The plugin UUID is `@@UUID@@`; its action is `@@UUID@@.press`.
 `src/dock_plugin/bootstrap.py` registers the action and builds the application.
 Imports only use the supported SDK and testing API. Pressing a key sets its
 title to **Pressed**; the Property Inspector resets it to **Ready**.
+Display updates use `set_title_async(deadline=monotonic() + 1.0)` and a short
+completion observer that logs eventual failure types. Queue-acceptance errors
+propagate to runtime callback diagnostics. Each action's commands enter FIFO
+order, while different contexts may interleave. Returning from a callback does
+not mean its command has completed; never wait on its future in the callback.
+When a follow-up must run only after success, enqueue it asynchronously from
+the completion observer after checking `exception(timeout=0)`.
 
 Run these steps from this directory. Python 3.11+ is required; the final
 executable must be built on Windows with PyInstaller 6.
@@ -60,6 +67,10 @@ Create another project with `init-plugin` to choose a different UUID.
 `run_plugin_cli` owns `run()` / `stop()` and returns exit code 1 for an incomplete
 or failed `shutdown_outcome`. `callback_drain_timeout` bounds shutdown waiting;
 it does not cancel a callback. `shutdown_timeout` is the shared SDK cleanup budget.
+`application.metrics().routing.active_callbacks` identifies executing handlers
+and their elapsed seconds. Scheduler metrics expose the first pending barrier
+and its wait; slow handlers are logged after completion using
+`RuntimeDispatcherConfig.slow_callback_threshold` (one second by default).
 For background work, use a service factory and `ApplicationContext.stop_signal`,
 wait for session readiness in the worker, bound I/O and join before releasing
 resources. See the SDK's `examples/background_service` for an executable example

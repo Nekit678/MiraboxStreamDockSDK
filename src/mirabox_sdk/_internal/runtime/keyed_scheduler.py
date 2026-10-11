@@ -33,6 +33,7 @@ class _ScheduledWork:
     context: str | None
     is_barrier: bool
     size: int
+    submitted_at: float
 
 
 class KeyedSerialHandlerScheduler(HandlerScheduler):
@@ -88,6 +89,7 @@ class KeyedSerialHandlerScheduler(HandlerScheduler):
         self._peak_pending = 0
         self._peak_active_callbacks = 0
         self._barriers_processed = 0
+        self._peak_barrier_wait_seconds = 0.0
         self._callback_failures = 0
         self._callback_timeouts = 0
         self._discarded_during_shutdown = 0
@@ -192,6 +194,7 @@ class KeyedSerialHandlerScheduler(HandlerScheduler):
                     context=None if is_barrier else context,
                     is_barrier=is_barrier,
                     size=size,
+                    submitted_at=monotonic() if is_barrier else 0.0,
                 )
             )
             self._accepted += 1
@@ -348,6 +351,8 @@ class KeyedSerialHandlerScheduler(HandlerScheduler):
         """Return an immutable point-in-time scheduler snapshot."""
 
         with self._condition:
+            barrier = next((work for work in self._pending if work.is_barrier), None)
+            barrier_wait = 0.0 if barrier is None else max(0.0, monotonic() - barrier.submitted_at)
             return HandlerSchedulerMetrics(
                 accepted=self._accepted,
                 completed=self._completed,
@@ -365,6 +370,9 @@ class KeyedSerialHandlerScheduler(HandlerScheduler):
                 current_pending_bytes=self._pending_bytes,
                 peak_pending_bytes=self._peak_pending_bytes,
                 rejected_oversized=self._rejected_oversized,
+                pending_barrier_event_name=None if barrier is None else barrier.event.event_name,
+                current_barrier_wait_seconds=barrier_wait,
+                peak_barrier_wait_seconds=max(self._peak_barrier_wait_seconds, barrier_wait),
             )
 
     def _run(self) -> None:
@@ -437,6 +445,9 @@ class KeyedSerialHandlerScheduler(HandlerScheduler):
                 if index != 0 or self._active_by_thread:
                     return None
                 self._barrier_active = True
+                self._peak_barrier_wait_seconds = max(
+                    self._peak_barrier_wait_seconds, monotonic() - work.submitted_at
+                )
             else:
                 assert work.context is not None
                 if work.context in self._active_contexts:
@@ -466,6 +477,12 @@ class KeyedSerialHandlerScheduler(HandlerScheduler):
     def _discard_pending(self) -> None:
         with self._condition:
             discarded = tuple(self._pending)
+            now = monotonic()
+            for work in discarded:
+                if work.is_barrier:
+                    self._peak_barrier_wait_seconds = max(
+                        self._peak_barrier_wait_seconds, now - work.submitted_at
+                    )
             self._pending.clear()
             self._pending_bytes = 0
             self._pending_by_context.clear()

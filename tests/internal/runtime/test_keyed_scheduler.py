@@ -35,6 +35,45 @@ def _scheduler(
 
 
 class KeyedSerialHandlerSchedulerTests(unittest.TestCase):
+    def test_waiting_barrier_reports_elapsed_time_without_bypassing_order(self) -> None:
+        entered, release, cold_entered = Event(), Event(), Event()
+        order = []
+
+        def dispatch(event: StreamDockEvent) -> DispatchResult:
+            if getattr(event, "context", None) == "hot":
+                entered.set()
+                release.wait()
+            elif getattr(event, "context", None) == "cold":
+                cold_entered.set()
+            order.append(event.event_name)
+            return DispatchResult(DispatchOutcome.HANDLED)
+
+        scheduler = _scheduler(dispatch, worker_count=4)
+        self.addCleanup(lambda: scheduler.stop(timeout=1))
+        self.addCleanup(release.set)
+        scheduler.start()
+        hot = scheduler.submit(key_down_event(context="hot"))
+        self.assertTrue(entered.wait(1))
+        barrier = scheduler.submit(SystemDidWakeUpEvent())
+        cold = scheduler.submit(key_down_event(context="cold"))
+        self.assertFalse(cold_entered.wait(0.02))
+        snapshot = scheduler.metrics()
+        self.assertEqual(snapshot.pending_barrier_event_name, "systemDidWakeUp")
+        self.assertGreater(snapshot.current_barrier_wait_seconds, 0)
+        self.assertEqual(snapshot.current_active_callbacks, 1)
+        self.assertEqual(snapshot.callback_timeouts, 0)
+        release.set()
+        for completion in (hot, barrier, cold):
+            completion.result(1)
+        self.assertTrue(scheduler.stop(timeout=1))
+        after = scheduler.metrics()
+        self.assertIsNone(after.pending_barrier_event_name)
+        self.assertEqual(after.current_barrier_wait_seconds, 0)
+        self.assertGreaterEqual(
+            after.peak_barrier_wait_seconds, snapshot.current_barrier_wait_seconds
+        )
+        self.assertEqual(order, ["keyDown", "systemDidWakeUp", "keyDown"])
+
     def test_pending_byte_budget_backpressures_until_work_is_taken(self) -> None:
         entered, release, submitted = Event(), Event(), Event()
         event = replace(key_down_event(), settings={"large": "x" * 4096})

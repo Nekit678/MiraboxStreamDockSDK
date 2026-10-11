@@ -932,6 +932,27 @@ scheduler-а, routing, actions, session и transport.
 задавать оба имени нельзя. Эти настройки не контролируют и не прерывают callbacks
 при обычной работе. Внешние I/O операции должны иметь собственные таймауты.
 
+Для диагностики заблокированного barrier читайте
+`application.metrics().routing.active_callbacks`. Каждый неизменяемый
+`ActiveCallbackMetrics` содержит событие, имя callback, context действия
+(`None` для обработчика плагина) и текущую длительность `elapsed_seconds`.
+Получатели broadcast учитываются отдельно; также измеряются замена настроек,
+создание действия и cleanup при rollback appearance. Scheduler предоставляет
+`pending_barrier_event_name`, `current_barrier_wait_seconds` и
+`peak_barrier_wait_seconds`. Ожидание barrier измеряется от принятия scheduler
+до начала dispatch или удаления при shutdown и включает предшествующие
+события в очереди. Выполняющийся broadcast виден в метриках текущего handler.
+Snapshots доступны во время блокировки и не содержат payload.
+
+`RuntimeDispatcherConfig.slow_callback_threshold` по умолчанию равен одной
+секунде; можно задать положительную длительность или `None` для отключения
+предупреждений. После завершения медленного handler runtime записывает событие,
+метод, context и длительность, включая вызовы с ошибкой. `routing.slow_callbacks`
+считает такие завершения, а `routing.peak_callback_seconds` хранит максимальную
+длительность завершённого вызова. Предупреждение появляется после завершения;
+диагностика не прерывает handler и не пропускает barrier. `callback_timeouts`
+по-прежнему относится только к ожиданию при shutdown.
+
 `ApplicationContext.stop_signal` устанавливается до закрытия ресурсов при
 локальной остановке, отключении транспорта или fatal failure. Фоновая работа
 может проверять `requested` или вызывать `wait(timeout)` для кооперативной отмены.
@@ -1004,10 +1025,45 @@ deadlines операций. Timeout ожидания future не задаёт de
 `TimeoutError("Outbound command did not complete before the timeout")`; команда
 при этом не отменяется, и её итоговый результат можно получить следующим вызовом.
 
+Для частого обновления отображения отправляйте команды с конечным deadline
+и наблюдайте каждый future, как в сгенерированном плагине:
+
+```python
+import logging
+from time import monotonic
+
+from mirabox_sdk import Action, ApplicationContext, CommandFuture, JsonObject, KeyDownEvent
+
+logger = logging.getLogger(__name__)
+
+
+def observe_display(completion: CommandFuture) -> None:
+    error = completion.exception(timeout=0)
+    if error is not None:
+        logger.error("Display command failed; exception_type=%s", type(error).__name__)
+
+
+class ResponsiveAction(Action[JsonObject, ApplicationContext]):
+    def on_key_down(self, event: KeyDownEvent) -> None:
+        deadline = monotonic() + 1.0
+        self.set_title_async("Pressed", deadline=deadline).add_done_callback(observe_display)
+        self.show_ok_async(deadline=deadline).add_done_callback(observe_display)
+```
+
+Ошибки принятия очередью передаются из helper в диагностику callback runtime;
+observer обрабатывает результат отправки без ожидания. Команды этого callback
+поступают в FIFO-порядке, а команды других contexts могут вставляться между ними.
+FIFO не делает вторую команду зависимой от успеха первой: для такой зависимости
+проверьте ошибку первого future и отправьте продолжение асинхронно из его observer.
+Callback или barrier может завершиться раньше своих команд. Observer должен
+быстро возвращаться; медленный внешний I/O выносите в сервис. Исполняемый пример
+[`examples/background_service`](examples/background_service) показывает readiness,
+кооперативную отмену и ограниченные ожидания. Async не ускоряет сам sender.
+
 Передайте `deadline=time.monotonic() + seconds` в `send()` или `send_async()`,
 чтобы ограничить принятую команду одним бюджетом на typed queue, сериализацию,
-backpressure raw queue, ожидание подключения и WebSocket send. Async helpers
-отображения, оба helpers настроек action и все методы записи global settings
+backpressure raw queue, ожидание подключения и WebSocket send. Все синхронные
+и async helpers команд action и все методы записи global settings
 принимают тот же keyword. `None` сохраняет неограниченное ожидание завершения.
 Некорректные timestamps отклоняются сразу. Истечение deadline завершает future
 ошибкой `OutboundCommandDeadlineExceededError`, подклассом `TimeoutError`.

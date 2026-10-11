@@ -15,10 +15,12 @@ from mirabox_sdk import (
     DialRotateEvent,
     InboundOverflowPolicy,
     JsonObject,
+    KeyDownEvent,
     LogMessageCommand,
     OutboundCommandReentrancyError,
     Plugin,
     PluginLaunchArguments,
+    RuntimeDispatcherConfig,
     SendToPropertyInspectorCommand,
     SetTitleCommand,
     StreamDockCommand,
@@ -152,6 +154,86 @@ class FakeSenderTests(unittest.TestCase):
 
 
 class HarnessTests(unittest.TestCase):
+    def test_public_metrics_identify_handler_blocking_a_global_barrier(self) -> None:
+        registry = ActionRegistry[Dependencies]()
+        entered, release, cold_entered = Event(), Event(), Event()
+
+        @registry.register("com.example.action")
+        class SlowAction(Action[JsonObject, Dependencies]):
+            def on_key_down(self, event: KeyDownEvent) -> None:
+                if self.context == "hot":
+                    entered.set()
+                    release.wait()
+                else:
+                    cold_entered.set()
+
+        harness = StreamDockHarness(
+            _launch_arguments(),
+            action_factory=registry,
+            action_dependencies_factory=lambda ctx: Dependencies(ctx.stream_dock),
+            runtime_config=RuntimeDispatcherConfig(slow_callback_threshold=0.001),
+        )
+        payload: JsonObject = {
+            "settings": {"private": "secret-value"},
+            "coordinates": {"column": 0, "row": 0},
+            "isInMultiAction": False,
+        }
+        with self.assertLogs("mirabox_sdk", level="WARNING") as logs:
+            with harness:
+                try:
+                    for context in ("hot", "cold"):
+                        harness.send_event(
+                            "willAppear",
+                            action="com.example.action",
+                            context=context,
+                            device="device",
+                            payload={**payload, "controller": "Keypad"},
+                        )
+                    harness.wait_for_events(2)
+                    harness.send_event(
+                        "keyDown",
+                        action="com.example.action",
+                        context="hot",
+                        device="device",
+                        payload=payload,
+                    )
+                    self.assertTrue(entered.wait(1))
+                    harness.send_event("futureBarrier", payload={})
+                    harness.send_event(
+                        "keyDown",
+                        action="com.example.action",
+                        context="cold",
+                        device="device",
+                        payload=payload,
+                    )
+                    self.assertFalse(cold_entered.wait(0.02))
+                    deadline = monotonic() + 1
+                    while True:
+                        snapshot = harness.application.metrics()
+                        if snapshot.scheduler.pending_barrier_event_name == "futureBarrier":
+                            break
+                        self.assertLess(monotonic(), deadline, "barrier was not admitted")
+                        sleep(0.001)
+                    active = snapshot.routing.active_callbacks
+                    self.assertEqual(len(active), 1)
+                    self.assertEqual(active[0].callback, "on_key_down")
+                    self.assertEqual(active[0].context, "hot")
+                    self.assertGreater(active[0].elapsed_seconds, 0)
+                    self.assertGreater(snapshot.scheduler.current_barrier_wait_seconds, 0)
+                    self.assertEqual(snapshot.scheduler.callback_timeouts, 0)
+                    self.assertNotIn("secret-value", repr(snapshot))
+                finally:
+                    release.set()
+                harness.wait_for_events(5)
+        self.assertTrue(cold_entered.is_set())
+        snapshot = harness.application.metrics()
+        self.assertEqual(snapshot.routing.active_callbacks, ())
+        self.assertGreater(snapshot.routing.slow_callbacks, 0)
+        self.assertEqual(snapshot.scheduler.current_barrier_wait_seconds, 0)
+        self.assertEqual(snapshot.scheduler.callback_timeouts, 0)
+        self.assertTrue(any("callback=on_key_down context=hot" in line for line in logs.output))
+        self.assertNotIn("secret-value", "\n".join(logs.output))
+
     def make_harness(self, *, plugin: Plugin | None = None) -> StreamDockHarness:
         return StreamDockHarness(
             _launch_arguments(),

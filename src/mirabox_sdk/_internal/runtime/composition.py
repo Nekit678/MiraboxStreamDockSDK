@@ -692,6 +692,7 @@ def create_stream_dock_runtime(
         plugin=plugin,
         plugin_hooks=plugin_hooks,
         error_observer=error_observer,
+        slow_callback_threshold=resolved_config.slow_callback_threshold,
     )
 
     fatal_errors = _FatalErrorRelay()

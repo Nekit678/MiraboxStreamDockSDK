@@ -8,6 +8,14 @@ change public APIs between minor versions.
 
 ### Added
 
+- Add deadlines to all synchronous action command helpers and async variants for
+  indicators, Property Inspector messages, settings requests, URLs and logging
+  (N-05). Generated plugins render asynchronously with observed futures and
+  finite deadlines; document FIFO and success-dependent follow-up commands.
+- Expose live handler identities/durations and pending-barrier wait metrics,
+  including individual broadcast recipients (N-08). Log slow handlers after
+  completion with configurable `slow_callback_threshold`; preserve global
+  barriers and the shutdown-only meaning of `callback_timeouts`.
 - Add accepted-command deadlines across queueing and transport, pre-send
   cancellation, and `Action.set_settings_async()` with commit/rollback (PERF-04).
   Settings and async display helpers accept monotonic deadlines; an expired

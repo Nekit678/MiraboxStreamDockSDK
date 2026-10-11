@@ -922,6 +922,25 @@ when an unbounded overall wait is intended.
 names are mutually exclusive. Neither setting monitors or interrupts callbacks
 during normal operation. Bound external I/O separately.
 
+To investigate a blocked barrier, inspect `application.metrics().routing.active_callbacks`.
+Each immutable `ActiveCallbackMetrics` identifies the event, callback method,
+action context (or `None` for a plugin handler) and current `elapsed_seconds`.
+Broadcast recipients are tracked individually, as are settings replacement,
+action creation and appearance rollback cleanup. The scheduler exposes
+`pending_barrier_event_name`, `current_barrier_wait_seconds` and
+`peak_barrier_wait_seconds`. Barrier wait starts at scheduler admission and ends
+when dispatch starts or the pending barrier is discarded; it includes earlier
+queued work. A running broadcast is shown through the active handler metrics.
+Snapshots remain available while a handler is blocked. They contain no payloads.
+
+`RuntimeDispatcherConfig.slow_callback_threshold` defaults to one second; set a
+positive duration or `None` to disable warnings. After a handler finishes, the
+runtime logs its event, method, context and duration if it exceeded the threshold,
+including failed handlers. `routing.slow_callbacks` counts these completions and
+`routing.peak_callback_seconds` records the longest completed invocation.
+Warnings run after completion; these diagnostics do not interrupt a handler or
+skip a barrier. `callback_timeouts` continues to count shutdown waits only.
+
 `ApplicationContext.stop_signal` is set before shutdown starts closing resources,
 on local stop, remote disconnect or fatal failure. Background work can use its
 `requested` property or `wait(timeout)` method for cooperative cancellation.
@@ -989,6 +1008,41 @@ Run slow external I/O in an application service and give dependency clients
 finite operation deadlines. A command-future wait timeout does not impose a
 transport deadline.
 
+For callbacks that render frequently, submit commands with a finite deadline
+and observe every future, as the generated plugin does:
+
+```python
+import logging
+from time import monotonic
+
+from mirabox_sdk import Action, ApplicationContext, CommandFuture, JsonObject, KeyDownEvent
+
+logger = logging.getLogger(__name__)
+
+
+def observe_display(completion: CommandFuture) -> None:
+    error = completion.exception(timeout=0)
+    if error is not None:
+        logger.error("Display command failed; exception_type=%s", type(error).__name__)
+
+
+class ResponsiveAction(Action[JsonObject, ApplicationContext]):
+    def on_key_down(self, event: KeyDownEvent) -> None:
+        deadline = monotonic() + 1.0
+        self.set_title_async("Pressed", deadline=deadline).add_done_callback(observe_display)
+        self.show_ok_async(deadline=deadline).add_done_callback(observe_display)
+```
+
+Queue-acceptance errors propagate from the helper to runtime callback diagnostics;
+the observer handles eventual command failures without waiting. Commands from
+this callback enter FIFO order, while other contexts may interleave. FIFO does
+not make the second command conditional on the first succeeding: for that
+requirement, check the first future's error and submit the follow-up asynchronously
+from its completion observer. A callback or barrier can finish before its commands.
+Keep completion observers short and use a service for slow external I/O; see
+[`examples/background_service`](examples/background_service) for readiness,
+cooperative cancellation and bounded waits. Async does not speed up the sender.
+
 `future.result(timeout=...)` re-raises the original command failure, including
 a transport `TimeoutError`. Only an expired wait raises
 `TimeoutError("Outbound command did not complete before the timeout")`; it does
@@ -996,7 +1050,7 @@ not cancel the command, and a later call can retrieve its terminal result.
 
 Set `deadline=time.monotonic() + seconds` on `send()` or `send_async()` to bound
 an accepted command across the typed queue, serialization, raw-queue backpressure,
-connection wait and WebSocket send. Async display helpers, both action settings
+connection wait and WebSocket send. All synchronous and async action command
 helpers, and all global settings write methods accept the same keyword.
 `None` preserves unbounded completion. Invalid timestamps are rejected immediately.
 Expiry completes the future with `OutboundCommandDeadlineExceededError`, a

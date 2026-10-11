@@ -50,15 +50,18 @@ class PluginTests(unittest.TestCase):
             )
             harness.send_event("keyDown", **identity, payload=payload)
             harness.wait_for_events(2)
-            harness.assert_command(
-                "setTitle", context="button", payload={"title": "Pressed", "target": 0}
-            )
             harness.send_event(
                 "sendToPlugin", action=ACTION_UUID, context="button", payload={"event": "reset"}
             )
             harness.wait_for_events(3)
-            titles = [message for message in harness.messages if message.get("event") == "setTitle"]
-            self.assertEqual(titles[-1]["payload"]["title"], "Ready")
+        # Event acknowledgement precedes async command completion; shutdown drains the writer.
+        harness.assert_command(
+            "setTitle", context="button", payload={"title": "Pressed", "target": 0}
+        )
+        titles = [message for message in harness.messages if message.get("event") == "setTitle"]
+        self.assertEqual(
+            [message["payload"]["title"] for message in titles], ["Ready", "Pressed", "Ready"]
+        )
         outcome = harness.application.shutdown_outcome
         self.assertIsNotNone(outcome)
         assert outcome is not None

@@ -15,6 +15,7 @@ from .config import (
 )
 from .metrics import (
     ActionContextMetrics,
+    ActiveCallbackMetrics,
     CommandWriterMetrics,
     EventReaderMetrics,
     HandlerSchedulerMetrics,
@@ -48,6 +49,7 @@ __all__ = [
     "ShutdownOutcome",
     "StopSignal",
     "ActionContextMetrics",
+    "ActiveCallbackMetrics",
     "ApplicationContext",
     "ApplicationRuntime",
     "ApplicationService",

@@ -9,6 +9,7 @@ from .._internal.messaging.metrics import (
 )
 from .._internal.runtime.metrics import (
     ActionContextMetrics,
+    ActiveCallbackMetrics,
     HandlerSchedulerMetrics,
     RuntimeEventPumpMetrics,
     RuntimeRouterMetrics,
@@ -19,6 +20,7 @@ from .._internal.transport.metrics import TransportQueueMetrics, WebSocketConnec
 
 __all__ = [
     "ActionContextMetrics",
+    "ActiveCallbackMetrics",
     "CommandWriterMetrics",
     "EventReaderMetrics",
     "HandlerSchedulerMetrics",

@@ -15,6 +15,7 @@ from .actions import (
     DefaultActionContextManager,
     RuntimeEventDispatchError,
 )
+from .callbacks import _CallbackMonitor
 from .global_settings import GlobalSettingsCoordinator, GlobalSettingsState
 from .metrics import (
     ActionContextMetrics,
@@ -50,6 +51,7 @@ class RuntimeEventRouter(RuntimeEventDispatcher):
         plugin_hooks: PluginHooks | None = None,
         registry: RuntimeEventRegistry = RUNTIME_EVENT_REGISTRY,
         error_observer: Callable[[SdkDiagnostic], None] | None = None,
+        slow_callback_threshold: float | None = 1.0,
     ) -> None:
         if plugin is not None and not isinstance(plugin, Plugin):
             raise TypeError("plugin must extend Plugin or be None")
@@ -61,6 +63,7 @@ class RuntimeEventRouter(RuntimeEventDispatcher):
             raise TypeError("registry must be a RuntimeEventRegistry")
 
         action_metrics = _ActionContextMetricRecorder()
+        self._callback_monitor = _CallbackMonitor(slow_callback_threshold)
         contexts = DefaultActionContextManager(action_factory, metrics=action_metrics)
         if isinstance(global_settings_state, GlobalSettingsCoordinator):
             global_settings = global_settings_state
@@ -74,6 +77,7 @@ class RuntimeEventRouter(RuntimeEventDispatcher):
             contexts,
             metrics=action_metrics,
             error_observer=error_observer,
+            callback_monitor=self._callback_monitor,
         )
         global_settings_route = registry.get_by_wire_name(DidReceiveGlobalSettingsEvent.event.value)
         if global_settings_route is None:  # pragma: no cover - registry invariant
@@ -90,6 +94,7 @@ class RuntimeEventRouter(RuntimeEventDispatcher):
             global_settings_route=action_global_settings_route,
             metrics=action_metrics,
             error_observer=error_observer,
+            callback_monitor=self._callback_monitor,
         )
 
         self._registry = registry
@@ -138,7 +143,11 @@ class RuntimeEventRouter(RuntimeEventDispatcher):
             with self._routing_lock:
                 self._unknown_events_delivered += 1
             try:
-                self._plugin.on_unhandled_event(event)
+                self._callback_monitor.invoke(
+                    lambda: self._plugin.on_unhandled_event(event),
+                    event_name=event.event_name,
+                    callback="on_unhandled_event",
+                )
             except Exception as exc:
                 report_error(
                     logger,
@@ -208,7 +217,11 @@ class RuntimeEventRouter(RuntimeEventDispatcher):
         with self._routing_lock:
             self._plugin_callbacks_delivered += 1
         try:
-            getattr(self._plugin, callback)(event)
+            self._callback_monitor.invoke(
+                lambda: getattr(self._plugin, callback)(event),
+                event_name=event.event_name,
+                callback=callback,
+            )
         except Exception as exc:
             with self._routing_lock:
                 self._plugin_callback_failures += 1
@@ -235,11 +248,15 @@ class RuntimeEventRouter(RuntimeEventDispatcher):
         """Return immutable known/unknown routing counters."""
 
         with self._routing_lock:
+            active, slow, peak = self._callback_monitor.snapshot()
             return RuntimeRouterMetrics(
                 known_events_routed=self._known_events_routed,
                 unknown_events_delivered=self._unknown_events_delivered,
                 plugin_callbacks_delivered=self._plugin_callbacks_delivered,
                 plugin_callback_failures=self._plugin_callback_failures,
+                active_callbacks=active,
+                slow_callbacks=slow,
+                peak_callback_seconds=peak,
             )
 
     def action_metrics(self) -> ActionContextMetrics:

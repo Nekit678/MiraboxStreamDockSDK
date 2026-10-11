@@ -87,6 +87,12 @@ class Action(Generic[SettingsT, DependenciesT]):
     its injected :class:`StreamDockSender` directly instead of mutating an
     action instance.
 
+    Command helpers wait for sending unless their name ends in ``_async``.
+    Every helper accepts an absolute ``time.monotonic()`` ``deadline``; ``None``
+    keeps the existing unbounded wait. For frequent updates, use async helpers
+    and observe each returned future with a short ``add_done_callback`` instead
+    of waiting on the callback worker. Queue acceptance can still fail immediately.
+
     ``SettingsT`` is the plugin-owned settings type. It defaults in practice to
     :class:`JsonObject`; pass a matching codec to :meth:`ActionRegistry.register`
     to use dataclasses or other typed values. ``DependenciesT`` is an
@@ -157,7 +163,9 @@ class Action(Generic[SettingsT, DependenciesT]):
             return self._stream_dock.send_async(command)
         return self._stream_dock.send_async(command, deadline=deadline)
 
-    def send_to_property_inspector(self, payload: JsonObject) -> None:
+    def send_to_property_inspector(
+        self, payload: JsonObject, *, deadline: float | None = None
+    ) -> None:
         """Send a JSON object to this action's Property Inspector.
 
         Args:
@@ -171,13 +179,25 @@ class Action(Generic[SettingsT, DependenciesT]):
                 action=self.action,
                 context=self.context,
                 payload=payload,
-            )
+            ),
+            deadline=deadline,
+        )
+
+    def send_to_property_inspector_async(
+        self, payload: JsonObject, *, deadline: float | None = None
+    ) -> CommandFuture:
+        """Queue a Property Inspector message and return its completion handle."""
+
+        return self._send_async(
+            SendToPropertyInspectorCommand(self.action, self.context, payload), deadline=deadline
         )
 
     def send_typed_to_property_inspector(
         self,
         payload: PayloadT,
         codec: JsonCodec[PayloadT],
+        *,
+        deadline: float | None = None,
     ) -> None:
         """Encode and send a typed payload to the Property Inspector.
 
@@ -196,17 +216,34 @@ class Action(Generic[SettingsT, DependenciesT]):
                 context=self.context,
                 payload=payload,
                 codec=codec,
-            )
+            ),
+            deadline=deadline,
         )
 
-    def set_state(self, state: int) -> None:
+    def send_typed_to_property_inspector_async(
+        self,
+        payload: PayloadT,
+        codec: JsonCodec[PayloadT],
+        *,
+        deadline: float | None = None,
+    ) -> CommandFuture:
+        """Encode here, then queue a typed Property Inspector message."""
+
+        return self._send_async(
+            SendToPropertyInspectorCommand.from_payload(
+                action=self.action, context=self.context, payload=payload, codec=codec
+            ),
+            deadline=deadline,
+        )
+
+    def set_state(self, state: int, *, deadline: float | None = None) -> None:
         """Select the displayed state for this action context.
 
         Args:
             state: Zero-based state index defined by the action manifest.
         """
 
-        self._send(SetStateCommand(self.context, state))
+        self._send(SetStateCommand(self.context, state), deadline=deadline)
 
     def set_state_async(self, state: int, *, deadline: float | None = None) -> CommandFuture:
         """Queue a displayed-state update without waiting for transport I/O.
@@ -227,6 +264,7 @@ class Action(Generic[SettingsT, DependenciesT]):
         *,
         target: int = 0,
         state: int | None = None,
+        deadline: float | None = None,
     ) -> None:
         """Set the title displayed for this action context.
 
@@ -238,7 +276,7 @@ class Action(Generic[SettingsT, DependenciesT]):
                 state field and lets Stream Dock apply its default behavior.
         """
 
-        self._send(SetTitleCommand(self.context, title, target, state))
+        self._send(SetTitleCommand(self.context, title, target, state), deadline=deadline)
 
     def set_title_async(
         self,
@@ -397,14 +435,22 @@ class Action(Generic[SettingsT, DependenciesT]):
                 raise OutboundCommandDeadlineExceededError("Action settings deadline exceeded")
             self._settings_lock.wait(None if remaining is None else min(remaining, TIMEOUT_MAX))
 
-    def get_settings(self) -> None:
+    def get_settings(self, *, deadline: float | None = None) -> None:
         """Request the latest persisted settings for this action context.
 
         The response is delivered asynchronously through
         :meth:`on_did_receive_settings`.
         """
 
-        self._send(GetSettingsCommand(self.context))
+        self._send(GetSettingsCommand(self.context), deadline=deadline)
+
+    def get_settings_async(self, *, deadline: float | None = None) -> CommandFuture:
+        """Queue a settings request; its response arrives via on_did_receive_settings.
+
+        The future describes sending the request, not receiving the response.
+        """
+
+        return self._send_async(GetSettingsCommand(self.context), deadline=deadline)
 
     def set_image(
         self,
@@ -412,6 +458,7 @@ class Action(Generic[SettingsT, DependenciesT]):
         *,
         target: int = 0,
         state: int | None = None,
+        deadline: float | None = None,
     ) -> None:
         """Set the image displayed for this action context.
 
@@ -425,7 +472,7 @@ class Action(Generic[SettingsT, DependenciesT]):
                 state field.
         """
 
-        self._send(SetImageCommand(self.context, image, target, state))
+        self._send(SetImageCommand(self.context, image, target, state), deadline=deadline)
 
     def set_image_async(
         self,
@@ -451,33 +498,53 @@ class Action(Generic[SettingsT, DependenciesT]):
             SetImageCommand(self.context, image, target, state), deadline=deadline
         )
 
-    def show_ok(self) -> None:
+    def show_ok(self, *, deadline: float | None = None) -> None:
         """Show Stream Dock's temporary success indicator on this action."""
 
-        self._send(ShowOkCommand(self.context))
+        self._send(ShowOkCommand(self.context), deadline=deadline)
 
-    def show_alert(self) -> None:
+    def show_ok_async(self, *, deadline: float | None = None) -> CommandFuture:
+        """Queue the temporary success indicator and return its completion handle."""
+
+        return self._send_async(ShowOkCommand(self.context), deadline=deadline)
+
+    def show_alert(self, *, deadline: float | None = None) -> None:
         """Show Stream Dock's temporary failure indicator on this action."""
 
-        self._send(ShowAlertCommand(self.context))
+        self._send(ShowAlertCommand(self.context), deadline=deadline)
 
-    def open_url(self, url: str) -> None:
+    def show_alert_async(self, *, deadline: float | None = None) -> CommandFuture:
+        """Queue the temporary failure indicator and return its completion handle."""
+
+        return self._send_async(ShowAlertCommand(self.context), deadline=deadline)
+
+    def open_url(self, url: str, *, deadline: float | None = None) -> None:
         """Ask Stream Dock to open a URL with the operating system.
 
         Args:
             url: Absolute URL understood by the host operating system.
         """
 
-        self._send(OpenUrlCommand(url))
+        self._send(OpenUrlCommand(url), deadline=deadline)
 
-    def log_message(self, message: str) -> None:
+    def open_url_async(self, url: str, *, deadline: float | None = None) -> CommandFuture:
+        """Queue a host URL request and return its completion handle."""
+
+        return self._send_async(OpenUrlCommand(url), deadline=deadline)
+
+    def log_message(self, message: str, *, deadline: float | None = None) -> None:
         """Write a message through Stream Dock's plugin log facility.
 
         Args:
             message: Human-readable diagnostic text.
         """
 
-        self._send(LogMessageCommand(message))
+        self._send(LogMessageCommand(message), deadline=deadline)
+
+    def log_message_async(self, message: str, *, deadline: float | None = None) -> CommandFuture:
+        """Queue a host log message and return its completion handle."""
+
+        return self._send_async(LogMessageCommand(message), deadline=deadline)
 
     def on_will_appear(self, _event: WillAppearEvent) -> None:
         """Handle creation or appearance of this action context.

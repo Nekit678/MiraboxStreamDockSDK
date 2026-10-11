@@ -196,6 +196,67 @@ class CopyOnWriteJsonTests(unittest.TestCase):
 
 
 class ActionTests(unittest.TestCase):
+    def test_command_helpers_expire_without_retaining_queued_work(self) -> None:
+        queue = OutboundCommandQueue(16)
+        self.addCleanup(lambda: queue.shutdown(timeout=0))
+        action = RecordingAction(ACTION_UUID, "button", {}, ExampleDependencies(queue))
+        helpers = (
+            (action.set_state, (1,)),
+            (action.set_title, ("Title",)),
+            (action.set_image, ("image",)),
+            (action.show_ok, ()),
+            (action.show_alert, ()),
+            (action.get_settings, ()),
+            (action.open_url, ("https://example.com",)),
+            (action.log_message, ("message",)),
+            (action.send_to_property_inspector, ({"event": "reset"},)),
+            (action.send_typed_to_property_inspector, ({"event": "reset"}, JSON_OBJECT_CODEC)),
+        )
+        for helper, args in helpers:
+            with self.subTest(helper=helper.__name__):
+                with self.assertRaises(OutboundCommandDeadlineExceededError):
+                    helper(*args, deadline=monotonic() - 1)
+        self.assertEqual(queue.metrics().current_depth, 0)
+
+    def test_async_helpers_preserve_fifo_and_report_eventual_failures(self) -> None:
+        queue = OutboundCommandQueue(16)
+        self.addCleanup(lambda: queue.shutdown(timeout=0))
+        action = RecordingAction(ACTION_UUID, "button", {}, ExampleDependencies(queue))
+        futures = (
+            action.set_title_async("Title"),
+            action.show_ok_async(),
+            action.show_alert_async(),
+            action.get_settings_async(),
+            action.open_url_async("https://example.com"),
+            action.log_message_async("message"),
+            action.send_to_property_inspector_async({"event": "reset"}),
+            action.send_typed_to_property_inspector_async({"event": "reset"}, JSON_OBJECT_CODEC),
+        )
+        observed = []
+        for future in futures:
+            self.assertFalse(future.done())
+            future.add_done_callback(lambda result: observed.append(result.exception(timeout=0)))
+        expected = (
+            "setTitle",
+            "showOk",
+            "showAlert",
+            "getSettings",
+            "openUrl",
+            "logMessage",
+            "sendToPropertyInspector",
+            "sendToPropertyInspector",
+        )
+        error = RuntimeError("transport failed")
+        for index, event_name in enumerate(expected):
+            envelope = queue.receive(timeout=0)
+            self.assertEqual(envelope.command.to_wire()["event"], event_name)
+            envelope.completion._finish(error=error if index == 1 else None)
+        self.assertEqual(observed, [None, error, None, None, None, None, None, None])
+        with self.assertRaisesRegex(RuntimeError, "transport failed"):
+            futures[1].result(timeout=0)
+        with self.assertRaises(OutboundCommandDeadlineExceededError):
+            action.show_ok_async(deadline=monotonic() - 1).result(timeout=1)
+
     def test_completion_callback_rejects_sync_settings_before_pending_wait(self) -> None:
         queue = OutboundCommandQueue(1)
         action = RecordingAction(ACTION_UUID, "button", {"count": 1}, ExampleDependencies(queue))

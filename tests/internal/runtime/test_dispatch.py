@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import unittest
 from dataclasses import replace
+from threading import Event, Thread
 from typing import ClassVar
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from mirabox_sdk import (
     DidReceiveGlobalSettingsEvent,
@@ -46,6 +47,7 @@ def build_router(
     hooks: RecordingPluginHooks | None = None,
     plugin: Plugin | None = None,
     registry: RuntimeEventRegistry = RUNTIME_EVENT_REGISTRY,
+    slow_callback_threshold: float | None = 1.0,
 ) -> tuple[RuntimeEventRouter, RecordingActionFactory, DefaultGlobalSettingsState, Mock]:
     sender = Mock(spec=OutboundCommandSink)
     factory = RecordingActionFactory(sender, action_type)
@@ -56,6 +58,7 @@ def build_router(
         plugin=plugin,
         plugin_hooks=hooks,
         registry=registry,
+        slow_callback_threshold=slow_callback_threshold,
     )
     return router, factory, state, sender
 
@@ -133,6 +136,92 @@ class StrictSettingsAction(RecordingAction):
 
 
 class RuntimeEventDispatchTests(unittest.TestCase):
+    def test_live_broadcast_metrics_identify_blocking_recipient(self) -> None:
+        entered, release, second_entered = Event(), Event(), Event()
+        clock = [10.0]
+
+        class SlowAction(RecordingAction):
+            def on_system_did_wake_up(self, event: SystemDidWakeUpEvent) -> None:
+                if self.context == "slow":
+                    entered.set()
+                    release.wait()
+                else:
+                    second_entered.set()
+
+        router, _, _, _ = build_router(SlowAction, slow_callback_threshold=0.5)
+        router.dispatch(will_appear_event(context="slow"))
+        router.dispatch(will_appear_event(context="next"))
+        thread = Thread(target=lambda: router.dispatch(SystemDidWakeUpEvent()))
+        self.addCleanup(lambda: thread.join(1))
+        self.addCleanup(release.set)
+        with patch("mirabox_sdk._internal.runtime.callbacks.monotonic", lambda: clock[0]):
+            thread.start()
+            self.assertTrue(entered.wait(1))
+            clock[0] = 12.0
+            snapshot = router.routing_metrics()
+            self.assertEqual(len(snapshot.active_callbacks), 1)
+            active = snapshot.active_callbacks[0]
+            self.assertEqual(active.event_name, "systemDidWakeUp")
+            self.assertEqual(active.callback, "on_system_did_wake_up")
+            self.assertEqual(active.context, "slow")
+            self.assertEqual(active.elapsed_seconds, 2.0)
+            self.assertFalse(second_entered.is_set())
+            with self.assertLogs("mirabox_sdk", level="WARNING") as logs:
+                release.set()
+                thread.join(1)
+            self.assertFalse(thread.is_alive())
+            self.assertTrue(second_entered.is_set())
+            after = router.routing_metrics()
+        self.assertEqual(after.active_callbacks, ())
+        self.assertEqual(after.slow_callbacks, 1)
+        self.assertEqual(after.peak_callback_seconds, 2.0)
+        self.assertIn("callback=on_system_did_wake_up", logs.output[0])
+        self.assertIn("context=slow", logs.output[0])
+        self.assertEqual(active.elapsed_seconds, 2.0)
+
+    def test_failed_and_fatal_plugin_callbacks_clear_activity_and_warn_without_error_text(self):
+        class FailedPlugin(Plugin):
+            def __init__(self, error: BaseException) -> None:
+                self.error = error
+
+            def on_unhandled_event(self, event: UnknownStreamDockEvent) -> None:
+                raise self.error
+
+        for error in (RuntimeError("secret-error"), SystemExit("secret-error")):
+            with self.subTest(error=type(error).__name__):
+                router, _, _, _ = build_router(
+                    plugin=FailedPlugin(error), slow_callback_threshold=0.5
+                )
+                event = UnknownStreamDockEvent(event="futureEvent", data={"event": "futureEvent"})
+                with (
+                    patch("mirabox_sdk._internal.runtime.callbacks.monotonic", side_effect=[0, 2]),
+                    self.assertLogs("mirabox_sdk", level="WARNING") as logs,
+                ):
+                    if isinstance(error, Exception):
+                        result = router.dispatch(event)
+                        self.assertIs(result.outcome, DispatchOutcome.CALLBACK_FAILED)
+                        self.assertIs(result.error, error)
+                    else:
+                        with self.assertRaises(SystemExit):
+                            router.dispatch(event)
+                snapshot = router.routing_metrics()
+                self.assertEqual(snapshot.active_callbacks, ())
+                self.assertEqual(snapshot.slow_callbacks, 1)
+                self.assertEqual(snapshot.peak_callback_seconds, 2)
+                self.assertIn("callback=on_unhandled_event", logs.output[0])
+                self.assertNotIn("secret-error", "\n".join(logs.output))
+
+    def test_disabling_slow_warnings_preserves_duration_metrics(self) -> None:
+        router, _, _, _ = build_router(slow_callback_threshold=None)
+        with patch("mirabox_sdk._internal.runtime.callbacks.monotonic", side_effect=[0, 2]):
+            with self.assertNoLogs("mirabox_sdk", level="WARNING"):
+                router.dispatch(
+                    UnknownStreamDockEvent(event="futureEvent", data={"event": "futureEvent"})
+                )
+        snapshot = router.routing_metrics()
+        self.assertEqual(snapshot.slow_callbacks, 0)
+        self.assertEqual(snapshot.peak_callback_seconds, 2)
+
     def test_router_implements_runtime_event_dispatcher_port(self) -> None:
         router, _factory, _state, _sender = build_router()
 

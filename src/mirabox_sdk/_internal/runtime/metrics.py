@@ -62,6 +62,19 @@ class HandlerSchedulerMetrics:
     current_pending_bytes: int = 0
     peak_pending_bytes: int = 0
     rejected_oversized: int = 0
+    pending_barrier_event_name: str | None = None
+    current_barrier_wait_seconds: float = 0.0
+    peak_barrier_wait_seconds: float = 0.0
+
+
+@dataclass(frozen=True, slots=True)
+class ActiveCallbackMetrics:
+    """One executing handler; elapsed time is measured at snapshot creation."""
+
+    event_name: str
+    callback: str
+    context: str | None
+    elapsed_seconds: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,6 +85,9 @@ class RuntimeRouterMetrics:
     unknown_events_delivered: int = 0
     plugin_callbacks_delivered: int = 0
     plugin_callback_failures: int = 0
+    active_callbacks: tuple[ActiveCallbackMetrics, ...] = ()
+    slow_callbacks: int = 0
+    peak_callback_seconds: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
