@@ -145,7 +145,7 @@
       return this._websocket?.readyState === WebSocket.OPEN;
     }
 
-    /** Return a detached snapshot of the connecting queue's wire byte budget. */
+    /** Return local queue metrics and the active socket's buffered wire bytes. */
     get queueMetrics() {
       return {
         messageLimit: PENDING_MESSAGE_LIMIT,
@@ -153,6 +153,7 @@
         byteLimit: QUEUE_BYTE_LIMIT,
         currentDepth: this._pendingMessages.length,
         currentBytes: this._pendingBytes,
+        bufferedBytes: this._websocket?.bufferedAmount ?? 0,
         peakDepth: this._peakPendingDepth,
         peakBytes: this._peakPendingBytes,
         rejectedFull: this._rejectedFull,
@@ -219,6 +220,8 @@
      * The `connected` event fires after registration and queued messages have
      * been attempted, provided the socket remains open. Deferred failures emit
      * `sendError` individually and do not prevent later queued sends.
+     * Reconnection closes the previous socket and fails its unsent messages;
+     * events from replaced sockets are ignored.
      *
      * @param {number|string} port Loopback WebSocket port from 1 through 65535.
      * @param {string} propertyInspectorUUID Opaque context used for registration.
@@ -240,44 +243,48 @@
         throw new TypeError("registerEvent must be a non-empty string");
       }
 
-      this._info = parseObject(info, "info");
-      this._actionInfo = parseObject(actionInfo, "actionInfo");
-      this._action = this._actionInfo.action;
-      if (typeof this._action !== "string" || this._action.length === 0) {
+      const parsedInfo = parseObject(info, "info");
+      const parsedActionInfo = parseObject(actionInfo, "actionInfo");
+      const action = parsedActionInfo.action;
+      if (typeof action !== "string" || action.length === 0) {
         throw new TypeError("actionInfo.action must be a non-empty string");
       }
-      this._context = propertyInspectorUUID;
-      this._settings = isObject(this._actionInfo.payload?.settings)
-        ? snapshotObject(this._actionInfo.payload.settings, "settings")
+      const settings = isObject(parsedActionInfo.payload?.settings)
+        ? snapshotObject(parsedActionInfo.payload.settings, "settings")
         : {};
 
       const websocket = new WebSocket(`ws://127.0.0.1:${portNumber}`);
+      const previousWebsocket = this._websocket;
+      const previousMessages = this._pendingMessages.splice(0);
+      this._pendingBytes = 0;
       this._websocket = websocket;
+      this._info = parsedInfo;
+      this._actionInfo = parsedActionInfo;
+      this._action = action;
+      this._context = propertyInspectorUUID;
+      this._settings = settings;
       websocket.addEventListener("open", () => {
+        if (this._websocket !== websocket) return;
         const registration = { event: registerEvent, uuid: propertyInspectorUUID };
         try {
           const data = JSON.stringify(registration);
-          this._messageSize(data);
-          websocket.send(data);
+          this._sendData(websocket, data, this._messageSize(data));
         } catch (error) {
           websocket.close();
           this._emit("sendError", { message: registration, error });
-          this._rejectPendingMessages(error);
+          this._rejectPendingMessages(error, websocket);
           return;
         }
         const pendingMessages = this._pendingMessages.splice(0);
         this._pendingBytes = 0;
         for (const data of pendingMessages) {
           try {
-            if (websocket.readyState !== WebSocket.OPEN) {
-              throw new Error("Property Inspector WebSocket is closing or closed");
-            }
-            websocket.send(data);
+            this._sendData(websocket, data, this._messageSize(data));
           } catch (error) {
             this._emit("sendError", { message: JSON.parse(data), error });
           }
         }
-        if (websocket.readyState !== WebSocket.OPEN) {
+        if (this._websocket !== websocket || websocket.readyState !== WebSocket.OPEN) {
           return;
         }
         this._emit("connected", {
@@ -286,14 +293,20 @@
           info: this._info,
           actionInfo: this._actionInfo,
           settings: this.settings,
-        });
+        }, websocket);
       });
-      websocket.addEventListener("message", (event) => this._receive(event));
-      websocket.addEventListener("error", (event) => this._emit("error", event));
+      websocket.addEventListener("message", (event) => this._receive(event, websocket));
+      websocket.addEventListener("error", (event) => this._emit("error", event, websocket));
       websocket.addEventListener("close", (event) => {
-        this._rejectPendingMessages(new Error("Property Inspector WebSocket is closing or closed"));
-        this._emit("disconnected", event);
+        if (this._websocket !== websocket) return;
+        this._rejectPendingMessages(new Error("Property Inspector WebSocket is closing or closed"), websocket);
+        this._emit("disconnected", event, websocket);
       });
+      previousWebsocket?.close();
+      const error = new Error("Property Inspector WebSocket was replaced by a new connection");
+      for (const data of previousMessages) {
+        this._emit("sendError", { message: JSON.parse(data), error });
+      }
     }
 
     /**
@@ -307,7 +320,7 @@
      * @returns {boolean} `true` if sent immediately; `false` if accepted into the queue.
      * @throws {TypeError} If `message` is not an object or JSON serialization fails.
      * @throws {Error} If uninitialized, closing, closed, or an immediate send fails.
-     * @throws {RangeError} If the frame or connecting queue exceeds its byte/item limit.
+     * @throws {RangeError} If the frame, connecting queue, or socket buffer exceeds its limit.
      */
     send(message) {
       if (!isObject(message)) {
@@ -324,7 +337,7 @@
       const size = this._messageSize(data);
       parseObject(data, "message");
       if (websocket.readyState === WebSocket.OPEN) {
-        websocket.send(data);
+        this._sendData(websocket, data, size);
         return true;
       }
       if (this._pendingMessages.length >= PENDING_MESSAGE_LIMIT
@@ -412,7 +425,22 @@
       return this.send({ event: "getSettings", context: this._context });
     }
 
-    _rejectPendingMessages(error) {
+    _sendData(websocket, data, size) {
+      if (this._websocket !== websocket) {
+        throw new Error("Property Inspector WebSocket was replaced by a new connection");
+      }
+      if (websocket.readyState !== WebSocket.OPEN) {
+        throw new Error("Property Inspector WebSocket is closing or closed");
+      }
+      if (websocket.bufferedAmount + size > QUEUE_BYTE_LIMIT) {
+        this._rejectedFull += 1;
+        throw new RangeError("Property Inspector WebSocket buffer is full (byte limit)");
+      }
+      websocket.send(data);
+    }
+
+    _rejectPendingMessages(error, websocket) {
+      if (this._websocket !== websocket) return;
       const pendingMessages = this._pendingMessages.splice(0);
       this._pendingBytes = 0;
       for (const data of pendingMessages) {
@@ -432,14 +460,15 @@
       return size;
     }
 
-    _receive(event) {
+    _receive(event, websocket) {
+      if (this._websocket !== websocket) return;
       let message;
       try {
         this._messageSize(event.data);
         message = parseObject(event.data, "WebSocket message");
       } catch (error) {
         console.error("Ignoring invalid Stream Dock message", error);
-        this._emit("protocolError", { error, data: event.data });
+        this._emit("protocolError", { error, data: event.data }, websocket);
         return;
       }
 
@@ -449,17 +478,18 @@
           : {};
       }
       if (typeof message.event === "string") {
-        this._emit(message.event, message);
+        this._emit(message.event, message, websocket);
       }
-      this._emit("message", message);
+      this._emit("message", message, websocket);
     }
 
-    _emit(eventName, payload) {
+    _emit(eventName, payload, websocket) {
       const listeners = this._listeners.get(eventName);
       if (listeners === undefined) {
         return;
       }
       for (const listener of [...listeners]) {
+        if (websocket !== undefined && this._websocket !== websocket) return;
         try {
           listener(payload);
         } catch (error) {

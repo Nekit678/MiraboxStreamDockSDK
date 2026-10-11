@@ -435,17 +435,28 @@ throws before acceptance; immediate `WebSocket.send()` errors propagate.
 
 Frames are limited to 8 MiB of UTF-8 JSON, including their envelope. While
 connecting, the FIFO accepts at most 1,024 messages and 16 MiB of wire bytes.
-Exceeding any limit throws `RangeError` before acceptance and leaves local
-settings unchanged. Accepted messages retain their order and are not replaced
-automatically. `client.queueMetrics` reports limits, current/peak depth and
-bytes, and `rejectedFull`/`rejectedOversized`. Flush and close release the budget.
-Oversized incoming frames emit `protocolError` before JSON parsing.
+For an open socket, every send (including registration and each queued send)
+checks that `WebSocket.bufferedAmount` plus the frame fits the same 16 MiB limit.
+An immediate send that exceeds a limit throws `RangeError` before acceptance
+and leaves local settings unchanged. A queued send that no longer fits emits
+`sendError` and is not retried. Accepted messages retain their order and are not
+replaced automatically. `client.queueMetrics` reports limits, local queue
+current/peak depth and bytes, active socket `bufferedBytes`, and
+`rejectedFull`/`rejectedOversized`. Flush and close release the local queue budget;
+the socket buffer drains as the browser transmits data. These wire byte budgets
+do not measure total browser memory. Oversized incoming frames emit
+`protocolError` before JSON parsing.
 
 Queued messages own serialized JSON snapshots. Deferred send failures emit
 `sendError` with `{ message, error }` for each unsent message, including when
 the socket closes before flushing. A failed message does not prevent later
 messages from being attempted; failed registration closes the socket without
 emitting `connected`. Sends are not retried automatically.
+
+A repeated connection callback closes the previous socket and reports its
+unsent queued messages through `sendError`. Old socket events cannot change
+the new session's settings, queue, or lifecycle events. Invalid callback data
+leaves the current connection intact.
 
 `settings` returns a deep JSON copy. Local settings change only when a send is
 accepted and remain optimistic until `didReceiveSettings` refreshes them;

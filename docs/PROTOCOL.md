@@ -356,6 +356,7 @@ defines that compatibility callback and exposes a higher-level singleton as
 | `getSettings()` | Request the latest action settings |
 | `action`, `context`, `settings`, `info`, `actionInfo` | Read current registration state |
 | `isConnected` | Check whether the WebSocket is open |
+| `queueMetrics` | Read local queue limits/usage, active socket `bufferedBytes`, and rejection counters |
 
 Start application sends from `connected`, after registration and the initial
 queue flush. Send helpers return `true` when sent immediately and `false` when
@@ -364,11 +365,26 @@ while closing/closed throw `Error`; invalid JSON data and immediate send failure
 also throw. The queue owns serialized JSON snapshots, so subsequent mutation
 cannot change a pending message.
 
+Frames are limited to 8 MiB of UTF-8 JSON. The connecting FIFO accepts up to
+1,024 messages and 16 MiB. Every open-socket send, including registration and
+each flush attempt, checks `bufferedAmount` plus the frame against 16 MiB.
+Immediate overflow throws `RangeError` before acceptance; deferred overflow
+emits `sendError` for that message without retry. `currentBytes` and `peakBytes`
+describe the local queue; `bufferedBytes` describes the active socket's browser
+buffer. `rejectedFull` counts both queue and socket-buffer overflow. Wire byte
+limits do not measure total browser memory.
+
 Observe `sendError` for `{ message, error }` when registration or a deferred send
 fails. Every unsent queued message receives this event on close, and a failed
 send does not suppress later queued attempts. Failed registration closes the
 socket and suppresses `connected`; `connected` otherwise fires after the queue
 has been attempted if the socket remains open. There are no automatic retries.
+
+Repeated connection callbacks close the previous socket and reject its unsent
+queued messages through `sendError`. Events from replaced sockets are ignored,
+including when a listener reconnects during event dispatch or deferred failure.
+Launch values are validated before replacing the active session; invalid
+callback data leaves its connection, metadata and queued messages intact.
 
 `settings` returns a deep JSON snapshot. Settings writes update local optimistic
 state only after acceptance; a rejected write leaves it intact. Deferred failures

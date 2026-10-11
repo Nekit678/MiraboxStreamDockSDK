@@ -25,6 +25,8 @@ function createInspector() {
       this.readyState = WebSocket.CONNECTING;
       this.listeners = new Map();
       this.frames = [];
+      this.bufferedAmount = 0;
+      this.peakBufferedAmount = 0;
       this.beforeSend = () => {};
       sockets.push(this);
     }
@@ -51,12 +53,18 @@ function createInspector() {
       this.emit("close", { code: 1000 });
     }
 
+    drain(bytes = this.bufferedAmount) {
+      this.bufferedAmount = Math.max(0, this.bufferedAmount - bytes);
+    }
+
     send(data) {
       this.beforeSend(JSON.parse(data));
       if (this.readyState !== WebSocket.OPEN) {
         throw new Error("Socket is closed");
       }
       this.frames.push(JSON.parse(data));
+      this.bufferedAmount += Buffer.byteLength(data, "utf8");
+      this.peakBufferedAmount = Math.max(this.peakBufferedAmount, this.bufferedAmount);
     }
   }
 
@@ -67,10 +75,10 @@ function createInspector() {
   });
   runInContext(read(sourcePath), context, { filename: sourcePath });
   const client = context.window.MiraBoxPropertyInspector;
-  const connect = (settings = {}) => {
+  const connect = (settings = {}, uuid = "pi-context", action = "example.action") => {
     context.window.connectElgatoStreamDeckSocket(
-      "12345", "pi-context", "registerPropertyInspector", "{}",
-      { action: "example.action", payload: { settings } },
+      "12345", uuid, "registerPropertyInspector", "{}",
+      { action, payload: { settings } },
     );
     return sockets.at(-1);
   };
@@ -84,6 +92,288 @@ const operations = {
   updateSettings: (client) => client.updateSettings({ mode: "new" }),
   getSettings: (client) => client.getSettings(),
 };
+
+test("an old socket closing cannot reject the new session's queued message", () => {
+  const { client, connect, WebSocket } = createInspector();
+  const first = connect();
+  first.open();
+  const errors = [];
+  const disconnected = [];
+  client.on("sendError", (event) => errors.push(event));
+  client.on("disconnected", (event) => disconnected.push(event));
+  const second = connect({}, "new-context", "new.action");
+  assert.equal(client.sendToPlugin({ value: "new" }), false);
+  const bytes = client.queueMetrics.currentBytes;
+  first.close();
+  assert.equal(second.readyState, WebSocket.CONNECTING);
+  assert.equal(client.queueMetrics.currentBytes, bytes);
+  assert.equal(client.queueMetrics.currentDepth, 1);
+  assert.deepEqual(errors, []);
+  assert.deepEqual(disconnected, []);
+  second.open();
+  assert.deepEqual(second.frames, [
+    { event: "registerPropertyInspector", uuid: "new-context" },
+    { event: "sendToPlugin", action: "new.action", context: "new-context", payload: { value: "new" } },
+  ]);
+});
+
+test("stale open, message and error events cannot affect the active session", () => {
+  const { client, connect, WebSocket } = createInspector();
+  const first = connect({ mode: "old" });
+  const events = [];
+  for (const name of ["connected", "disconnected", "message", "didReceiveSettings", "error", "protocolError", "sendError"]) {
+    client.on(name, () => events.push(name));
+  }
+  const second = connect({ mode: "new" }, "new-context", "new.action");
+  assert.equal(first.readyState, WebSocket.CLOSED);
+  client.sendToPlugin({ value: "new" });
+  const metrics = plain(client.queueMetrics);
+  first.open();
+  first.emit("message", {
+    data: JSON.stringify({ event: "didReceiveSettings", payload: { settings: { mode: "stale" } } }),
+  });
+  first.emit("message", { data: "invalid JSON" });
+  first.emit("error", { message: "old error" });
+  first.close();
+  assert.deepEqual(first.frames, []);
+  assert.deepEqual(plain(client.settings), { mode: "new" });
+  assert.deepEqual(plain(client.queueMetrics), metrics);
+  assert.deepEqual(events, []);
+  second.open();
+  assert.deepEqual(events, ["connected"]);
+  assert.deepEqual(second.frames[1].payload, { value: "new" });
+});
+
+test("replacement fails old pending messages once and preserves sends from sendError listeners", () => {
+  const { client, connect, WebSocket } = createInspector();
+  const first = connect();
+  client.sendToPlugin({ value: "old" });
+  const errors = [];
+  client.on("sendError", (event) => {
+    errors.push(event);
+    client.sendToPlugin({ value: "new" });
+  });
+  const second = connect({}, "new-context", "new.action");
+  assert.equal(first.readyState, WebSocket.CLOSED);
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0].message.context, "pi-context");
+  assert.match(errors[0].error.message, /replaced/);
+  assert.equal(client.queueMetrics.currentDepth, 1);
+  first.close();
+  second.open();
+  assert.equal(errors.length, 1);
+  assert.deepEqual(second.frames[1], {
+    event: "sendToPlugin", action: "new.action", context: "new-context", payload: { value: "new" },
+  });
+});
+
+test("reconnecting from a deferred failure cannot flush or reject the new session's queue", () => {
+  const { client, connect } = createInspector();
+  const first = connect();
+  client.sendToPlugin({ value: 1 });
+  client.sendToPlugin({ value: 2 });
+  first.beforeSend = (message) => {
+    if (message.payload?.value === 1) throw new Error("send failed");
+  };
+  let second;
+  const errors = [];
+  const connected = [];
+  client.on("sendError", (event) => {
+    errors.push(event);
+    if (second === undefined) {
+      second = connect({}, "new-context");
+      client.sendToPlugin({ value: "new" });
+    }
+  });
+  client.on("connected", (event) => connected.push(event.context));
+  first.open();
+  assert.deepEqual(errors.map(({ message }) => message.payload.value), [1, 2]);
+  assert.equal(first.frames.length, 1);
+  assert.deepEqual(connected, []);
+  assert.equal(client.queueMetrics.currentDepth, 1);
+  second.open();
+  assert.deepEqual(connected, ["new-context"]);
+  assert.deepEqual(second.frames[1].payload, { value: "new" });
+});
+
+test("reconnecting from registration sendError cannot reject new pending messages", () => {
+  const { client, connect } = createInspector();
+  const first = connect();
+  first.beforeSend = () => { throw new Error("registration failed"); };
+  let second;
+  const errors = [];
+  client.on("sendError", (event) => {
+    errors.push(event);
+    second = connect({}, "new-context");
+    client.sendToPlugin({ value: "new" });
+  });
+  first.open();
+  assert.equal(errors.length, 1);
+  assert.equal(client.queueMetrics.currentDepth, 1);
+  second.open();
+  assert.deepEqual(second.frames[1].payload, { value: "new" });
+});
+
+test("reconnecting during a settings event stops further dispatch from the old socket", () => {
+  const { client, connect } = createInspector();
+  const first = connect();
+  first.open();
+  const events = [];
+  client.on("didReceiveSettings", () => {
+    events.push("first listener");
+    connect({ mode: "new" }, "new-context");
+  });
+  client.on("didReceiveSettings", () => events.push("second listener"));
+  client.on("message", () => events.push("message"));
+  client.on("disconnected", () => events.push("disconnected"));
+  first.emit("message", {
+    data: JSON.stringify({ event: "didReceiveSettings", payload: { settings: { mode: "old" } } }),
+  });
+  assert.deepEqual(events, ["first listener"]);
+  assert.deepEqual(plain(client.settings), { mode: "new" });
+});
+
+test("invalid reconnect metadata preserves the active connection and queue", () => {
+  const { client, connect, WebSocket } = createInspector();
+  const socket = connect({ mode: "old" });
+  client.sendToPlugin({ value: "old" });
+  const metrics = plain(client.queueMetrics);
+  for (const [info, actionInfo] of [
+    ["invalid JSON", { action: "new.action" }],
+    [{ host: "new" }, { action: "" }],
+    [{ host: "new" }, { action: "new.action", payload: { settings: { value: 1n } } }],
+  ]) {
+    assert.throws(() => client.connect("12345", "new-context", "registerPropertyInspector", info, actionInfo));
+    assert.equal(socket.readyState, WebSocket.CONNECTING);
+    assert.equal(client.action, "example.action");
+    assert.equal(client.context, "pi-context");
+    assert.deepEqual(plain(client.info), {});
+    assert.deepEqual(plain(client.actionInfo), { action: "example.action", payload: { settings: { mode: "old" } } });
+    assert.deepEqual(plain(client.settings), { mode: "old" });
+    assert.deepEqual(plain(client.queueMetrics), metrics);
+  }
+  socket.open();
+  assert.deepEqual(socket.frames[1].payload, { value: "old" });
+});
+
+test("a non-draining OPEN socket bounds a 512-message burst of 64 KiB payloads", () => {
+  const { client, connect } = createInspector();
+  const socket = connect({ mode: "old" });
+  socket.open();
+  const payload = { text: "é".repeat(32 * 1024) };
+  let accepted = 0;
+  let rejected = 0;
+  for (let index = 0; index < 512; index += 1) {
+    try {
+      assert.equal(client.sendToPlugin(payload), true);
+      accepted += 1;
+    } catch (error) {
+      assert.equal(error.name, "RangeError");
+      assert.match(error.message, /buffer is full/);
+      rejected += 1;
+    }
+  }
+  const metrics = client.queueMetrics;
+  assert.ok(accepted > 0 && accepted < 512);
+  assert.equal(rejected, 512 - accepted);
+  assert.equal(metrics.rejectedFull, rejected);
+  assert.equal(metrics.currentBytes, 0);
+  assert.equal(metrics.currentDepth, 0);
+  assert.equal(metrics.bufferedBytes, socket.bufferedAmount);
+  assert.ok(socket.peakBufferedAmount <= metrics.byteLimit);
+  assert.throws(() => client.setSettings(payload), /buffer is full/);
+  assert.deepEqual(plain(client.settings), { mode: "old" });
+  socket.drain();
+  assert.equal(client.queueMetrics.bufferedBytes, 0);
+  assert.equal(client.sendToPlugin(payload), true);
+});
+
+test("the OPEN byte budget accepts its boundary and recovers after a partial drain", () => {
+  const { client, connect } = createInspector();
+  const socket = connect();
+  socket.open();
+  const message = { event: "custom", text: "😀" };
+  const size = Buffer.byteLength(JSON.stringify(message), "utf8");
+  socket.bufferedAmount = client.queueMetrics.byteLimit - size;
+  assert.equal(client.send(message), true);
+  assert.equal(socket.bufferedAmount, client.queueMetrics.byteLimit);
+  assert.throws(() => client.send(message), /buffer is full/);
+  socket.drain(size - 1);
+  assert.throws(() => client.send(message), /buffer is full/);
+  socket.drain(1);
+  assert.equal(client.send(message), true);
+  assert.equal(socket.bufferedAmount, client.queueMetrics.byteLimit);
+  assert.equal(client.queueMetrics.rejectedFull, 2);
+});
+
+test("a full connecting backlog cannot overflow the OPEN buffer during flush", () => {
+  const { client, connect } = createInspector();
+  const socket = connect();
+  const message = { event: "custom", text: "" };
+  const overhead = Buffer.byteLength(JSON.stringify(message), "utf8");
+  message.text = "x".repeat(client.queueMetrics.maxMessageBytes - overhead);
+  client.send(message);
+  client.send(message);
+  assert.equal(client.queueMetrics.currentBytes, client.queueMetrics.byteLimit);
+  const errors = [];
+  let connected = false;
+  client.on("sendError", (event) => errors.push(event));
+  client.on("connected", () => { connected = true; });
+  socket.open();
+  assert.ok(socket.peakBufferedAmount <= client.queueMetrics.byteLimit);
+  assert.equal(socket.frames.length, 2);
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0].message.event, "custom");
+  assert.equal(errors[0].error.name, "RangeError");
+  assert.equal(client.queueMetrics.rejectedFull, 1);
+  assert.equal(client.queueMetrics.currentBytes, 0);
+  assert.equal(client.queueMetrics.currentDepth, 0);
+  assert.equal(connected, true);
+  socket.close();
+  assert.equal(errors.length, 1);
+  assert.throws(() => client.send({ event: "custom" }), /closing or closed/);
+});
+
+test("buffer pressure during flush reports the rejected message and attempts later messages", () => {
+  const { client, connect } = createInspector();
+  const socket = connect();
+  const message = { event: "custom", text: "" };
+  const overhead = Buffer.byteLength(JSON.stringify(message), "utf8");
+  message.text = "x".repeat(client.queueMetrics.maxMessageBytes - overhead);
+  client.send(message);
+  message.text = message.text.slice(16);
+  client.send(message);
+  client.send({ event: "last" });
+  const errors = [];
+  client.on("sendError", (event) => errors.push(event));
+  socket.open();
+  assert.deepEqual(socket.frames.map(({ event }) => event), ["registerPropertyInspector", "custom", "last"]);
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0].message.text.length, message.text.length);
+  assert.match(errors[0].error.message, /buffer is full/);
+  assert.ok(socket.peakBufferedAmount <= client.queueMetrics.byteLimit);
+  assert.equal(client.queueMetrics.currentBytes, 0);
+});
+
+test("registration also respects the buffer budget and rejects pending messages on failure", () => {
+  const { client, connect } = createInspector();
+  const socket = connect();
+  client.sendToPlugin({ value: 1 });
+  socket.bufferedAmount = client.queueMetrics.byteLimit;
+  const errors = [];
+  let connected = false;
+  client.on("sendError", (event) => errors.push(event));
+  client.on("connected", () => { connected = true; });
+  socket.open();
+  assert.equal(socket.frames.length, 0);
+  assert.equal(errors.length, 2);
+  assert.ok(errors.some(({ message, error }) => message.event === "registerPropertyInspector" && error.name === "RangeError"));
+  assert.equal(client.queueMetrics.currentBytes, 0);
+  assert.equal(client.queueMetrics.currentDepth, 0);
+  assert.equal(client.queueMetrics.rejectedFull, 1);
+  assert.equal(connected, false);
+  assert.equal(client.isConnected, false);
+});
 
 test("a socket stuck in CONNECTING explicitly rejects a 10,000 message burst", () => {
   const { client, connect } = createInspector();

@@ -70,6 +70,13 @@ change public APIs between minor versions.
 
 ### Fixed
 
+- Isolate Property Inspector reconnects from stale socket events, close replaced
+  sockets, and report their unsent queued messages through `sendError` (N-04).
+  Preserve the active session when new callback data is invalid.
+- Bound the Property Inspector OPEN WebSocket buffer to 16 MiB using
+  `bufferedAmount` before registration, immediate sends and each flush attempt
+  (N-02). Reject immediate overflow with `RangeError`, report deferred overflow
+  through `sendError`, and expose active socket `queueMetrics.bufferedBytes`.
 - Reject synchronous command sends and waits for unfinished commands inside
   `CommandFuture` completion callbacks with `OutboundCommandReentrancyError`,
   preventing a callback from deadlocking the WebSocket sender or command writer
