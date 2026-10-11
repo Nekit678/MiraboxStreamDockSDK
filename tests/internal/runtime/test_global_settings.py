@@ -7,6 +7,7 @@ from unittest.mock import Mock, patch
 
 import mirabox_sdk.json_types as json_types
 from mirabox_sdk import (
+    CommandFuture,
     DidReceiveGlobalSettingsEvent,
     FunctionalJsonCodec,
     GlobalSettingsBusyError,
@@ -16,6 +17,7 @@ from mirabox_sdk import (
     OutboundCommandBusNotReadyError,
     OutboundCommandCancelledError,
     OutboundCommandDeadlineExceededError,
+    OutboundCommandReentrancyError,
     OutboundQueueFullError,
     SetGlobalSettingsCommand,
 )
@@ -33,6 +35,45 @@ from .fakes import RecordingCommandSink
 
 
 class DefaultGlobalSettingsStateTests(unittest.TestCase):
+    def test_completion_callback_rejects_sync_writes_before_waiting_or_mutating(self) -> None:
+        queue = OutboundCommandQueue(1)
+        state = DefaultGlobalSettingsState("plugin", queue)
+        pending = state.set_async({"count": 1})
+        completion = CommandFuture()
+        mutate = Mock()
+        encode = Mock(return_value={"count": 2})
+        codec = FunctionalJsonCodec(decoder=lambda raw: raw, encoder=encode)
+        errors = []
+
+        def observe(_completion):
+            deadline = monotonic() + 0.02
+            for write in (
+                lambda: state.set({"count": 2}, deadline=deadline),
+                lambda: state.update(mutate, deadline=deadline),
+                lambda: state.set_typed({"count": 2}, codec, deadline=deadline),
+            ):
+                try:
+                    write()
+                except Exception as exc:
+                    errors.append(exc)
+
+        try:
+            completion.add_done_callback(observe)
+            completion._finish()
+            self.assertEqual(len(errors), 3)
+            self.assertTrue(
+                all(isinstance(error, OutboundCommandReentrancyError) for error in errors)
+            )
+            mutate.assert_not_called()
+            encode.assert_not_called()
+            self.assertEqual(state.settings, {})
+            self.assertEqual(queue.metrics().enqueued, 1)
+            queue.receive().completion._finish()
+            pending.result(timeout=0)
+            self.assertEqual(state.settings, {"count": 1})
+        finally:
+            queue.shutdown(timeout=0)
+
     def test_async_deadline_and_cancel_rollback_before_public_completion(self) -> None:
         codec = FunctionalJsonCodec[int](
             decoder=lambda raw: int(raw["count"]), encoder=lambda count: {"count": count}

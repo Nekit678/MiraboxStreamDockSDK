@@ -23,6 +23,7 @@ from ...completion import (
     OutboundCommandBusError,
     OutboundCommandBusNotReadyError,
     OutboundQueueFullError,
+    _check_blocking_allowed,
     _validate_deadline,
 )
 from ..transport.buffer_limits import DEFAULT_QUEUE_BYTE_LIMIT, retained_size, validate_byte_limit
@@ -55,6 +56,7 @@ class WriterReadyOutboundCommandSink(OutboundCommandSink):
     def send(self, command: StreamDockCommand, *, deadline: float | None = None) -> None:
         """Submit a command and wait for its terminal result when writer-ready."""
 
+        _check_blocking_allowed()
         self.send_async(command, deadline=deadline).result()
 
     def send_async(
@@ -166,6 +168,7 @@ class OutboundCommandQueue(
     def send(self, command: StreamDockCommand, *, deadline: float | None = None) -> None:
         """Submit a command and wait for writer-side terminal completion."""
 
+        _check_blocking_allowed()
         self.send_async(command, deadline=deadline).result()
 
     def send_async(

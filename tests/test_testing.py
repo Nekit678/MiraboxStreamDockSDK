@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unittest
 from dataclasses import dataclass
-from threading import Event
+from threading import Event, Thread
 from threading import enumerate as enumerate_threads
 from time import monotonic, sleep
 from unittest.mock import patch
@@ -16,6 +16,7 @@ from mirabox_sdk import (
     InboundOverflowPolicy,
     JsonObject,
     LogMessageCommand,
+    OutboundCommandReentrancyError,
     Plugin,
     PluginLaunchArguments,
     SendToPropertyInspectorCommand,
@@ -56,6 +57,72 @@ class Dependencies:
 
 
 class FakeSenderTests(unittest.TestCase):
+    def test_late_completion_callback_rejects_sync_send_and_allows_async_send(self) -> None:
+        sender = FakeStreamDockSender()
+        action = Action("action", "button", {}, Dependencies(sender))
+        errors = []
+        follow_ups = []
+
+        def observe(completion):
+            completion.result()
+            for send in (action.show_ok, lambda: sender.send(LogMessageCommand("sync"))):
+                try:
+                    send()
+                except Exception as exc:
+                    errors.append(exc)
+            follow_ups.append(action.set_title_async("next"))
+
+        action.set_title_async("first").add_done_callback(observe)
+        self.assertEqual(len(errors), 2)
+        self.assertTrue(all(isinstance(error, OutboundCommandReentrancyError) for error in errors))
+        follow_ups[0].result(timeout=0)
+        sender.send(LogMessageCommand("outside callback"))
+        self.assertEqual(
+            [message["event"] for message in sender.messages],
+            ["setTitle", "setTitle", "logMessage"],
+        )
+
+    def test_callback_guard_is_thread_local_and_restored_after_nested_failure(self) -> None:
+        sender = FakeStreamDockSender()
+        completion = sender.send_async(LogMessageCommand("first"))
+        entered = Event()
+        release = Event()
+        errors = []
+
+        def fail(_completion):
+            raise ValueError("observer failed")
+
+        def observe(_completion):
+            entered.set()
+            if not release.wait(1):
+                raise AssertionError("callback was not released")
+            completion.add_done_callback(fail)
+            try:
+                sender.send(LogMessageCommand("nested sync"))
+            except Exception as exc:
+                errors.append(exc)
+
+        def run():
+            completion.add_done_callback(observe)
+            sender.send(LogMessageCommand("after callback"))
+
+        thread = Thread(target=run)
+        with self.assertLogs("concurrent.futures", level="ERROR"):
+            thread.start()
+            try:
+                self.assertTrue(entered.wait(1))
+                sender.send(LogMessageCommand("other thread"))
+            finally:
+                release.set()
+                thread.join(1)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(len(errors), 1)
+        self.assertIsInstance(errors[0], OutboundCommandReentrancyError)
+        self.assertEqual(
+            [message["payload"]["message"] for message in sender.messages],
+            ["first", "other thread", "after callback"],
+        )
+
     def test_sync_and_async_commands_record_isolated_messages(self) -> None:
         sender = FakeStreamDockSender()
         sender.send(LogMessageCommand("sync"))

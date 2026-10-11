@@ -11,7 +11,12 @@ from typing import Protocol, TypeVar, runtime_checkable
 
 from ...codecs import JsonCodec
 from ...commands import SetGlobalSettingsCommand
-from ...completion import CommandFuture, OutboundCommandDeadlineExceededError, _validate_deadline
+from ...completion import (
+    CommandFuture,
+    OutboundCommandDeadlineExceededError,
+    _check_blocking_allowed,
+    _validate_deadline,
+)
 from ...events import DidReceiveGlobalSettingsEvent
 from ...global_settings import GlobalSettings, GlobalSettingsBusyError
 from ...json_types import JsonObject, ValidatedJsonObject
@@ -286,6 +291,7 @@ class DefaultGlobalSettingsState(GlobalSettingsState):
     ) -> None:
         if not callable(update):
             raise TypeError("update must be callable")
+        _check_blocking_allowed()
         with self._write_transaction(deadline=deadline):
             draft = self.settings
             update(draft)
@@ -294,6 +300,7 @@ class DefaultGlobalSettingsState(GlobalSettingsState):
             )
 
     def set(self, settings: JsonObject, *, deadline: float | None = None) -> None:
+        _check_blocking_allowed()
         with self._write_transaction(deadline=deadline):
             self._send_and_replace(
                 SetGlobalSettingsCommand(self._context, settings), deadline=deadline
@@ -306,6 +313,7 @@ class DefaultGlobalSettingsState(GlobalSettingsState):
         *,
         deadline: float | None = None,
     ) -> None:
+        _check_blocking_allowed()
         with self._write_transaction(deadline=deadline):
             command = SetGlobalSettingsCommand.from_settings(self._context, settings, codec)
             self._send_and_replace(command, deadline=deadline)

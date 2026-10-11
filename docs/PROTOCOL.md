@@ -229,6 +229,15 @@ serialization or WebSocket I/O. `Action` methods cover ordinary context-scoped
 commands, while `application.global_settings` is the preferred global-settings
 write facade.
 
+`CommandFuture.add_done_callback()` runs observers on the completing thread,
+or immediately on the registering thread for an already-completed command.
+Callbacks must stay short. Synchronous command sends and settings writes from
+these callbacks raise `OutboundCommandReentrancyError` before queue acceptance
+or local mutation; waiting for an unfinished command raises the same error.
+This also applies to late callbacks and `FakeStreamDockSender`. Follow-up
+commands must use `send_async()` or async action/settings helpers without
+waiting. Reading completed results and polling with `timeout=0` are allowed.
+
 | Wire event | Command model | Convenience API |
 |---|---|---|
 | Runtime registration event | `RegisterPluginCommand` | Sent by the runtime on connection |

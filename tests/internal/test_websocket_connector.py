@@ -8,11 +8,17 @@ from pathlib import Path
 from threading import Event, Lock, Thread, current_thread
 from threading import enumerate as enumerate_threads
 from time import monotonic
+from types import SimpleNamespace
 from typing import Any
 
 import websocket
 
-from mirabox_sdk import LogMessageCommand, OutboundCommandDeadlineExceededError
+from mirabox_sdk import (
+    Action,
+    LogMessageCommand,
+    OutboundCommandDeadlineExceededError,
+    OutboundCommandReentrancyError,
+)
 from mirabox_sdk._internal.messaging.outbound import OutboundCommandQueue
 from mirabox_sdk._internal.messaging.writer import CommandWriter
 from mirabox_sdk._internal.protocol.encoder import JsonStreamDockCommandEncoder
@@ -204,6 +210,59 @@ class _ConnectorHarness:
 
 
 class WebSocketClientConnectorTests(unittest.TestCase):
+    def test_completion_callback_rejects_sync_command_without_blocking_sender(self) -> None:
+        harness = _ConnectorHarness(block_sends=True)
+        commands = OutboundCommandQueue(2)
+        writer = CommandWriter(commands, JsonStreamDockCommandEncoder(), harness.raw_outbound)
+
+        class BoundedSender:
+            # Bound the original deadlock so this regression can fail safely.
+            def send(self, command, *, deadline=None):
+                commands.send(command, deadline=monotonic() + 0.2)
+
+            def send_async(self, command, *, deadline=None):
+                return commands.send_async(command, deadline=deadline)
+
+        action = Action("action", "button", {}, SimpleNamespace(stream_dock=BoundedSender()))
+        callback_finished = Event()
+        errors: list[Exception] = []
+        callback_threads: list[str] = []
+
+        def follow_up(completion) -> None:
+            callback_threads.append(current_thread().name)
+            try:
+                completion.result(timeout=0)
+                action.show_ok()
+            except Exception as exc:
+                errors.append(exc)
+            finally:
+                callback_finished.set()
+
+        harness.start()
+        writer.start()
+        try:
+            completion = action.set_title_async("Ready")
+            self.assertTrue(harness.app.send_started.wait(1))
+            completion.add_done_callback(follow_up)
+            harness.app.release_sends.set()
+            self.assertTrue(callback_finished.wait(1))
+            self.assertEqual(callback_threads, ["mirabox-internal-websocket-sender"])
+            self.assertEqual(len(errors), 1)
+            self.assertIsInstance(errors[0], OutboundCommandReentrancyError)
+            self.assertIn("completion callback", str(errors[0]))
+            self.assertEqual(commands.metrics().enqueued, 1)
+            commands.send(LogMessageCommand("after callback"), deadline=monotonic() + 1)
+            self.assertTrue(writer.drain(timeout=1))
+            self.assertEqual(
+                [json.loads(payload)["event"] for payload, _ in harness.app.sent],
+                ["setTitle", "logMessage"],
+            )
+        finally:
+            harness.app.release_sends.set()
+            harness.connector.close()
+            self.assertTrue(writer.stop(timeout=1))
+            harness.thread.join(1)
+
     def test_accepted_command_deadline_aborts_a_real_blocked_socket_write(self) -> None:
         harness = _ConnectorHarness()
         sender_socket, peer_socket = socket.socketpair()

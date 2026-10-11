@@ -12,7 +12,12 @@ from pathlib import Path
 from threading import Thread
 
 import mirabox_sdk
-from mirabox_sdk import RegisterPluginCommand, StreamDockCommand, StreamDockEvent
+from mirabox_sdk import (
+    OutboundCommandReentrancyError,
+    RegisterPluginCommand,
+    StreamDockCommand,
+    StreamDockEvent,
+)
 from mirabox_sdk._internal.boundary.composition import ComposedStreamDockBoundary
 from mirabox_sdk._internal.boundary.config import BoundaryQueueConfig
 from mirabox_sdk._internal.boundary.metrics import StreamDockBoundaryMetrics
@@ -100,6 +105,43 @@ def _imported_names(source_file: Path) -> set[str]:
 
 
 class CompletionContractTests(unittest.TestCase):
+    def test_command_callback_rejects_waiting_for_an_unfinished_command(self) -> None:
+        for method in ("wait", "result", "exception"):
+            with self.subTest(method=method):
+                completion = CommandFuture()
+                pending = CommandFuture()
+                errors = []
+
+                def observe(_completion, pending=pending, method=method, errors=errors):
+                    try:
+                        getattr(pending, method)(timeout=0.01)
+                    except Exception as exc:
+                        errors.append(exc)
+
+                completion.add_done_callback(observe)
+                completion._finish()
+                self.assertEqual(len(errors), 1)
+                self.assertIsInstance(errors[0], OutboundCommandReentrancyError)
+                self.assertIn("completion callback", str(errors[0]))
+
+    def test_command_callback_allows_completed_results_and_nonblocking_polls(self) -> None:
+        completion = CommandFuture()
+        pending = CommandFuture()
+        observations = []
+
+        def observe(result):
+            observations.append(result.result())
+            observations.append(result.exception())
+            observations.append(result.wait())
+            observations.append(pending.wait(timeout=0))
+            for method in (pending.result, pending.exception):
+                with self.assertRaises(TimeoutError):
+                    method(timeout=0)
+
+        completion.add_done_callback(observe)
+        completion._finish()
+        self.assertEqual(observations, [None, None, True, False])
+
     def test_completion_reports_success_failure_and_timeout(self) -> None:
         for completion_type in (TransportReceipt, CommandFuture):
             with self.subTest(completion_type=completion_type.__name__):

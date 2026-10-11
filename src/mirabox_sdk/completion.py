@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from concurrent.futures import Future, InvalidStateError
 from math import isfinite
-from threading import Lock
+from threading import Lock, local
 from time import monotonic
 from typing import cast
 
@@ -26,12 +26,31 @@ class OutboundCommandBusNotReadyError(OutboundCommandBusError):
     """Raised when a command is submitted before the outbound writer starts."""
 
 
+class OutboundCommandReentrancyError(OutboundCommandBusError):
+    """Reject a blocking command operation inside a completion callback."""
+
+
 class OutboundCommandDeadlineExceededError(TimeoutError, OutboundCommandBusError):
     """The accepted command exhausted its deadline, including transport I/O."""
 
 
 class OutboundCommandCancelledError(OutboundCommandBusError):
     """The accepted command was cancelled before transport send began."""
+
+
+class _CommandCallbackContext(local):
+    depth: int = 0
+
+
+_callback_context = _CommandCallbackContext()
+
+
+def _check_blocking_allowed() -> None:
+    if _callback_context.depth:
+        raise OutboundCommandReentrancyError(
+            "Cannot send or wait for a command synchronously inside a completion callback; "
+            "use send_async() or an async action/settings helper and return without waiting"
+        )
 
 
 def _validate_deadline(deadline: float | None) -> float | None:
@@ -132,19 +151,30 @@ class CommandFuture:
         """Observe completion without blocking a callback worker.
 
         The callback receives this handle and runs on the completing thread, or
-        immediately on the registering thread if already complete. Keep it short;
-        use ``exception(timeout=0)`` to inspect failures without waiting.
+        immediately on the registering thread if already complete. Keep it short.
+        Synchronous sends and waits for unfinished commands raise
+        OutboundCommandReentrancyError, including for already-completed fakes.
+        Use async helpers to submit follow-up commands without waiting, and
+        ``exception(timeout=0)`` to inspect failures.
         """
 
         if not callable(callback):
             raise TypeError("callback must be callable")
-        self._future.add_done_callback(lambda _future: callback(self))
+
+        def invoke(_future: Future[None]) -> None:
+            _callback_context.depth += 1
+            try:
+                callback(self)
+            finally:
+                _callback_context.depth -= 1
+
+        self._future.add_done_callback(invoke)
 
     def wait(self, timeout: float | None = None) -> bool:
         """Wait up to ``timeout`` seconds and report terminal completion."""
 
         try:
-            self._future.exception(timeout)
+            self.exception(timeout)
         except TimeoutError:
             return False
         return True
@@ -159,6 +189,8 @@ class CommandFuture:
     def exception(self, timeout: float | None = None) -> Exception | None:
         """Wait for completion and return the recorded failure, if any."""
 
+        if timeout != 0 and not self.done():
+            _check_blocking_allowed()
         try:
             # Only _finish() writes failures, and it accepts Exception instances.
             return cast(Exception | None, self._future.exception(timeout))
@@ -198,5 +230,6 @@ __all__ = [
     "OutboundCommandBusNotReadyError",
     "OutboundCommandCancelledError",
     "OutboundCommandDeadlineExceededError",
+    "OutboundCommandReentrancyError",
     "OutboundQueueFullError",
 ]

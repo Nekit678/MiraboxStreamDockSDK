@@ -56,6 +56,7 @@ from .completion import (
     OutboundCommandBusNotReadyError,
     OutboundCommandCancelledError,
     OutboundCommandDeadlineExceededError,
+    OutboundCommandReentrancyError,
     OutboundQueueFullError,
 )
 from .diagnostics import SdkDiagnostic, SourceLocation
@@ -233,6 +234,7 @@ __all__ = [
     "OutboundCommandBusNotReadyError",
     "OutboundCommandCancelledError",
     "OutboundCommandDeadlineExceededError",
+    "OutboundCommandReentrancyError",
     "OutboundCommandQueueMetrics",
     "OutboundQueueFullError",
     "OwnedJsonPayload",

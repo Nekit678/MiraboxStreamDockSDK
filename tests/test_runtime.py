@@ -26,6 +26,7 @@ from mirabox_sdk import (
     KeyDownEvent,
     OutboundCommandCancelledError,
     OutboundCommandDeadlineExceededError,
+    OutboundCommandReentrancyError,
     OutboundQueueFullError,
     PluginLaunchArguments,
     RegistrationApplicationInfo,
@@ -195,6 +196,32 @@ class CopyOnWriteJsonTests(unittest.TestCase):
 
 
 class ActionTests(unittest.TestCase):
+    def test_completion_callback_rejects_sync_settings_before_pending_wait(self) -> None:
+        queue = OutboundCommandQueue(1)
+        action = RecordingAction(ACTION_UUID, "button", {"count": 1}, ExampleDependencies(queue))
+        pending = action.set_settings_async({"count": 2})
+        completion = CommandFuture()
+        errors = []
+
+        def observe(_completion):
+            try:
+                action.set_settings({"count": 3}, deadline=monotonic() + 0.02)
+            except Exception as exc:
+                errors.append(exc)
+
+        try:
+            completion.add_done_callback(observe)
+            completion._finish()
+            self.assertEqual(len(errors), 1)
+            self.assertIsInstance(errors[0], OutboundCommandReentrancyError)
+            self.assertEqual(action.settings, {"count": 1})
+            self.assertEqual(queue.metrics().enqueued, 1)
+            queue.receive().completion._finish()
+            pending.result(timeout=0)
+            self.assertEqual(action.settings, {"count": 2})
+        finally:
+            queue.shutdown(timeout=0)
+
     def test_async_settings_reentrant_encoding_is_busy_and_releases_slot(self) -> None:
         queue = OutboundCommandQueue(1)
         action = RecordingAction(ACTION_UUID, "button", {"count": 1}, ExampleDependencies(queue))

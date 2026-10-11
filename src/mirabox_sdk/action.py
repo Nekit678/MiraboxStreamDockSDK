@@ -20,7 +20,12 @@ from .commands import (
     ShowOkCommand,
     StreamDockCommand,
 )
-from .completion import CommandFuture, OutboundCommandDeadlineExceededError, _validate_deadline
+from .completion import (
+    CommandFuture,
+    OutboundCommandDeadlineExceededError,
+    _check_blocking_allowed,
+    _validate_deadline,
+)
 from .events import (
     ApplicationDidLaunchEvent,
     ApplicationDidTerminateEvent,
@@ -138,6 +143,7 @@ class Action(Generic[SettingsT, DependenciesT]):
         self._settings_submitting_thread: int | None = None
 
     def _send(self, command: StreamDockCommand, *, deadline: float | None = None) -> None:
+        _check_blocking_allowed()
         if deadline is None:
             self._stream_dock.send(command)
         else:
@@ -317,6 +323,7 @@ class Action(Generic[SettingsT, DependenciesT]):
                 isolated local settings.
         """
 
+        _check_blocking_allowed()
         deadline = _validate_deadline(deadline)
         with self._settings_lock:
             self._wait_for_settings_write(deadline)

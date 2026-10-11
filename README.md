@@ -950,8 +950,15 @@ behavior.
 and shutdown rejections are raised immediately. Observe eventual failures with
 `future.add_done_callback(observe_command)` or `result()` in application-owned
 background work. Completion callbacks run on the completing thread, or immediately
-on the registering thread if already done; keep them short and avoid waiting
-for other commands there. Before `run()` has
+on the registering thread if already done; keep them short. Synchronous command
+sends (including `Action.show_ok()` and synchronous settings writes) and waits
+for unfinished commands inside a completion callback raise
+`OutboundCommandReentrancyError`. Synchronous sends are rejected before queue
+acceptance or settings mutation. This rule also applies to late callbacks and
+`FakeStreamDockSender`, so tests cannot hide a sender deadlock. Use async helpers
+or `sender.send_async(ShowOkCommand(action.context))` for follow-up commands and
+return without waiting. Completed results and polls with `timeout=0` remain
+available. Before `run()` has
 started the command writer, both `send()` and `send_async()` raise
 `OutboundCommandBusNotReadyError` and do not enqueue a command. For
 high-frequency display rendering, `Action.set_image_async()`,

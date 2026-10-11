@@ -5,7 +5,7 @@ from threading import Event, current_thread
 from threading import enumerate as enumerate_threads
 from time import monotonic
 
-from mirabox_sdk import LogMessageCommand, StreamDockCommand
+from mirabox_sdk import LogMessageCommand, OutboundCommandReentrancyError, StreamDockCommand
 from mirabox_sdk._internal.messaging.outbound import OutboundCommandQueue
 from mirabox_sdk._internal.messaging.writer import (
     CommandWriter,
@@ -27,6 +27,58 @@ class _RecordingEncoder:
 
 
 class CommandWriterTests(unittest.TestCase):
+    def test_serialization_failure_callback_rejects_sync_send_and_allows_async_send(self) -> None:
+        commands = OutboundCommandQueue(2)
+        entered = Event()
+        release = Event()
+        callback_finished = Event()
+        errors = []
+        follow_ups = []
+
+        class SelectiveEncoder(_RecordingEncoder):
+            def encode(self, command):
+                if command.message == "bad":
+                    entered.set()
+                    if not release.wait(1):
+                        raise AssertionError("encoder was not released")
+                    raise ValueError("cannot encode")
+                return super().encode(command)
+
+        class ImmediateSink:
+            def submit(self, frame):
+                frame.receipt._finish()
+                return True
+
+        def follow_up(completion):
+            try:
+                self.assertIsInstance(completion.exception(timeout=0), ValueError)
+                try:
+                    commands.send(LogMessageCommand("sync"), deadline=monotonic() + 0.2)
+                except Exception as exc:
+                    errors.append(exc)
+                follow_ups.append(commands.send_async(LogMessageCommand("async")))
+            finally:
+                callback_finished.set()
+
+        writer = CommandWriter(commands, SelectiveEncoder(), ImmediateSink())
+        writer.start()
+        try:
+            completion = commands.send_async(LogMessageCommand("bad"))
+            self.assertTrue(entered.wait(1))
+            completion.add_done_callback(follow_up)
+            with self.assertLogs("mirabox_sdk._internal.messaging.writer", level="ERROR"):
+                release.set()
+                self.assertTrue(callback_finished.wait(1))
+            self.assertEqual(len(errors), 1)
+            self.assertIsInstance(errors[0], OutboundCommandReentrancyError)
+            self.assertEqual(len(follow_ups), 1)
+            follow_ups[0].result(timeout=1)
+            self.assertTrue(writer.drain(timeout=1))
+            self.assertEqual(commands.metrics().enqueued, 2)
+        finally:
+            release.set()
+            self.assertTrue(writer.stop(timeout=1))
+
     def test_cancel_unblocks_raw_backpressure_without_draining_the_first_frame(self) -> None:
         commands = OutboundCommandQueue(2)
         entered = Event()

@@ -70,6 +70,11 @@ change public APIs between minor versions.
 
 ### Fixed
 
+- Reject synchronous command sends and waits for unfinished commands inside
+  `CommandFuture` completion callbacks with `OutboundCommandReentrancyError`,
+  preventing a callback from deadlocking the WebSocket sender or command writer
+  (N-01). Apply the same rule to late callbacks and `FakeStreamDockSender`, while
+  preserving async follow-up commands and nonblocking result inspection.
 - Limit validated JSON objects to 64 nested containers and preserve explicit
   depth diagnostics through commands, codecs and event parsing instead of
   leaking `RecursionError`. Return `False` for excessive nesting or cycles in

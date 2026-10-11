@@ -21,7 +21,7 @@ from ._internal.transport.ports import RawInboundSink, RawOutboundSource, Sessio
 from ._internal.transport.queues import TransportQueueClosedError
 from ._internal.transport.session import Connected, Disconnected
 from .commands import StreamDockCommand
-from .completion import CommandFuture
+from .completion import CommandFuture, _check_blocking_allowed
 from .diagnostics import SdkDiagnostic
 from .json_types import JsonObject, JsonValue, clone_json_object
 from .protocols import StreamDockActionDependencies, StreamDockSender
@@ -65,6 +65,7 @@ class FakeStreamDockSender:
             return tuple(clone_json_object(message) for message in self._messages)
 
     def send(self, command: StreamDockCommand, *, deadline: float | None = None) -> None:
+        _check_blocking_allowed()
         self.send_async(command, deadline=deadline).result()
 
     def send_async(
