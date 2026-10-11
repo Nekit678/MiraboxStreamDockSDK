@@ -12,7 +12,7 @@ from scripts import benchmark_runtime_scheduler
 
 
 class RuntimeSchedulerBenchmarkTests(unittest.TestCase):
-    def test_zero_delay_json_reports_the_matrix_without_delayed_callback_budgets(self) -> None:
+    def test_zero_delay_json_reports_the_matrix_with_its_own_budgets(self) -> None:
         output = StringIO()
         with (
             patch(
@@ -37,11 +37,19 @@ class RuntimeSchedulerBenchmarkTests(unittest.TestCase):
         self.assertEqual(result["configuration"]["callback_delay"], 0)
         self.assertEqual(len(result["scheduler"]), 8)
         self.assertFalse(result["performance_gate"]["enforced"])
-        self.assertFalse(result["performance_gate"]["scheduler_budgets_applied"])
-        self.assertEqual(result["performance_gate"]["scheduler"], [])
+        self.assertTrue(result["performance_gate"]["scheduler_budgets_applied"])
+        self.assertEqual(result["performance_gate"]["scheduler_budget_mode"], "zero_delay")
+        self.assertEqual(len(result["performance_gate"]["scheduler"]), 4)
 
-    def test_zero_delay_rejects_delayed_callback_performance_gate(self) -> None:
-        output = StringIO()
+    def test_zero_delay_gate_fails_and_retains_results_on_a_throughput_regression(self) -> None:
+        measurements = tuple(
+            _scheduler_measurement(
+                scenario, kind, throughput=100 if kind == "sequential" else 10, peak_pending=0
+            )
+            for scenario in benchmark_runtime_scheduler.ZERO_DELAY_PERFORMANCE_BUDGETS
+            for kind in ("sequential", "keyed_serial")
+        )
+        output, diagnostics = StringIO(), StringIO()
         with (
             patch(
                 "sys.argv",
@@ -50,14 +58,23 @@ class RuntimeSchedulerBenchmarkTests(unittest.TestCase):
                     "--callback-delay",
                     "0",
                     "--check",
+                    "--json",
+                    "--coalescing-events",
+                    "80",
                 ],
             ),
-            redirect_stderr(output),
-            self.assertRaises(SystemExit) as raised,
+            patch.object(
+                benchmark_runtime_scheduler, "benchmark_scheduler_matrix", return_value=measurements
+            ),
+            redirect_stdout(output),
+            redirect_stderr(diagnostics),
         ):
-            benchmark_runtime_scheduler.main()
-        self.assertEqual(raised.exception.code, 2)
-        self.assertIn("zero-delay results are ungated", output.getvalue())
+            self.assertEqual(benchmark_runtime_scheduler.main(), 1)
+        result = json.loads(output.getvalue())
+        self.assertEqual(len(result["scheduler"]), 8)
+        self.assertTrue(result["performance_gate"]["enforced"])
+        self.assertFalse(result["performance_gate"]["passed"])
+        self.assertIn("throughput ratio", diagnostics.getvalue())
 
     def test_skewed_load_reaches_cold_context_with_bounded_source_and_pending_work(self) -> None:
         for pending_limit in (1, 4, 64):
@@ -154,7 +171,14 @@ class RuntimeSchedulerBenchmarkTests(unittest.TestCase):
             set(benchmark_runtime_scheduler.COALESCING_PERFORMANCE_BUDGETS),
             {1, 4, 16, 64},
         )
-        for budget in benchmark_runtime_scheduler.SCHEDULER_PERFORMANCE_BUDGETS.values():
+        self.assertEqual(
+            set(benchmark_runtime_scheduler.ZERO_DELAY_PERFORMANCE_BUDGETS),
+            set(benchmark_runtime_scheduler.SCHEDULER_PERFORMANCE_BUDGETS),
+        )
+        for budget in (
+            *benchmark_runtime_scheduler.SCHEDULER_PERFORMANCE_BUDGETS.values(),
+            *benchmark_runtime_scheduler.ZERO_DELAY_PERFORMANCE_BUDGETS.values(),
+        ):
             with self.subTest(budget=budget):
                 self.assertGreater(budget.min_throughput_ratio, 0)
                 self.assertGreater(budget.max_callback_start_p95_ms, 0)

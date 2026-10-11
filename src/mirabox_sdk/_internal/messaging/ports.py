@@ -14,7 +14,7 @@ from .metrics import (
     InboundEventQueueMetrics,
     OutboundCommandQueueMetrics,
 )
-from .models import CommandFuture, CommandSubmission
+from .models import CommandFuture, CommandSubmission, SizedEvent
 
 
 class InboundEventSourceClosedError(RuntimeError):
@@ -81,6 +81,26 @@ class SelectableInboundEventSource(InboundEventSource, Protocol):
     @abstractmethod
     def wake_receiver(self) -> None:
         """Recheck admission after scheduler capacity or acceptance changes."""
+
+        ...
+
+
+@runtime_checkable
+class SizedInboundEventSource(SelectableInboundEventSource, Protocol):
+    """Transfer source-owned byte accounting without traversing payloads again."""
+
+    @abstractmethod
+    def receive_selected_sized(
+        self,
+        selector: Callable[[Iterable[SizedEvent]], int | None],
+        *,
+        timeout: float | None = None,
+    ) -> SizedEvent:
+        """Select and transfer an owned event with its current retained size.
+
+        The selector runs under the source lock and must not mutate or retain
+        the items. The source keeps sizes current when replacing queued events.
+        """
 
         ...
 

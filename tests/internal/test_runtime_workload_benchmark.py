@@ -6,6 +6,7 @@ import json
 import tracemalloc
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from dataclasses import replace
 from io import StringIO
 from unittest.mock import patch
 
@@ -19,6 +20,82 @@ from scripts.benchmark_runtime_workload import (
 
 
 class RuntimeWorkloadBenchmarkTests(unittest.TestCase):
+    def test_mixed_gate_checks_throughput_and_both_latency_percentiles(self) -> None:
+        samples = _gate_samples()
+        self.assertTrue(
+            all(
+                value.within_budget
+                for value in benchmark_runtime_workload.evaluate_mixed_performance(samples)
+            )
+        )
+        for field, value, diagnostic in (
+            ("throughput_per_second", 1, "throughput ratio"),
+            ("callback_start_p95_ms", 1000, "p95"),
+            ("callback_start_p99_ms", 1000, "p99"),
+            ("callback_start_p99_ms", None, "missing"),
+            ("passed", False, "queue bounds"),
+        ):
+            with self.subTest(field=field):
+                changed = [
+                    replace(sample, **{field: value})
+                    if sample.scheduler == "keyed_serial"
+                    else sample
+                    for sample in samples
+                ]
+                comparisons = benchmark_runtime_workload.evaluate_mixed_performance(changed)
+                self.assertTrue(all(not result.within_budget for result in comparisons))
+                self.assertTrue(
+                    all(diagnostic in " ".join(result.violations) for result in comparisons)
+                )
+
+    def test_mixed_gate_requires_both_schedulers_and_delays(self) -> None:
+        with self.assertRaisesRegex(ValueError, "missing mixed measurement"):
+            benchmark_runtime_workload.evaluate_mixed_performance(_gate_samples()[:-1])
+
+    def test_cli_gate_fails_and_retains_all_results_on_timing_regression(self) -> None:
+        samples = _gate_samples()
+        output, diagnostics = StringIO(), StringIO()
+        with (
+            patch("sys.argv", ["benchmark_runtime_workload", "--check", "--repeats", "1"]),
+            patch.object(
+                benchmark_runtime_workload,
+                "measure_mixed_load",
+                side_effect=[
+                    replace(sample, throughput_per_second=1)
+                    if sample.scheduler == "keyed_serial"
+                    else sample
+                    for sample in samples
+                ],
+            ),
+            redirect_stdout(output),
+            redirect_stderr(diagnostics),
+        ):
+            self.assertEqual(benchmark_runtime_workload.main(), 1)
+        result = json.loads(output.getvalue())
+        self.assertEqual(len(result["measurements"]), 4)
+        self.assertTrue(result["invariants_passed"])
+        self.assertTrue(result["performance_gate"]["enforced"])
+        self.assertFalse(result["performance_gate"]["passed"])
+        self.assertIn("throughput ratio", diagnostics.getvalue())
+
+    def test_repeats_check_invariants_outside_the_median_sample(self) -> None:
+        samples = [
+            replace(sample, duration_seconds=duration, passed=duration != 3)
+            for sample in _gate_samples()
+            for duration in (1, 2, 3)
+        ]
+        output, diagnostics = StringIO(), StringIO()
+        with (
+            patch("sys.argv", ["benchmark_runtime_workload", "--repeats", "3"]),
+            patch.object(benchmark_runtime_workload, "measure_mixed_load", side_effect=samples),
+            redirect_stdout(output),
+            redirect_stderr(diagnostics),
+        ):
+            self.assertEqual(benchmark_runtime_workload.main(), 1)
+        result = json.loads(output.getvalue())
+        self.assertTrue(all(sample["duration_seconds"] == 2 for sample in result["measurements"]))
+        self.assertFalse(result["invariants_passed"])
+
     def test_cli_preserves_all_measurements_when_ordering_checks_fail(self) -> None:
         original_dispatch = _MixedDispatcher.dispatch
 
@@ -147,6 +224,16 @@ class RuntimeWorkloadBenchmarkTests(unittest.TestCase):
         ):
             measure_memory_soak("keyed_serial", duration_seconds=0.03)
         self.assertFalse(tracemalloc.is_tracing())
+
+
+def _gate_samples() -> list[benchmark_runtime_workload.WorkloadMeasurement]:
+    return [
+        benchmark_runtime_workload.WorkloadMeasurement(
+            kind, delay, 10, 2610, 1, 100, 1, 2, 50, 0, {}, {}, True
+        )
+        for delay in benchmark_runtime_workload.MIXED_PERFORMANCE_BUDGETS
+        for kind in ("sequential", "keyed_serial")
+    ]
 
 
 if __name__ == "__main__":

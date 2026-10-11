@@ -11,6 +11,7 @@ from time import monotonic
 
 from ...events import ActionEvent, StreamDockEvent
 from ..lifecycle import RuntimeWorkerError
+from ..messaging.models import SizedEvent
 from ..transport.buffer_limits import DEFAULT_QUEUE_BYTE_LIMIT, retained_size
 from .metrics import HandlerSchedulerMetrics
 from .models import DispatchOutcome, DispatchResult
@@ -144,6 +145,15 @@ class KeyedSerialHandlerScheduler(HandlerScheduler):
         if not isinstance(event, StreamDockEvent):
             raise TypeError("event must be a StreamDockEvent")
 
+        return self.submit_sized(SizedEvent(event, retained_size(event, self._pending_byte_limit)))
+
+    def submit_sized(self, item: SizedEvent) -> DispatchCompletion:
+        """Admit source-owned work with accounting valid for this transfer only."""
+
+        if not isinstance(item, SizedEvent) or not isinstance(item.event, StreamDockEvent):
+            raise TypeError("item must be a SizedEvent containing a StreamDockEvent")
+        _require_positive_integer("event size", item.size)
+        event, size = item.event, item.size
         completion = _DispatchCompletion()
         with self._condition:
             if not self._accepting:
@@ -153,7 +163,6 @@ class KeyedSerialHandlerScheduler(HandlerScheduler):
             if not self._started:
                 raise HandlerSchedulerLifecycleError("scheduler has not been started")
 
-            size = retained_size(event, self._pending_byte_limit)
             if size > self._pending_byte_limit:
                 self._rejected_oversized += 1
                 completion._finish(
@@ -208,6 +217,11 @@ class KeyedSerialHandlerScheduler(HandlerScheduler):
         return completion
 
     def select_event(self, events: Iterable[StreamDockEvent]) -> int | None:
+        """Select for adapters without source-owned accounting."""
+
+        return self.select_sized_event(SizedEvent(event) for event in events)
+
+    def select_sized_event(self, events: Iterable[SizedEvent]) -> int | None:
         """Reserve admission opportunity for other contexts without buffering.
 
         Pending and active work share a per-context budget so even a pending
@@ -223,10 +237,12 @@ class KeyedSerialHandlerScheduler(HandlerScheduler):
                 raise HandlerSchedulerLifecycleError("scheduler has not been started")
             if len(self._pending) < self._pending_limit:
                 deferred_contexts: set[str] = set()
-                for index, event in enumerate(events):
+                for index, item in enumerate(events):
+                    event, size = item.event, item.size
                     if not isinstance(event, ActionEvent) or _is_global_barrier(event):
                         if index == 0:
-                            size = retained_size(event, self._pending_byte_limit)
+                            if size == 0:
+                                size = retained_size(event, self._pending_byte_limit)
                             if self._can_admit_bytes(size):
                                 self._selection_backpressured = False
                                 return index
@@ -236,7 +252,8 @@ class KeyedSerialHandlerScheduler(HandlerScheduler):
                     context_work = self._pending_by_context.get(event.context, 0)
                     context_work += int(event.context in self._active_contexts)
                     if context_work < self._context_work_limit:
-                        size = retained_size(event, self._pending_byte_limit)
+                        if size == 0:
+                            size = retained_size(event, self._pending_byte_limit)
                         if self._can_admit_bytes(size):
                             self._selection_backpressured = False
                             return index

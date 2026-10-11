@@ -1147,6 +1147,12 @@ Pending-очередь keyed scheduler также ограничена 16 МиБ
 терминальную ошибку; приложение сообщает её как runtime failure.
 Последовательный scheduler не имеет pending-буфера событий.
 
+Встроенная typed queue вычисляет размер события до захвата admission lock и
+передаёт его через выбор события в keyed scheduler. Размер относится к одной
+отправке: повторная отправка измеряет текущий payload, а coalescing пересчитывает
+замену под блокировкой очереди. Пользовательские адаптеры без передачи размера
+продолжают работать через обычные методы событий.
+
 Бюджеты относятся к содержимому очередей. Общие объекты учитываются отдельно
 в разных элементах; bookkeeping очередей и completions, активные workers,
 накладные расходы allocator и непрозрачные native allocations не входят в
@@ -1390,10 +1396,10 @@ python -m compileall -q src tests scripts examples
 ruff check src tests scripts examples
 ruff format --check src tests scripts examples
 PYTHONPATH=src python scripts/benchmark_runtime_scheduler.py --check
-PYTHONPATH=src python scripts/benchmark_runtime_scheduler.py --callback-delay 0 --json
+PYTHONPATH=src python scripts/benchmark_runtime_scheduler.py --callback-delay 0 --check --json
 PYTHONPATH=src python -m scripts.benchmark_command_latency --include-async-settings
 PYTHONPATH=src python -m scripts.benchmark_settings_copies
-PYTHONPATH=src python -m scripts.benchmark_runtime_workload --mode mixed
+PYTHONPATH=src python -m scripts.benchmark_runtime_workload --mode mixed --repeats 3 --check
 PYTHONPATH=src python -m scripts.benchmark_runtime_workload --mode soak --soak-seconds 120
 python -m mypy
 python -m build
@@ -1410,23 +1416,39 @@ benchmark остальные замеры продолжаются; артефа
 | Замер | Сценарии | Файл результатов |
 | --- | --- | --- |
 | Scheduler gate | Sequential/keyed, 1/4/16/64 контекста, callback с задержкой; coalescing и заблокированный горячий контекст при pending limits 1/4/16/64 | `results.json` |
-| Zero-delay scheduler | Та же матрица контекстов без throughput/latency budgets для callback с задержкой | `scheduler-zero-delay.json` |
+| Zero-delay scheduler | Та же матрица контекстов с отдельными бюджетами для коротких callbacks | `scheduler-zero-delay.json` |
 | Command latency | Sync/async commands и sync/async settings, по восемь batches | `command-latency.json` |
 | Копирование settings | Small/wide/nested, четыре операции, по 31 замеру времени | `settings-copies.json` |
-| Смешанная нагрузка | Оба scheduler с нулевой/ненулевой задержкой callback, горячие/холодные контексты, key/settings events и lifecycle/global/unknown barriers | `mixed-load.json` |
+| Смешанная нагрузка | Оба scheduler с нулевой/ненулевой задержкой callback, 80% событий горячего контекста, key/settings events и lifecycle/global/unknown barriers; бюджеты throughput/p95/p99 | `mixed-load.json` |
 | Прогон памяти | Оба scheduler, по 120 секунд после прогрева, payload-строки 64 B/4 KiB/64 KiB | `memory-soak.json` |
 
 Смешанная нагрузка проверяет FIFO контекстов, исключительность barriers,
 подтверждение всех событий и границы очередей по количеству и байтам. Замер
 проходит через typed queue/pump/scheduler с синтетическими callbacks; parser,
-управление action, commands и I/O устройства не входят в него. Прогон памяти
-сохраняет runtime между batches и не накапливает историю callback latency.
+управление action, commands и I/O устройства не входят в него. Для времени берётся
+прогон с медианной длительностью из трёх на каждый сценарий; инварианты должны
+выполняться во всех прогонах. Передача работы между потоками может стоить дороже
+доступного параллелизма при коротких callbacks и 80% событий одного контекста.
+Пороги ограничивают регрессию без требования обязательного выигрыша:
+
+| Нагрузка | Минимум throughput keyed/sequential | Максимум keyed callback-start p95 / p99 |
+| --- | --- | --- |
+| Без задержки, 1/4/16/64 контекста | 0,15 | 15 мс / не проверяется |
+| Mixed 80% hot, без задержки | 0,40 | 75 мс / 100 мс |
+| Mixed 80% hot, задержка 0,1 мс | 0,55 | 150 мс / 175 мс |
+
+Оба скрипта включают сравнения в JSON и с `--check` возвращают ошибку при
+превышении бюджета. Прежние бюджеты независимых контекстов с задержкой сохранены.
+[Сравнение учёта размера](docs/benchmarks/runtime_scheduler_accounting.json)
+хранит локальные замеры до/после, использованные для порогов с запасом на шум runner.
+
+Прогон памяти сохраняет runtime между batches и не накапливает историю callback latency.
 Каждые пять секунд после drain и сборки мусора снимаются Linux RSS,
 retained/peak bytes tracemalloc и освобождённые байты очередей; сохраняются
 начальная/конечная точки и прирост памяти. Итоги нагрузки включают отдельно
 указанные события прогрева; время точек памяти отсчитывается после прогрева.
-Вне Linux RSS равен `null`. Новых порогов времени или прироста памяти в CI нет;
-существующий scheduler gate с задержкой и инварианты нагрузки проверяются.
+Вне Linux RSS равен `null`. Для прироста памяти порога в CI нет; бюджеты времени
+scheduler и инварианты нагрузки проверяются.
 Синтетические замеры не определяют throughput устройства и не исключают утечки
 на более длительном интервале. Для долгого локального прогона увеличьте
 `--soak-seconds`.

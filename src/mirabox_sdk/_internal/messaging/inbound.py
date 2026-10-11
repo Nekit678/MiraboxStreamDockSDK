@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import deque
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from enum import StrEnum
 from math import isfinite
 from threading import Condition
@@ -19,6 +19,7 @@ from ...events import (
 )
 from ..transport.buffer_limits import DEFAULT_QUEUE_BYTE_LIMIT, retained_size, validate_byte_limit
 from .metrics import InboundEventQueueMetrics
+from .models import SizedEvent as _QueuedEvent
 from .ports import (
     InboundEventQueueControl,
     InboundEventSink,
@@ -32,12 +33,6 @@ class InboundOverflowPolicy(StrEnum):
 
     DROP_NEWEST = "drop_newest"
     DROP_OLDEST = "drop_oldest"
-
-
-@dataclass(slots=True)
-class _QueuedEvent:
-    event: StreamDockEvent
-    size: int = 0
 
 
 class InboundEventQueue(InboundEventSource, InboundEventSink, InboundEventQueueControl):
@@ -90,12 +85,14 @@ class InboundEventQueue(InboundEventSource, InboundEventSink, InboundEventQueueC
         *,
         timeout: float | None = None,
     ) -> bool:
-        """Submit one typed event according to its semantic delivery policy."""
+        """Submit one event, transferring payload ownership until acknowledgement."""
 
         if not isinstance(event, StreamDockEvent):
             raise TypeError("event must be StreamDockEvent")
         timeout = _validate_timeout(timeout)
         deadline = None if timeout is None else monotonic() + timeout
+        # The producer owns the payload here; do the unbounded walk before locking.
+        size = retained_size(event, self._byte_limit)
 
         with self._condition:
             self._submitted += 1
@@ -103,7 +100,6 @@ class InboundEventQueue(InboundEventSource, InboundEventSink, InboundEventQueueC
                 self._rejected_after_shutdown += 1
                 return False
 
-            size = retained_size(event, self._byte_limit)
             if size > self._byte_limit:
                 self._rejected_oversized += 1
                 self._break_context_coalescing(event)
@@ -163,7 +159,7 @@ class InboundEventQueue(InboundEventSource, InboundEventSink, InboundEventQueueC
     def receive(self, *, timeout: float | None = None) -> StreamDockEvent:
         """Return the next event; the consumer must later call ``task_done``."""
 
-        return self._receive(None, timeout=timeout)
+        return self._receive(None, timeout=timeout).event
 
     def receive_selected(
         self,
@@ -172,6 +168,20 @@ class InboundEventQueue(InboundEventSource, InboundEventSink, InboundEventQueueC
         timeout: float | None = None,
     ) -> StreamDockEvent:
         """Select directly from the bounded queue without a prefetch buffer."""
+
+        if not callable(selector):
+            raise TypeError("selector must be callable")
+        return self._receive(
+            lambda items: selector(item.event for item in items), timeout=timeout
+        ).event
+
+    def receive_selected_sized(
+        self,
+        selector: Callable[[Iterable[_QueuedEvent]], int | None],
+        *,
+        timeout: float | None = None,
+    ) -> _QueuedEvent:
+        """Transfer the selected event and its queue-owned byte accounting."""
 
         if not callable(selector):
             raise TypeError("selector must be callable")
@@ -185,17 +195,17 @@ class InboundEventQueue(InboundEventSource, InboundEventSink, InboundEventQueueC
 
     def _receive(
         self,
-        selector: Callable[[Iterable[StreamDockEvent]], int | None] | None,
+        selector: Callable[[Iterable[_QueuedEvent]], int | None] | None,
         *,
         timeout: float | None,
-    ) -> StreamDockEvent:
+    ) -> _QueuedEvent:
         timeout = _validate_timeout(timeout)
         deadline = None if timeout is None else monotonic() + timeout
 
         with self._condition:
             while True:
                 if self._queue:
-                    index = 0 if selector is None else selector(item.event for item in self._queue)
+                    index = 0 if selector is None else selector(iter(self._queue))
                     if index is not None:
                         if type(index) is not int or not 0 <= index < len(self._queue):
                             raise ValueError("selector must return a valid queue index or None")
@@ -206,7 +216,7 @@ class InboundEventQueue(InboundEventSource, InboundEventSink, InboundEventQueueC
                         self._dequeued += 1
                         self._in_flight += 1
                         self._condition.notify_all()
-                        return queued.event
+                        return queued
                 elif not self._accepting:
                     raise InboundEventQueueClosedError("Inbound event queue is closed")
                 remaining = None if deadline is None else deadline - monotonic()

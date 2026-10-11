@@ -140,6 +140,15 @@ SCHEDULER_PERFORMANCE_BUDGETS: dict[str, SchedulerPerformanceBudget] = {
     ),
 }
 
+ZERO_DELAY_PERFORMANCE_BUDGETS: dict[str, SchedulerPerformanceBudget] = {
+    scenario: SchedulerPerformanceBudget(
+        0.15,
+        15.0,
+        "short callbacks pay worker handoff overhead; bound regression without assuming speedup",
+    )
+    for scenario in SCHEDULER_PERFORMANCE_BUDGETS
+}
+
 COALESCING_PERFORMANCE_BUDGETS: dict[int, CoalescingPerformanceBudget] = {
     1: CoalescingPerformanceBudget(
         0.99,
@@ -500,13 +509,16 @@ def evaluate_scheduler_performance(
     measurements: Sequence[SchedulerBenchmarkMeasurement],
     *,
     pending_limit: int,
+    callback_delay: float = 0.0001,
 ) -> tuple[SchedulerPerformanceComparison, ...]:
     """Compare keyed throughput to the same-run sequential reference."""
 
     _require_positive_integer("pending_limit", pending_limit)
+    _require_non_negative_number("callback_delay", callback_delay)
+    budgets = SCHEDULER_PERFORMANCE_BUDGETS if callback_delay else ZERO_DELAY_PERFORMANCE_BUDGETS
     indexed = {(value.scenario, value.scheduler): value for value in measurements}
     comparisons: list[SchedulerPerformanceComparison] = []
-    for scenario, budget in SCHEDULER_PERFORMANCE_BUDGETS.items():
+    for scenario, budget in budgets.items():
         try:
             sequential = indexed[(scenario, "sequential")]
             keyed = indexed[(scenario, "keyed_serial")]
@@ -681,8 +693,6 @@ def main() -> int:
         help="exit unsuccessfully when a scheduler, skewed-load or coalescing budget is exceeded",
     )
     arguments = parser.parse_args()
-    if arguments.check and arguments.callback_delay == 0:
-        parser.error("--check requires a non-zero callback delay; zero-delay results are ungated")
     if arguments.check and set(arguments.coalescing_pending_limits) != set(
         COALESCING_PERFORMANCE_BUDGETS
     ):
@@ -709,13 +719,10 @@ def main() -> int:
         )
         for pending_limit in arguments.coalescing_pending_limits
     )
-    scheduler_comparisons = (
-        evaluate_scheduler_performance(
-            scheduler_measurements,
-            pending_limit=arguments.pending_limit,
-        )
-        if arguments.callback_delay
-        else ()
+    scheduler_comparisons = evaluate_scheduler_performance(
+        scheduler_measurements,
+        pending_limit=arguments.pending_limit,
+        callback_delay=arguments.callback_delay,
     )
     coalescing_comparisons = (
         evaluate_coalescing_performance(coalescing_measurements)
@@ -748,7 +755,10 @@ def main() -> int:
                     "skewed_load": [asdict(value) for value in skewed_measurements],
                     "performance_gate": {
                         "enforced": arguments.check,
-                        "scheduler_budgets_applied": bool(arguments.callback_delay),
+                        "scheduler_budgets_applied": True,
+                        "scheduler_budget_mode": "delayed"
+                        if arguments.callback_delay
+                        else "zero_delay",
                         "passed": not violations,
                         "scheduler": [asdict(value) for value in scheduler_comparisons],
                         "coalescing": [asdict(value) for value in coalescing_comparisons],

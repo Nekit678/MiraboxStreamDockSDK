@@ -5,6 +5,7 @@ from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import replace
 from threading import Event, Lock, Thread
+from unittest.mock import patch
 
 from mirabox_sdk import StreamDockEvent, SystemDidWakeUpEvent, UnknownStreamDockEvent
 from mirabox_sdk._internal.runtime.keyed_scheduler import KeyedSerialHandlerScheduler
@@ -35,6 +36,48 @@ def _scheduler(
 
 
 class KeyedSerialHandlerSchedulerTests(unittest.TestCase):
+    def test_direct_submit_remeasures_mutation_without_holding_scheduler_lock(self) -> None:
+        event = key_down_event()
+        scheduler = KeyedSerialHandlerScheduler(
+            FakeRuntimeEventDispatcher(lambda event: DispatchResult(DispatchOutcome.HANDLED)),
+            worker_count=1,
+            pending_limit=4,
+            pending_byte_limit=10_000,
+        )
+        self.addCleanup(lambda: scheduler.stop(timeout=1))
+        scheduler.start()
+        self.assertIs(scheduler.submit(event).result(1).outcome, DispatchOutcome.HANDLED)
+        event.settings["values"] = list(range(10_000))
+        sizing, release, observed = Event(), Event(), Event()
+        completions = []
+
+        def slow_size(value: object, limit: int) -> int:
+            sizing.set()
+            if not release.wait(2):
+                raise TimeoutError("size walk was not released")
+            return retained_size(value, limit)
+
+        def observe() -> None:
+            scheduler.metrics()
+            observed.set()
+
+        with patch("mirabox_sdk._internal.runtime.keyed_scheduler.retained_size", slow_size):
+            submitter = Thread(target=lambda: completions.append(scheduler.submit(event)))
+            observer = Thread(target=observe)
+            submitter.start()
+            try:
+                self.assertTrue(sizing.wait(1))
+                observer.start()
+                self.assertTrue(observed.wait(1))
+            finally:
+                release.set()
+                submitter.join(2)
+                if observer.ident is not None:
+                    observer.join(2)
+        with self.assertRaisesRegex(ValueError, "scheduler byte limit"):
+            completions[0].result(0)
+        self.assertEqual(scheduler.metrics().rejected_oversized, 1)
+
     def test_waiting_barrier_reports_elapsed_time_without_bypassing_order(self) -> None:
         entered, release, cold_entered = Event(), Event(), Event()
         order = []

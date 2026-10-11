@@ -12,10 +12,12 @@ from time import monotonic
 
 from ...events import StreamDockEvent
 from ..lifecycle import RuntimeWorkerError
+from ..messaging.models import SizedEvent
 from ..messaging.ports import (
     InboundEventSource,
     InboundEventSourceClosedError,
     SelectableInboundEventSource,
+    SizedInboundEventSource,
 )
 from ..transport.ports import SessionEventSource, SessionEventSourceClosedError
 from .metrics import RuntimeEventPumpMetrics, SessionCoordinatorMetrics
@@ -28,6 +30,7 @@ from .ports import (
     SessionEventCoordinator,
     SessionEventPumpWorker,
     SessionReadiness,
+    SizedHandlerScheduler,
 )
 
 logger = logging.getLogger(__name__)
@@ -73,8 +76,17 @@ class RuntimeEventPump(RuntimeEventPumpWorker):
 
         self._source = source
         self._scheduler = scheduler
-        self._receive_event: Callable[..., StreamDockEvent] = source.receive
-        if isinstance(source, SelectableInboundEventSource) and isinstance(
+        self._receive_event: Callable[..., StreamDockEvent | SizedEvent] = source.receive
+        self._sized_scheduler: SizedHandlerScheduler | None = None
+        if isinstance(source, SizedInboundEventSource) and isinstance(
+            scheduler, SizedHandlerScheduler
+        ):
+            self._receive_event = partial(
+                source.receive_selected_sized, scheduler.select_sized_event
+            )
+            self._sized_scheduler = scheduler
+            scheduler.set_admission_wakeup(source.wake_receiver)
+        elif isinstance(source, SelectableInboundEventSource) and isinstance(
             scheduler, SelectiveHandlerScheduler
         ):
             self._receive_event = partial(source.receive_selected, scheduler.select_event)
@@ -202,7 +214,7 @@ class RuntimeEventPump(RuntimeEventPumpWorker):
                         return
 
                 try:
-                    event = self._receive_event(timeout=self._poll_interval)
+                    received = self._receive_event(timeout=self._poll_interval)
                 except TimeoutError:
                     with self._condition:
                         self._source_poll_timeouts += 1
@@ -220,6 +232,7 @@ class RuntimeEventPump(RuntimeEventPumpWorker):
                     return
 
                 owned = self._take_ownership()
+                event = received.event if isinstance(received, SizedEvent) else received
                 if not isinstance(event, StreamDockEvent):
                     self._finish_owned(
                         owned,
@@ -238,7 +251,10 @@ class RuntimeEventPump(RuntimeEventPumpWorker):
                 with self._condition:
                     self._submitted_to_scheduler += 1
                 try:
-                    completion = self._scheduler.submit(event)
+                    if self._sized_scheduler is not None and isinstance(received, SizedEvent):
+                        completion = self._sized_scheduler.submit_sized(received)
+                    else:
+                        completion = self._scheduler.submit(event)
                     completion.add_done_callback(partial(self._on_dispatch_done, owned))
                 except Exception as exc:
                     self._finish_owned(owned, error=exc)

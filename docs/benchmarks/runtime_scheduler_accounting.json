@@ -1,0 +1,667 @@
+{
+  "accounting_regression": {
+    "after_walks": 1,
+    "before_walks": 3,
+    "evidence": "regression tests executed against original and changed sources",
+    "payload": "settings with list(range(10000))",
+    "queue_lock_held_during_initial_walk_after": false,
+    "queue_lock_held_during_initial_walk_before": true
+  },
+  "after_source_state": "uncommitted N-06/N-07 changes relative to before_revision",
+  "before_revision": "4253dea691b716ff8ee6e8815314b67dbf4f29d8",
+  "comparisons": {
+    "mixed": {
+      "after": [
+        {
+          "callback_delay_seconds": 0,
+          "callback_start_p95_ms": 9.181542668375187,
+          "callback_start_p99_ms": 18.32931814948097,
+          "duration_seconds": 0.4179627610137686,
+          "event_count": 7830,
+          "passed": true,
+          "scheduler": "sequential",
+          "throughput_per_second": 18733.726375546797
+        },
+        {
+          "callback_delay_seconds": 0,
+          "callback_start_p95_ms": 13.589310692623258,
+          "callback_start_p99_ms": 54.552334162290215,
+          "duration_seconds": 0.7018480499973521,
+          "event_count": 7830,
+          "passed": true,
+          "scheduler": "keyed_serial",
+          "throughput_per_second": 11156.260959946445
+        },
+        {
+          "callback_delay_seconds": 0.0001,
+          "callback_start_p95_ms": 60.705507249804214,
+          "callback_start_p99_ms": 62.88665662636049,
+          "duration_seconds": 2.1596819940023124,
+          "event_count": 7830,
+          "passed": true,
+          "scheduler": "sequential",
+          "throughput_per_second": 3625.53376920529
+        },
+        {
+          "callback_delay_seconds": 0.0001,
+          "callback_start_p95_ms": 99.13011535827538,
+          "callback_start_p99_ms": 139.77301146602258,
+          "duration_seconds": 3.108647048997227,
+          "event_count": 7830,
+          "passed": true,
+          "scheduler": "keyed_serial",
+          "throughput_per_second": 2518.7806388395766
+        }
+      ],
+      "before": [
+        {
+          "callback_delay_seconds": 0,
+          "callback_start_p95_ms": 19.279363402165473,
+          "callback_start_p99_ms": 21.057173794251867,
+          "duration_seconds": 0.54750782600604,
+          "event_count": 7830,
+          "passed": true,
+          "scheduler": "sequential",
+          "throughput_per_second": 14301.165441082885
+        },
+        {
+          "callback_delay_seconds": 0,
+          "callback_start_p95_ms": 56.68722518894356,
+          "callback_start_p99_ms": 64.57170594658237,
+          "duration_seconds": 1.4441628869972192,
+          "event_count": 7830,
+          "passed": true,
+          "scheduler": "keyed_serial",
+          "throughput_per_second": 5421.826076891199
+        },
+        {
+          "callback_delay_seconds": 0.0001,
+          "callback_start_p95_ms": 60.35922322480474,
+          "callback_start_p99_ms": 62.469775498029776,
+          "duration_seconds": 2.21391157299513,
+          "event_count": 7830,
+          "passed": true,
+          "scheduler": "sequential",
+          "throughput_per_second": 3536.7266224671494
+        },
+        {
+          "callback_delay_seconds": 0.0001,
+          "callback_start_p95_ms": 87.52753966546152,
+          "callback_start_p99_ms": 91.89818416314665,
+          "duration_seconds": 3.239521657989826,
+          "event_count": 7830,
+          "passed": true,
+          "scheduler": "keyed_serial",
+          "throughput_per_second": 2417.023507371344
+        }
+      ],
+      "configuration": {
+        "batches": 30,
+        "events_per_segment": 64,
+        "mode": "mixed",
+        "payload_sizes": [
+          64,
+          4096,
+          65536
+        ],
+        "pending_limit": 64,
+        "sample_interval": 5,
+        "soak_seconds": 120,
+        "source_limit": 256,
+        "worker_count": 4,
+        "workers": 4
+      },
+      "execution": "before and after matrices each run serially without concurrent tests",
+      "ratios": [
+        {
+          "callback_delay_seconds": 0,
+          "keyed_to_sequential_throughput_ratio": 0.3791177788431107,
+          "scenario": "mixed",
+          "stage": "before"
+        },
+        {
+          "callback_delay_seconds": 0.0001,
+          "keyed_to_sequential_throughput_ratio": 0.6834069368034097,
+          "scenario": "mixed",
+          "stage": "before"
+        },
+        {
+          "callback_delay_seconds": 0,
+          "keyed_to_sequential_throughput_ratio": 0.5955174499884206,
+          "scenario": "mixed",
+          "stage": "after"
+        },
+        {
+          "callback_delay_seconds": 0.0001,
+          "keyed_to_sequential_throughput_ratio": 0.694733741065578,
+          "scenario": "mixed",
+          "stage": "after"
+        }
+      ]
+    },
+    "zero": {
+      "after": [
+        {
+          "callback_start_p95_ms": 0.0069150119088590145,
+          "callback_start_p99_ms": 0.017775300075300045,
+          "duration_seconds": 0.07196009898325428,
+          "event_count": 10000,
+          "scenario": "single_context",
+          "scheduler": "sequential",
+          "throughput_per_second": 138965.90112149628
+        },
+        {
+          "callback_start_p95_ms": 1.357737212674692,
+          "callback_start_p99_ms": 1.9006121339043607,
+          "duration_seconds": 0.2742349639884196,
+          "event_count": 10000,
+          "scenario": "single_context",
+          "scheduler": "keyed_serial",
+          "throughput_per_second": 36465.08036233585
+        },
+        {
+          "callback_start_p95_ms": 0.00499398447573185,
+          "callback_start_p99_ms": 0.015606987290084362,
+          "duration_seconds": 0.07787613302934915,
+          "event_count": 10000,
+          "scenario": "contexts_4",
+          "scheduler": "sequential",
+          "throughput_per_second": 128409.04666171988
+        },
+        {
+          "callback_start_p95_ms": 1.31610237294808,
+          "callback_start_p99_ms": 1.8357690767152242,
+          "duration_seconds": 0.26716908696107566,
+          "event_count": 10000,
+          "scenario": "contexts_4",
+          "scheduler": "keyed_serial",
+          "throughput_per_second": 37429.48001112463
+        },
+        {
+          "callback_start_p95_ms": 0.004213460488244884,
+          "callback_start_p99_ms": 0.021003545261919554,
+          "duration_seconds": 0.06888722802978009,
+          "event_count": 10000,
+          "scenario": "contexts_16",
+          "scheduler": "sequential",
+          "throughput_per_second": 145164.79013608996
+        },
+        {
+          "callback_start_p95_ms": 1.3796131272101773,
+          "callback_start_p99_ms": 1.8618967471411452,
+          "duration_seconds": 0.26365004596300423,
+          "event_count": 10000,
+          "scenario": "contexts_16",
+          "scheduler": "keyed_serial",
+          "throughput_per_second": 37929.06602187058
+        },
+        {
+          "callback_start_p95_ms": 0.0053009745897725224,
+          "callback_start_p99_ms": 0.016667640302330314,
+          "duration_seconds": 0.08024497301084921,
+          "event_count": 10000,
+          "scenario": "contexts_64",
+          "scheduler": "sequential",
+          "throughput_per_second": 124618.39819732994
+        },
+        {
+          "callback_start_p95_ms": 1.4436032593948755,
+          "callback_start_p99_ms": 2.0062253676587734,
+          "duration_seconds": 0.2763130040257238,
+          "event_count": 10000,
+          "scenario": "contexts_64",
+          "scheduler": "keyed_serial",
+          "throughput_per_second": 36190.84101835842
+        }
+      ],
+      "before": [
+        {
+          "callback_start_p95_ms": 0.007087466656230383,
+          "callback_start_p99_ms": 0.02583697787486056,
+          "duration_seconds": 0.0762462230050005,
+          "event_count": 10000,
+          "scenario": "single_context",
+          "scheduler": "sequential",
+          "throughput_per_second": 131154.03761500638
+        },
+        {
+          "callback_start_p95_ms": 1.437689451267942,
+          "callback_start_p99_ms": 1.8446871044579896,
+          "duration_seconds": 0.26773431501351297,
+          "event_count": 10000,
+          "scenario": "single_context",
+          "scheduler": "keyed_serial",
+          "throughput_per_second": 37350.460659087665
+        },
+        {
+          "callback_start_p95_ms": 0.00469299266114831,
+          "callback_start_p99_ms": 0.01387650030665103,
+          "duration_seconds": 0.06504856201354414,
+          "event_count": 10000,
+          "scenario": "contexts_4",
+          "scheduler": "sequential",
+          "throughput_per_second": 153731.2999773591
+        },
+        {
+          "callback_start_p95_ms": 15.413244595401919,
+          "callback_start_p99_ms": 18.347631842480045,
+          "duration_seconds": 0.8115068339975551,
+          "event_count": 10000,
+          "scenario": "contexts_4",
+          "scheduler": "keyed_serial",
+          "throughput_per_second": 12322.755127937873
+        },
+        {
+          "callback_start_p95_ms": 0.004837001324631274,
+          "callback_start_p99_ms": 0.0149655132554474,
+          "duration_seconds": 0.07408967200899497,
+          "event_count": 10000,
+          "scenario": "contexts_16",
+          "scheduler": "sequential",
+          "throughput_per_second": 134971.57874832992
+        },
+        {
+          "callback_start_p95_ms": 1.308961206814274,
+          "callback_start_p99_ms": 1.7555853421799845,
+          "duration_seconds": 0.2587668430060148,
+          "event_count": 10000,
+          "scenario": "contexts_16",
+          "scheduler": "keyed_serial",
+          "throughput_per_second": 38644.82745870018
+        },
+        {
+          "callback_start_p95_ms": 0.004384960629977286,
+          "callback_start_p99_ms": 0.012327206786722014,
+          "duration_seconds": 0.06568729702848941,
+          "event_count": 10000,
+          "scenario": "contexts_64",
+          "scheduler": "sequential",
+          "throughput_per_second": 152236.4361508569
+        },
+        {
+          "callback_start_p95_ms": 1.3053082016995177,
+          "callback_start_p99_ms": 1.8462425610050566,
+          "duration_seconds": 0.2609495720244013,
+          "event_count": 10000,
+          "scenario": "contexts_64",
+          "scheduler": "keyed_serial",
+          "throughput_per_second": 38321.58038207054
+        }
+      ],
+      "configuration": {
+        "callback_delay": 0.0,
+        "check": false,
+        "coalescing_events": 512,
+        "coalescing_pending_limits": [
+          1,
+          4,
+          16,
+          64
+        ],
+        "events": 10000,
+        "json": true,
+        "pending_limit": 64,
+        "repeats": 3,
+        "workers": 4
+      },
+      "execution": "before and after matrices each run serially without concurrent tests",
+      "ratios": [
+        {
+          "callback_delay_seconds": 0,
+          "keyed_to_sequential_throughput_ratio": 0.28478315527522957,
+          "scenario": "single_context",
+          "stage": "before"
+        },
+        {
+          "callback_delay_seconds": 0,
+          "keyed_to_sequential_throughput_ratio": 0.08015775011173858,
+          "scenario": "contexts_4",
+          "stage": "before"
+        },
+        {
+          "callback_delay_seconds": 0,
+          "keyed_to_sequential_throughput_ratio": 0.2863182591259299,
+          "scenario": "contexts_16",
+          "stage": "before"
+        },
+        {
+          "callback_delay_seconds": 0,
+          "keyed_to_sequential_throughput_ratio": 0.25172410331582,
+          "scenario": "contexts_64",
+          "stage": "before"
+        },
+        {
+          "callback_delay_seconds": 0,
+          "keyed_to_sequential_throughput_ratio": 0.26240307923060097,
+          "scenario": "single_context",
+          "stage": "after"
+        },
+        {
+          "callback_delay_seconds": 0,
+          "keyed_to_sequential_throughput_ratio": 0.29148631645657064,
+          "scenario": "contexts_4",
+          "stage": "after"
+        },
+        {
+          "callback_delay_seconds": 0,
+          "keyed_to_sequential_throughput_ratio": 0.2612828220005183,
+          "scenario": "contexts_16",
+          "stage": "after"
+        },
+        {
+          "callback_delay_seconds": 0,
+          "keyed_to_sequential_throughput_ratio": 0.29041330607581056,
+          "scenario": "contexts_64",
+          "stage": "after"
+        }
+      ]
+    }
+  },
+  "environment": {
+    "execution": "local source checkout, CPython with GIL",
+    "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+    "python": "3.13.11"
+  },
+  "gate_check_note": "The unchanged delayed single-context p95 limit failed initially on both original and changed sources (38.99/38.02 ms versus 30 ms). A changed-source retry passed at 22.04 ms. The limit was preserved.",
+  "gate_checks": {
+    "delayed_initial": {
+      "comparisons": [
+        {
+          "budget_reason": "keyed scheduling preserves serial context order and pays worker handoff overhead",
+          "callback_start_p95_ms": 38.015325061860466,
+          "keyed_to_sequential_throughput_ratio": 0.6045579353081058,
+          "max_callback_start_p95_ms": 30.0,
+          "min_throughput_ratio": 0.55,
+          "scenario": "single_context",
+          "violations": [
+            "callback-start p95 38.015ms exceeds 30.000ms"
+          ],
+          "within_budget": false
+        },
+        {
+          "budget_reason": "four workers should overlap callbacks across four independent contexts",
+          "callback_start_p95_ms": 9.634710047976114,
+          "keyed_to_sequential_throughput_ratio": 2.1584442271918967,
+          "max_callback_start_p95_ms": 15.0,
+          "min_throughput_ratio": 1.75,
+          "scenario": "contexts_4",
+          "violations": [],
+          "within_budget": true
+        },
+        {
+          "budget_reason": "bounded prefetch should keep four workers supplied across sixteen contexts",
+          "callback_start_p95_ms": 6.827923684613779,
+          "keyed_to_sequential_throughput_ratio": 2.2406496898745596,
+          "max_callback_start_p95_ms": 10.0,
+          "min_throughput_ratio": 1.75,
+          "scenario": "contexts_16",
+          "violations": [],
+          "within_budget": true
+        },
+        {
+          "budget_reason": "bounded prefetch should keep four workers supplied across sixty-four contexts",
+          "callback_start_p95_ms": 6.405024413834326,
+          "keyed_to_sequential_throughput_ratio": 2.2489284243121945,
+          "max_callback_start_p95_ms": 10.0,
+          "min_throughput_ratio": 1.75,
+          "scenario": "contexts_64",
+          "violations": [],
+          "within_budget": true
+        }
+      ],
+      "configuration": {
+        "callback_delay": 0.0001,
+        "check": true,
+        "coalescing_events": 512,
+        "coalescing_pending_limits": [
+          1,
+          4,
+          16,
+          64
+        ],
+        "events": 10000,
+        "json": true,
+        "pending_limit": 64,
+        "repeats": 3,
+        "workers": 4
+      },
+      "passed": false
+    },
+    "delayed_original": {
+      "comparisons": [
+        {
+          "budget_reason": "keyed scheduling preserves serial context order and pays worker handoff overhead",
+          "callback_start_p95_ms": 38.9868995553115,
+          "keyed_to_sequential_throughput_ratio": 0.5958944533621012,
+          "max_callback_start_p95_ms": 30.0,
+          "min_throughput_ratio": 0.55,
+          "scenario": "single_context",
+          "violations": [
+            "callback-start p95 38.987ms exceeds 30.000ms"
+          ],
+          "within_budget": false
+        },
+        {
+          "budget_reason": "four workers should overlap callbacks across four independent contexts",
+          "callback_start_p95_ms": 11.703233924345113,
+          "keyed_to_sequential_throughput_ratio": 2.2475367525993786,
+          "max_callback_start_p95_ms": 15.0,
+          "min_throughput_ratio": 1.75,
+          "scenario": "contexts_4",
+          "violations": [],
+          "within_budget": true
+        },
+        {
+          "budget_reason": "bounded prefetch should keep four workers supplied across sixteen contexts",
+          "callback_start_p95_ms": 6.497255770955235,
+          "keyed_to_sequential_throughput_ratio": 2.2851175557924255,
+          "max_callback_start_p95_ms": 10.0,
+          "min_throughput_ratio": 1.75,
+          "scenario": "contexts_16",
+          "violations": [],
+          "within_budget": true
+        },
+        {
+          "budget_reason": "bounded prefetch should keep four workers supplied across sixty-four contexts",
+          "callback_start_p95_ms": 6.443767918972298,
+          "keyed_to_sequential_throughput_ratio": 2.2855853189226547,
+          "max_callback_start_p95_ms": 10.0,
+          "min_throughput_ratio": 1.75,
+          "scenario": "contexts_64",
+          "violations": [],
+          "within_budget": true
+        }
+      ],
+      "configuration": {
+        "callback_delay": 0.0001,
+        "check": true,
+        "coalescing_events": 512,
+        "coalescing_pending_limits": [
+          1,
+          4,
+          16,
+          64
+        ],
+        "events": 10000,
+        "json": true,
+        "pending_limit": 64,
+        "repeats": 3,
+        "workers": 4
+      },
+      "passed": false
+    },
+    "delayed_retry": {
+      "comparisons": [
+        {
+          "budget_reason": "keyed scheduling preserves serial context order and pays worker handoff overhead",
+          "callback_start_p95_ms": 22.036070202011615,
+          "keyed_to_sequential_throughput_ratio": 0.6654744519336203,
+          "max_callback_start_p95_ms": 30.0,
+          "min_throughput_ratio": 0.55,
+          "scenario": "single_context",
+          "violations": [],
+          "within_budget": true
+        },
+        {
+          "budget_reason": "four workers should overlap callbacks across four independent contexts",
+          "callback_start_p95_ms": 9.561497645336203,
+          "keyed_to_sequential_throughput_ratio": 2.2650889000809418,
+          "max_callback_start_p95_ms": 15.0,
+          "min_throughput_ratio": 1.75,
+          "scenario": "contexts_4",
+          "violations": [],
+          "within_budget": true
+        },
+        {
+          "budget_reason": "bounded prefetch should keep four workers supplied across sixteen contexts",
+          "callback_start_p95_ms": 6.4968952181516215,
+          "keyed_to_sequential_throughput_ratio": 2.2476818426110654,
+          "max_callback_start_p95_ms": 10.0,
+          "min_throughput_ratio": 1.75,
+          "scenario": "contexts_16",
+          "violations": [],
+          "within_budget": true
+        },
+        {
+          "budget_reason": "bounded prefetch should keep four workers supplied across sixty-four contexts",
+          "callback_start_p95_ms": 6.451870102318935,
+          "keyed_to_sequential_throughput_ratio": 2.291758193527208,
+          "max_callback_start_p95_ms": 10.0,
+          "min_throughput_ratio": 1.75,
+          "scenario": "contexts_64",
+          "violations": [],
+          "within_budget": true
+        }
+      ],
+      "configuration": {
+        "callback_delay": 0.0001,
+        "check": true,
+        "coalescing_events": 512,
+        "coalescing_pending_limits": [
+          1,
+          4,
+          16,
+          64
+        ],
+        "events": 10000,
+        "json": true,
+        "pending_limit": 64,
+        "repeats": 3,
+        "workers": 4
+      },
+      "passed": true
+    },
+    "mixed": {
+      "comparisons": [
+        {
+          "budget": {
+            "max_callback_start_p95_ms": 75.0,
+            "max_callback_start_p99_ms": 100.0,
+            "min_throughput_ratio": 0.4
+          },
+          "callback_delay_seconds": 0.0,
+          "callback_start_p95_ms": 12.596959568327293,
+          "callback_start_p99_ms": 13.20065330772195,
+          "keyed_to_sequential_throughput_ratio": 0.5687031723253518,
+          "violations": [],
+          "within_budget": true
+        },
+        {
+          "budget": {
+            "max_callback_start_p95_ms": 150.0,
+            "max_callback_start_p99_ms": 175.0,
+            "min_throughput_ratio": 0.55
+          },
+          "callback_delay_seconds": 0.0001,
+          "callback_start_p95_ms": 78.87116958154365,
+          "callback_start_p99_ms": 82.52891823707614,
+          "keyed_to_sequential_throughput_ratio": 0.7705544761303761,
+          "violations": [],
+          "within_budget": true
+        }
+      ],
+      "configuration": {
+        "batches": 10,
+        "check": true,
+        "events_per_segment": 64,
+        "mode": "mixed",
+        "payload_sizes": [
+          64,
+          4096,
+          65536
+        ],
+        "pending_limit": 64,
+        "repeats": 3,
+        "sample_interval": 5,
+        "soak_seconds": 120,
+        "source_limit": 256,
+        "worker_count": 4,
+        "workers": 4
+      },
+      "passed": true
+    },
+    "zero": {
+      "comparisons": [
+        {
+          "budget_reason": "short callbacks pay worker handoff overhead; bound regression without assuming speedup",
+          "callback_start_p95_ms": 1.51728336350061,
+          "keyed_to_sequential_throughput_ratio": 0.30558199295059085,
+          "max_callback_start_p95_ms": 15.0,
+          "min_throughput_ratio": 0.15,
+          "scenario": "single_context",
+          "violations": [],
+          "within_budget": true
+        },
+        {
+          "budget_reason": "short callbacks pay worker handoff overhead; bound regression without assuming speedup",
+          "callback_start_p95_ms": 1.3046115083852783,
+          "keyed_to_sequential_throughput_ratio": 0.2622622412751828,
+          "max_callback_start_p95_ms": 15.0,
+          "min_throughput_ratio": 0.15,
+          "scenario": "contexts_4",
+          "violations": [],
+          "within_budget": true
+        },
+        {
+          "budget_reason": "short callbacks pay worker handoff overhead; bound regression without assuming speedup",
+          "callback_start_p95_ms": 1.354943032492881,
+          "keyed_to_sequential_throughput_ratio": 0.2724133059186405,
+          "max_callback_start_p95_ms": 15.0,
+          "min_throughput_ratio": 0.15,
+          "scenario": "contexts_16",
+          "violations": [],
+          "within_budget": true
+        },
+        {
+          "budget_reason": "short callbacks pay worker handoff overhead; bound regression without assuming speedup",
+          "callback_start_p95_ms": 1.3811760727548972,
+          "keyed_to_sequential_throughput_ratio": 0.24281044916943614,
+          "max_callback_start_p95_ms": 15.0,
+          "min_throughput_ratio": 0.15,
+          "scenario": "contexts_64",
+          "violations": [],
+          "within_budget": true
+        }
+      ],
+      "configuration": {
+        "callback_delay": 0.0,
+        "check": true,
+        "coalescing_events": 512,
+        "coalescing_pending_limits": [
+          1,
+          4,
+          16,
+          64
+        ],
+        "events": 10000,
+        "json": true,
+        "pending_limit": 64,
+        "repeats": 3,
+        "workers": 4
+      },
+      "passed": true
+    }
+  },
+  "recorded_on": "2026-10-12",
+  "scope": "Synthetic callbacks; no parsing, action management, commands or device I/O."
+}

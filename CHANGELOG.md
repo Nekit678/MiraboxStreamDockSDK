@@ -8,6 +8,9 @@ change public APIs between minor versions.
 
 ### Added
 
+- Gate zero-delay scheduler throughput/p95 and mixed 80% hot-context
+  throughput/p95/p99 in CI with separate budgets (N-07). Keep JSON results on
+  failure and use three timing samples per mixed scenario.
 - Add deadlines to all synchronous action command helpers and async variants for
   indicators, Property Inspector messages, settings requests, URLs and logging
   (N-05). Generated plugins render asynchronously with observed futures and
@@ -62,6 +65,10 @@ change public APIs between minor versions.
 
 ### Changed
 
+- Transfer retained event sizes from the typed queue through the pump to keyed
+  selection/admission instead of walking each payload three times (N-06).
+  Measure initial admissions outside queue/scheduler locks; recalculate on
+  resubmission and coalescing, retaining byte backpressure and adapter compatibility.
 - Use native dictionary storage and plain nested dict/list containers for public
   JSON payloads (API-02), keeping COW views internal. `isolated_copy()` returns
   an independent plain deep snapshot. Mutations and shallow copies now follow

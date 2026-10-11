@@ -1135,6 +1135,12 @@ An event exceeding the entire scheduler budget receives a terminal error;
 the application reports it as a runtime failure. Sequential dispatch has no
 pending event buffer.
 
+The built-in typed queue calculates an event's retained size before acquiring
+its admission lock and transfers that size through selection and keyed admission.
+Sizes belong to individual submissions: resubmission measures the current payload,
+and coalescing recalculates the replacement under the queue lock. Custom adapters
+without accounting transfer continue to use the ordinary event methods.
+
 These budgets cover queued content. Shared objects are counted separately in
 different entries; queue/completion bookkeeping, active workers, allocator
 overhead, and opaque native allocations are outside the budgets, so they do not
@@ -1372,10 +1378,10 @@ python -m compileall -q src tests scripts examples
 ruff check src tests scripts examples
 ruff format --check src tests scripts examples
 PYTHONPATH=src python scripts/benchmark_runtime_scheduler.py --check
-PYTHONPATH=src python scripts/benchmark_runtime_scheduler.py --callback-delay 0 --json
+PYTHONPATH=src python scripts/benchmark_runtime_scheduler.py --callback-delay 0 --check --json
 PYTHONPATH=src python -m scripts.benchmark_command_latency --include-async-settings
 PYTHONPATH=src python -m scripts.benchmark_settings_copies
-PYTHONPATH=src python -m scripts.benchmark_runtime_workload --mode mixed
+PYTHONPATH=src python -m scripts.benchmark_runtime_workload --mode mixed --repeats 3 --check
 PYTHONPATH=src python -m scripts.benchmark_runtime_workload --mode soak --soak-seconds 120
 python -m mypy
 python -m build
@@ -1393,22 +1399,38 @@ even when the job fails.
 | Measurement | Scenarios | Result file |
 | --- | --- | --- |
 | Scheduler gate | Sequential/keyed, 1/4/16/64 contexts, delayed callbacks; coalescing and blocked hot context at pending limits 1/4/16/64 | `results.json` |
-| Zero-delay scheduler | The same context matrix without delayed-callback throughput/latency budgets | `scheduler-zero-delay.json` |
+| Zero-delay scheduler | The same context matrix with separate short-callback budgets | `scheduler-zero-delay.json` |
 | Command latency | Sync/async commands and sync/async settings, eight batches each | `command-latency.json` |
 | Settings copies | Small/wide/nested settings, four operations, 31 timing samples each | `settings-copies.json` |
-| Mixed load | Both schedulers with zero/delayed callbacks, hot/cold contexts, key/settings events and lifecycle/global/unknown barriers | `mixed-load.json` |
+| Mixed load | Both schedulers with zero/delayed callbacks, 80% hot context, key/settings events and lifecycle/global/unknown barriers; throughput/p95/p99 gates | `mixed-load.json` |
 | Memory soak | Both schedulers, 120 seconds each after warmup, 64 B/4 KiB/64 KiB payload strings | `memory-soak.json` |
 
 Mixed load checks context FIFO, exclusive barriers, complete acknowledgement and
 queue count/byte bounds. It measures the typed queue/pump/scheduler path with
 synthetic callbacks, excluding parsing, action management, commands and device
-I/O. Memory runs keep the runtime alive between batches without retaining
+I/O. Mixed timing uses the sample at the median duration of three runs per scenario;
+ordering and bounds must pass in every run. Short callbacks and an 80% hot context
+can make worker handoff more expensive than the available parallelism, so these
+budgets cap regression without requiring a speedup:
+
+| Workload | Minimum keyed/sequential throughput | Maximum keyed callback-start p95 / p99 |
+| --- | --- | --- |
+| Zero delay, 1/4/16/64 contexts | 0.15 | 15 ms / not gated |
+| Mixed 80% hot, zero delay | 0.40 | 75 ms / 100 ms |
+| Mixed 80% hot, 0.1 ms delay | 0.55 | 150 ms / 175 ms |
+
+Both scripts report comparisons in JSON and return a failure with `--check`
+when a budget is exceeded. Delayed independent-context budgets remain unchanged.
+The [accounting comparison](docs/benchmarks/runtime_scheduler_accounting.json)
+records local before/after measurements used to set these bounds with runner headroom.
+
+Memory runs keep the runtime alive between batches without retaining
 callback latency history. Every five seconds, after drain and garbage collection,
 they sample Linux RSS, tracemalloc retained/peak bytes and released queue bytes;
 initial/final samples and retained-memory growth are included. Workload totals
 include the reported warmup events; sample elapsed times start after warmup.
-RSS is `null` outside Linux. Timing and memory growth have no new CI thresholds;
-the existing delayed scheduler gate and workload invariants remain enforced.
+RSS is `null` outside Linux. Memory growth has no CI threshold; scheduler timing
+budgets and workload invariants are enforced.
 These synthetic measurements do not establish device throughput or rule out
 longer-term memory leaks. Increase `--soak-seconds` for longer local runs.
 

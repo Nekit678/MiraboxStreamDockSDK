@@ -3,8 +3,9 @@
 Real inbound queues, pumps and schedulers dispatch synthetic callbacks. Parsing,
 action management, commands, sockets and devices are excluded. Memory runs use
 tracemalloc separately from timing runs; RSS samples are available on Linux.
-Only ordering, completion and queue bounds are checked, with no timing or memory
-growth budget. Each soak retains one runtime throughout warmup and measurement.
+Mixed timing gates use same-run sequential throughput and absolute p95/p99 budgets.
+Each soak retains one runtime throughout warmup and measurement, with no memory
+growth budget. Ordering, completion and queue bounds are always checked.
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ import os
 import platform
 import sys
 import tracemalloc
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import asdict, dataclass, replace
 from math import isfinite
 from pathlib import Path
@@ -56,6 +57,77 @@ class WorkloadMeasurement:
     source: dict[str, int]
     scheduler_metrics: dict[str, int]
     passed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class MixedPerformanceBudget:
+    min_throughput_ratio: float
+    max_callback_start_p95_ms: float
+    max_callback_start_p99_ms: float
+
+
+@dataclass(frozen=True, slots=True)
+class MixedPerformanceComparison:
+    callback_delay_seconds: float
+    keyed_to_sequential_throughput_ratio: float
+    budget: MixedPerformanceBudget
+    callback_start_p95_ms: float | None
+    callback_start_p99_ms: float | None
+    within_budget: bool
+    violations: tuple[str, ...]
+
+
+# The 80% hot context and exclusive barriers limit useful parallelism. These
+# allow its measured overhead, with headroom for runner noise, but cap regression.
+MIXED_PERFORMANCE_BUDGETS = {
+    0.0: MixedPerformanceBudget(0.40, 75.0, 100.0),
+    0.0001: MixedPerformanceBudget(0.55, 150.0, 175.0),
+}
+
+
+def evaluate_mixed_performance(
+    measurements: Sequence[WorkloadMeasurement],
+) -> tuple[MixedPerformanceComparison, ...]:
+    """Require both schedulers at each canonical delay and evaluate timing."""
+
+    indexed = {(value.callback_delay_seconds, value.scheduler): value for value in measurements}
+    comparisons = []
+    for delay, budget in MIXED_PERFORMANCE_BUDGETS.items():
+        try:
+            sequential = indexed[(delay, "sequential")]
+            keyed = indexed[(delay, "keyed_serial")]
+        except KeyError as exc:
+            raise ValueError(f"missing mixed measurement for {exc.args[0]!r}") from None
+        ratio = keyed.throughput_per_second / sequential.throughput_per_second
+        violations = []
+        if ratio < budget.min_throughput_ratio:
+            violations.append(
+                f"throughput ratio {ratio:.3f} is below {budget.min_throughput_ratio:.3f}"
+            )
+        for percentile, value, limit in (
+            (95, keyed.callback_start_p95_ms, budget.max_callback_start_p95_ms),
+            (99, keyed.callback_start_p99_ms, budget.max_callback_start_p99_ms),
+        ):
+            if value is None:
+                violations.append(f"callback-start p{percentile} measurement is missing")
+            elif value > limit:
+                violations.append(
+                    f"callback-start p{percentile} {value:.3f}ms exceeds {limit:.3f}ms"
+                )
+        if not sequential.passed or not keyed.passed:
+            violations.append("ordering, completion or queue bounds failed")
+        comparisons.append(
+            MixedPerformanceComparison(
+                delay,
+                ratio,
+                budget,
+                keyed.callback_start_p95_ms,
+                keyed.callback_start_p99_ms,
+                not violations,
+                tuple(violations),
+            )
+        )
+    return tuple(comparisons)
 
 
 @dataclass(frozen=True, slots=True)
@@ -449,6 +521,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=("mixed", "soak"), default="mixed")
     parser.add_argument("--batches", type=int, default=10)
+    parser.add_argument("--repeats", type=int, default=3, help="timing samples per mixed scenario")
+    parser.add_argument(
+        "--check", action="store_true", help="enforce mixed throughput/p95/p99 budgets"
+    )
     parser.add_argument("--events-per-segment", type=int, default=64)
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--pending-limit", type=int, default=64)
@@ -456,6 +532,8 @@ def main() -> int:
     parser.add_argument("--soak-seconds", type=float, default=120)
     parser.add_argument("--sample-interval", type=float, default=5)
     args = parser.parse_args()
+    if args.check and args.mode != "mixed":
+        parser.error("--check requires --mode mixed")
     configuration = {
         "events_per_segment": args.events_per_segment,
         "worker_count": args.workers,
@@ -464,14 +542,27 @@ def main() -> int:
         "payload_sizes": (64, 4096, 65536),
     }
     try:
+        comparisons: tuple[MixedPerformanceComparison, ...] = ()
         if args.mode == "mixed":
-            mixed_measurements = [
-                measure_mixed_load(
-                    kind, batches=args.batches, callback_delay=delay, **configuration
-                )
-                for delay in (0, 0.0001)
-                for kind in ("sequential", "keyed_serial")
-            ]
+            _require_positive_integer("repeats", args.repeats)
+            mixed_measurements = []
+            for delay in MIXED_PERFORMANCE_BUDGETS:
+                for kind in ("sequential", "keyed_serial"):
+                    samples = [
+                        measure_mixed_load(
+                            kind, batches=args.batches, callback_delay=delay, **configuration
+                        )
+                        for _ in range(args.repeats)
+                    ]
+                    # Keep one real sample at the median duration, including its
+                    # latency and queue metrics; check invariants across all runs.
+                    median = sorted(samples, key=lambda sample: sample.duration_seconds)[
+                        len(samples) // 2
+                    ]
+                    mixed_measurements.append(
+                        replace(median, passed=all(sample.passed for sample in samples))
+                    )
+            comparisons = evaluate_mixed_performance(mixed_measurements)
             passed = all(value.passed for value in mixed_measurements)
             measurements = [asdict(value) for value in mixed_measurements]
         else:
@@ -498,6 +589,11 @@ def main() -> int:
                 "configuration": {**vars(args), **configuration},
                 "measurements": measurements,
                 "invariants_passed": passed,
+                "performance_gate": {
+                    "enforced": args.check,
+                    "passed": all(value.within_budget for value in comparisons),
+                    "mixed": [asdict(value) for value in comparisons],
+                },
             },
             indent=2,
             sort_keys=True,
@@ -505,7 +601,13 @@ def main() -> int:
     )
     if not passed:
         print("runtime workload ordering, completion or queue bounds failed", file=sys.stderr)
-    return 0 if passed else 1
+    timing_passed = all(value.within_budget for value in comparisons)
+    if args.check and not timing_passed:
+        print("mixed runtime performance budgets exceeded:", file=sys.stderr)
+        for comparison in comparisons:
+            for violation in comparison.violations:
+                print(f"- delay={comparison.callback_delay_seconds}: {violation}", file=sys.stderr)
+    return 0 if passed and (not args.check or timing_passed) else 1
 
 
 if __name__ == "__main__":

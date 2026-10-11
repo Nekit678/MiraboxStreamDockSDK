@@ -32,7 +32,7 @@ from ...events import (
     WillDisappearEvent,
 )
 from ...json_types import JsonObject
-from ..messaging.models import CommandFuture
+from ..messaging.models import CommandFuture, SizedEvent
 from ..transport.session import SessionEvent
 from .metrics import (
     HandlerSchedulerMetrics,
@@ -447,6 +447,23 @@ class SelectiveHandlerScheduler(HandlerScheduler, Protocol):
     @abstractmethod
     def set_admission_wakeup(self, callback: Callable[[], None]) -> None:
         """Notify the sole source consumer when admission may make progress."""
+
+        ...
+
+
+@runtime_checkable
+class SizedHandlerScheduler(SelectiveHandlerScheduler, Protocol):
+    """Consume accounting transferred by a source that owns admitted payloads."""
+
+    @abstractmethod
+    def select_sized_event(self, events: Iterable[SizedEvent]) -> int | None:
+        """Choose an admissible index using current source-owned sizes."""
+
+        ...
+
+    @abstractmethod
+    def submit_sized(self, item: SizedEvent) -> DispatchCompletion:
+        """Accept an owned event without repeating its retained-size walk."""
 
         ...
 

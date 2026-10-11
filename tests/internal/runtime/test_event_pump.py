@@ -5,6 +5,7 @@ from collections.abc import Callable
 from dataclasses import replace
 from threading import Event
 from time import monotonic
+from unittest.mock import patch
 
 from mirabox_sdk import StreamDockEvent, SystemDidWakeUpEvent, UnknownStreamDockEvent
 from mirabox_sdk._internal.messaging.inbound import InboundEventQueue
@@ -13,6 +14,7 @@ from mirabox_sdk._internal.runtime.models import DispatchOutcome, DispatchResult
 from mirabox_sdk._internal.runtime.ports import RuntimeEventPumpWorker
 from mirabox_sdk._internal.runtime.pumps import RuntimeEventPump
 from mirabox_sdk._internal.runtime.scheduler import SequentialHandlerScheduler
+from mirabox_sdk._internal.transport.buffer_limits import retained_size
 
 from .fakes import (
     FakeInboundEventSource,
@@ -30,6 +32,69 @@ def _scheduler(
 
 
 class RuntimeEventPumpTests(unittest.TestCase):
+    def test_large_payload_is_sized_once_across_queue_selection_and_scheduler(self) -> None:
+        event = replace(key_down_event(), settings={"values": list(range(10_000))})
+        source = InboundEventQueue(2)
+        dispatched: list[StreamDockEvent] = []
+
+        def dispatch(event: StreamDockEvent) -> DispatchResult:
+            dispatched.append(event)
+            return DispatchResult(DispatchOutcome.HANDLED)
+
+        scheduler = KeyedSerialHandlerScheduler(
+            FakeRuntimeEventDispatcher(dispatch), worker_count=4, pending_limit=4
+        )
+        pump = RuntimeEventPump(source, scheduler)
+        scheduler.start()
+        try:
+            with (
+                patch(
+                    "mirabox_sdk._internal.messaging.inbound.retained_size", wraps=retained_size
+                ) as source_size,
+                patch(
+                    "mirabox_sdk._internal.runtime.keyed_scheduler.retained_size",
+                    wraps=retained_size,
+                ) as scheduler_size,
+            ):
+                self.assertTrue(source.submit(event))
+                source.stop_accepting()
+                pump.start()
+                self.assertTrue(pump.drain(timeout=2))
+                self.assertEqual(source_size.call_count + scheduler_size.call_count, 1)
+            self.assertEqual(dispatched, [event])
+            self.assertEqual(source.metrics().acknowledged, 1)
+            self.assertEqual(source.metrics().current_bytes, 0)
+            self.assertEqual(scheduler.metrics().current_pending_bytes, 0)
+        finally:
+            source.stop_accepting()
+            scheduler.stop(timeout=1)
+            pump.stop(timeout=1)
+
+    def test_transferred_size_enforces_a_smaller_scheduler_budget(self) -> None:
+        event = replace(key_down_event(), settings={"values": list(range(10_000))})
+        source = InboundEventQueue(1)
+        scheduler = KeyedSerialHandlerScheduler(
+            FakeRuntimeEventDispatcher(lambda event: DispatchResult(DispatchOutcome.HANDLED)),
+            worker_count=4,
+            pending_limit=4,
+            pending_byte_limit=retained_size(event, 1_000_000) - 1,
+        )
+        pump = RuntimeEventPump(source, scheduler)
+        scheduler.start()
+        try:
+            self.assertTrue(source.submit(event))
+            source.stop_accepting()
+            pump.start()
+            self.assertTrue(pump.drain(timeout=2))
+            self.assertIsInstance(pump.failure, ValueError)
+            self.assertEqual(scheduler.metrics().rejected_oversized, 1)
+            self.assertEqual(scheduler.metrics().accepted, 0)
+            self.assertEqual(source.metrics().acknowledged, 1)
+        finally:
+            source.stop_accepting()
+            scheduler.stop(timeout=1)
+            pump.stop(timeout=1)
+
     def test_selective_admission_preserves_lifecycle_broadcast_and_unknown_barriers(self) -> None:
         for barrier in (
             will_appear_event(),

@@ -102,14 +102,14 @@ jobs:
           cat build/runtime-scheduler-benchmark/diagnostics.log >&2
           exit "$benchmark_status"
 
-      - name: Measure zero-delay scheduler matrix
+      - name: Check zero-delay scheduler budgets
         if: ${{ !cancelled() }}
         run: |
           benchmark_status=0
           python scripts/benchmark_runtime_scheduler.py \
             --events 10000 --repeats 3 --callback-delay 0 \
             --workers 4 --pending-limit 64 --coalescing-events 512 \
-            --coalescing-pending-limits 1,4,16,64 --json \
+            --coalescing-pending-limits 1,4,16,64 --check --json \
             > build/runtime-scheduler-benchmark/scheduler-zero-delay.json \
             2> build/runtime-scheduler-benchmark/scheduler-zero-delay.log || benchmark_status=$?
           cat build/runtime-scheduler-benchmark/scheduler-zero-delay.log >&2
@@ -136,12 +136,12 @@ jobs:
           cat build/runtime-scheduler-benchmark/settings-copies.log >&2
           exit "$benchmark_status"
 
-      - name: Measure mixed load and global barriers
+      - name: Check mixed load and global barrier budgets
         if: ${{ !cancelled() }}
         run: |
           benchmark_status=0
-          python -m scripts.benchmark_runtime_workload --mode mixed \
-            --batches 10 --events-per-segment 64 \
+          python -m scripts.benchmark_runtime_workload --mode mixed --check \
+            --batches 10 --repeats 3 --events-per-segment 64 \
             --workers 4 --pending-limit 64 --source-limit 256 \
             > build/runtime-scheduler-benchmark/mixed-load.json \
             2> build/runtime-scheduler-benchmark/mixed-load.log || benchmark_status=$?

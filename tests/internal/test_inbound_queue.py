@@ -74,6 +74,62 @@ class _IndexCostDeque(deque[_QueuedEvent]):
 
 
 class InboundEventQueueTests(unittest.TestCase):
+    def test_payload_size_walk_does_not_hold_the_queue_lock(self) -> None:
+        sizing, release, observed = Event(), Event(), Event()
+        event = replace(key_down("button"), settings={"values": list(range(10_000))})
+        queue = InboundEventQueue(1)
+
+        def slow_size(value: object, limit: int) -> int:
+            sizing.set()
+            if not release.wait(2):
+                raise TimeoutError("size walk was not released")
+            return retained_size(value, limit)
+
+        def observe() -> None:
+            queue.metrics()
+            observed.set()
+
+        with patch("mirabox_sdk._internal.messaging.inbound.retained_size", slow_size):
+            submitter = Thread(target=lambda: queue.submit(event))
+            observer = Thread(target=observe)
+            submitter.start()
+            try:
+                self.assertTrue(sizing.wait(1))
+                observer.start()
+                self.assertTrue(observed.wait(1))
+            finally:
+                release.set()
+                submitter.join(2)
+                if observer.ident is not None:
+                    observer.join(2)
+        self.assertIs(queue.receive(timeout=0), event)
+        queue.task_done()
+
+    def test_resubmission_measures_current_mutable_payload(self) -> None:
+        event = key_down("button")
+        queue = InboundEventQueue(1)
+        self.assertTrue(queue.submit(event))
+        first = queue.receive_selected_sized(lambda events: 0, timeout=0)
+        queue.task_done()
+        event.settings["values"] = list(range(10_000))
+        self.assertTrue(queue.submit(event))
+        second = queue.receive_selected_sized(lambda events: 0, timeout=0)
+        self.assertGreater(second.size, first.size)
+        self.assertEqual(second.size, retained_size(event, queue.metrics().byte_limit))
+        queue.task_done()
+
+    def test_sized_selection_receives_updated_coalescing_weight(self) -> None:
+        queue = InboundEventQueue(1, coalesce_dial_rotations=True)
+        queue.submit(dial("button"))
+        queue.submit(replace(dial("button"), ticks=2**40, settings={"values": list(range(10_000))}))
+        weight = queue.metrics().current_bytes
+        item = queue.receive_selected_sized(lambda events: 0, timeout=0)
+        self.assertEqual(item.event.ticks, 2**40 + 1)
+        self.assertEqual(item.size, weight)
+        self.assertEqual(item.size, retained_size(item.event, queue.metrics().byte_limit))
+        self.assertEqual(queue.metrics().current_bytes, 0)
+        queue.task_done()
+
     def test_settings_byte_budget_rejects_before_item_limit_and_releases(self) -> None:
         event = replace(key_down("button"), settings={"large": "x" * 4096})
         size = retained_size(event, 100_000)
