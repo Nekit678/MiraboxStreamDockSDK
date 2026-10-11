@@ -70,6 +70,10 @@ change public APIs between minor versions.
 
 ### Fixed
 
+- Isolate action settings codecs per registry and UUID without mutating the
+  original action class (N-03). Keep existing instances, custom constructors,
+  classmethod decoders and settings persistence bound to their registration's
+  codec; decorators continue returning the original class.
 - Isolate Property Inspector reconnects from stale socket events, close replaced
   sockets, and report their unsent queued messages through `sendError` (N-04).
   Preserve the active session when new callback data is invalid.

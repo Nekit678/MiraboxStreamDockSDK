@@ -475,6 +475,104 @@ class ActionTests(unittest.TestCase):
 
 
 class ActionRegistryTests(unittest.TestCase):
+    def test_codecs_are_isolated_for_shared_action_classes_and_existing_instances(self) -> None:
+        def make_codec(label: str) -> FunctionalJsonCodec[JsonObject]:
+            return FunctionalJsonCodec(
+                lambda value: {**value, "codec": label},
+                lambda value: {**value, "codec": label},
+            )
+
+        class SharedAction(RecordingAction):
+            def __init__(
+                self,
+                action: str,
+                context: str,
+                settings: JsonObject,
+                dependencies: ExampleDependencies,
+            ) -> None:
+                super().__init__(action, context, settings, dependencies)
+                self.constructor_codec = self.settings_codec
+
+            @classmethod
+            def decode_settings(cls, settings: JsonObject) -> JsonObject:
+                decoded = super().decode_settings(settings)
+                decoded["custom"] = True
+                return decoded
+
+        first = ActionRegistry[ExampleDependencies]()
+        second = ActionRegistry[ExampleDependencies]()
+        codec_a = make_codec("A")
+        codec_b = make_codec("B")
+        sender = FakeStreamDockSender()
+        dependencies = ExampleDependencies(sender)
+        direct = SharedAction(ACTION_UUID, "direct", {}, dependencies)
+        self.assertIs(
+            first.register(ACTION_UUID, settings_codec=codec_a)(SharedAction), SharedAction
+        )
+        existing = first.create(ACTION_UUID, "existing", {}, dependencies)
+        assert isinstance(existing, SharedAction)
+        self.assertEqual(existing.settings, {"codec": "A", "custom": True})
+
+        self.assertIs(
+            second.register(ACTION_UUID, settings_codec=codec_b)(SharedAction), SharedAction
+        )
+
+        for registry, label, codec in ((first, "A", codec_a), (second, "B", codec_b)):
+            with self.subTest(codec=label):
+                action = registry.create(ACTION_UUID, label, {}, dependencies)
+                assert isinstance(action, SharedAction)
+                self.assertEqual(action.settings, {"codec": label, "custom": True})
+                self.assertIs(action.constructor_codec, codec)
+                self.assertIs(action.get_settings_codec(), codec)
+                action.update_settings_from_wire({"count": 1})
+                self.assertEqual(action.settings, {"count": 1, "codec": label, "custom": True})
+                action.set_settings({"count": 2})
+                self.assertEqual(sender.messages[-1]["payload"], {"count": 2, "codec": label})
+
+        existing.update_settings_from_wire({"count": 3})
+        self.assertEqual(existing.settings, {"count": 3, "codec": "A", "custom": True})
+        existing.set_settings({"count": 4})
+        self.assertEqual(sender.messages[-1]["payload"], {"count": 4, "codec": "A"})
+        existing.set_settings_async({"count": 5}).result(timeout=0)
+        self.assertEqual(sender.messages[-1]["payload"], {"count": 5, "codec": "A"})
+        self.assertEqual(existing.settings, {"count": 5, "codec": "A"})
+        direct.update_settings_from_wire({"count": 6})
+        self.assertEqual(direct.settings, {"count": 6, "custom": True})
+        self.assertIs(SharedAction.settings_codec, JSON_OBJECT_CODEC)
+
+    def test_codecs_are_isolated_per_uuid_and_preserve_inherited_class_defaults(self) -> None:
+        class_codec = FunctionalJsonCodec[JsonObject](
+            lambda value: {**value, "codec": "class"}, lambda value: value
+        )
+
+        class BaseAction(RecordingAction):
+            settings_codec = class_codec
+
+        class SharedAction(BaseAction):
+            pass
+
+        registry = ActionRegistry[ExampleDependencies]()
+        for label in ("A", "B"):
+            codec = FunctionalJsonCodec[JsonObject](
+                lambda value, label=label: {**value, "codec": label},
+                lambda value, label=label: {**value, "codec": label},
+            )
+            registry.register(f"{ACTION_UUID}.{label}", settings_codec=codec)(SharedAction)
+        registry.register(f"{ACTION_UUID}.class")(SharedAction)
+
+        for label in ("A", "B", "class"):
+            with self.subTest(codec=label):
+                action = registry.create(
+                    f"{ACTION_UUID}.{label}", label, {}, ExampleDependencies(Mock())
+                )
+                assert isinstance(action, SharedAction)
+                self.assertEqual(action.settings, {"codec": label})
+                action.update_settings_from_wire({"count": 1})
+                self.assertEqual(action.settings, {"count": 1, "codec": label})
+
+        self.assertIs(BaseAction.settings_codec, class_codec)
+        self.assertIs(SharedAction.settings_codec, class_codec)
+
     def test_typed_registration_binds_codec_and_preserves_constructor_and_methods(self) -> None:
         @dataclass(frozen=True)
         class Settings:
@@ -508,11 +606,12 @@ class ActionRegistryTests(unittest.TestCase):
         dependencies = ExampleDependencies(stream_dock)
 
         self.assertIs(registered, TypedAction)
-        self.assertIs(registered.settings_codec, codec)
-        self.assertIs(registered.get_settings_codec(), codec)
+        self.assertIs(registered.settings_codec, JSON_OBJECT_CODEC)
         self.assertIs(RecordingAction.settings_codec, JSON_OBJECT_CODEC)
         action = registry.create(ACTION_UUID, "button", {"count": 1}, dependencies)
         assert isinstance(action, TypedAction)
+        self.assertIs(action.settings_codec, codec)
+        self.assertIs(action.get_settings_codec(), codec)
         self.assertEqual(action.initial_count, 1)
         self.assertIs(action.dependencies, dependencies)
 
@@ -534,7 +633,8 @@ class ActionRegistryTests(unittest.TestCase):
         replacement = FunctionalJsonCodec[Settings](decode, lambda value: {"count": 0})
         with self.assertRaisesRegex(ValueError, "already registered"):
             registry.register(ACTION_UUID, settings_codec=replacement)(TypedAction)
-        self.assertIs(TypedAction.settings_codec, codec)
+        self.assertIs(TypedAction.settings_codec, JSON_OBJECT_CODEC)
+        self.assertIs(action.settings_codec, codec)
 
     def test_registration_preserves_the_original_action_class(self) -> None:
         registry = ActionRegistry[ExampleDependencies]()

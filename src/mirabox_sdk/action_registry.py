@@ -73,7 +73,7 @@ class ActionRegistry(Generic[DependenciesT]):
 
     A registry belongs to one plugin application. Keeping registrations on an
     instance prevents tests and multiple plugin runtimes in the same process
-    from leaking action classes into each other.
+    from leaking action classes or settings codecs into each other.
 
     ``DependenciesT`` is the dependency-container type accepted by every
     action registered in this instance.
@@ -108,11 +108,15 @@ class ActionRegistry(Generic[DependenciesT]):
                 ``manifest.json``.
             settings_codec: Codec matching the action's declared settings
                 type. Required for settings other than :class:`JsonObject`;
-                registration assigns it to the original action class.
+                registration binds it to an internal subclass used only for
+                this UUID in this registry, preserving the original class.
 
         Returns:
             A decorator that checks settings and dependency compatibility and
             returns the original action class with its concrete type.
+            Registry-created instances expose the registered codec through
+            ``settings_codec`` and ``get_settings_codec()``; the original
+            class retains its default codec.
 
         Raises:
             ValueError: If ``action_uuid`` is empty or has already been
@@ -135,10 +139,16 @@ class ActionRegistry(Generic[DependenciesT]):
                 raise ValueError(f"Action is already registered: {action_uuid}")
             if not isinstance(action_type, type) or not issubclass(action_type, Action):
                 raise TypeError("Registered action must inherit from Action")
+            registered_type = action_type
             if settings_codec is not None:
-                # Replace the descriptor; direct assignment is typed as the descriptor itself.
-                setattr(action_type, "settings_codec", settings_codec)  # noqa: B010
-            self._action_types[action_uuid] = action_type
+                # Classmethod decoders and constructor-time settings operations
+                # must see this registration's codec without changing the shared class.
+                registered_type = type(
+                    f"_Registered{action_type.__name__}",
+                    (action_type,),
+                    {"__module__": action_type.__module__, "settings_codec": settings_codec},
+                )
+            self._action_types[action_uuid] = registered_type
             # Codec and constructor typing check settings and dependencies; the check above
             # establishes that this callable is the original Action class.
             return cast(type[ActionTypeT], action_type)

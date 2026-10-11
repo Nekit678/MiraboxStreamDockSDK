@@ -315,10 +315,15 @@ class CounterAction(Action[CounterSettings, Dependencies]):
     pass
 ```
 
-Registration binds the codec to the original action class and checks its
-settings and dependency types, including when a custom constructor accepts a
-wider settings argument. `Action.get_settings_codec()` returns the codec with
-its settings type preserved. Typed actions must pass `settings_codec` even
+Registration keeps the codec local to that UUID and registry and checks the
+action's settings and dependency types, including when a custom constructor
+accepts a wider settings argument. The decorator returns the original class;
+the registry creates an internal subclass with the registered codec, preserving
+`isinstance(action, YourAction)` and custom constructors and classmethod decoders.
+Read the registered codec from `action.settings_codec` or
+`action.get_settings_codec()`; the original class retains its default codec.
+Reusing the class in another registry or for another UUID does not change
+existing instances. Typed actions must pass `settings_codec` even
 when their class or a parent class already defines it; registration without
 that argument accepts actions with `JsonObject` settings. Existing typed
 actions should move their codec assignment into the registration call.

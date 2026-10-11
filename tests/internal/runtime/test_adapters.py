@@ -19,6 +19,46 @@ from .fakes import FakeDependencies, RecordingAction, RecordingCommandSink, will
 
 
 class ActionRegistryFactoryAdapterTests(unittest.TestCase):
+    def test_runtime_keeps_shared_action_codecs_local_to_each_registry(self) -> None:
+        class SharedAction(RecordingAction):
+            pass
+
+        first = ActionRegistry[FakeDependencies]()
+        second = ActionRegistry[FakeDependencies]()
+        codec_a = FunctionalJsonCodec[JsonObject](
+            lambda value: {**value, "codec": "A"}, lambda value: value
+        )
+        codec_b = FunctionalJsonCodec[JsonObject](
+            lambda value: {**value, "codec": "B"}, lambda value: value
+        )
+        dependencies = FakeDependencies(RecordingCommandSink())
+        first.register("com.example.action", settings_codec=codec_a)(SharedAction)
+        first_manager = DefaultActionContextManager(
+            ActionRegistryFactoryAdapter(first, dependencies)
+        )
+        existing = first_manager.create(will_appear_event(action="com.example.action"))
+        assert isinstance(existing, SharedAction)
+        self.assertEqual(existing.settings, {"count": 1, "codec": "A"})
+
+        second.register("com.example.action", settings_codec=codec_b)(SharedAction)
+        second_manager = DefaultActionContextManager(
+            ActionRegistryFactoryAdapter(second, dependencies)
+        )
+
+        for manager, label in ((first_manager, "A"), (second_manager, "B")):
+            with self.subTest(codec=label):
+                event = will_appear_event(action="com.example.action", context=label)
+                action = manager.create(event)
+                assert isinstance(action, SharedAction)
+                self.assertEqual(action.settings, {"count": 1, "codec": label})
+                action.update_settings_from_wire({"count": 2})
+                self.assertEqual(action.settings, {"count": 2, "codec": label})
+                self.assertEqual(event.settings, {"count": 1})
+
+        existing.update_settings_from_wire({"count": 3})
+        self.assertEqual(existing.settings, {"count": 3, "codec": "A"})
+        self.assertIs(SharedAction.settings_codec, JSON_OBJECT_CODEC)
+
     def test_runtime_transfers_one_plain_copy_to_default_and_custom_codecs(self) -> None:
         class PassthroughCodec(JsonObjectCodec):
             def decode(self, value: JsonObject) -> JsonObject:

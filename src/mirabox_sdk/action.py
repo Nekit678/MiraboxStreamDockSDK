@@ -69,7 +69,7 @@ class _DefaultSettingsCodec:
         instance: Action[SettingsT, DependenciesT] | None,
         owner: type[Action[SettingsT, DependenciesT]],
     ) -> JsonCodec[SettingsT]:
-        # Typed registrations replace this descriptor with a matching codec.
+        # Typed registrations shadow this descriptor on a registration-local subclass.
         return cast(JsonCodec[SettingsT], JSON_OBJECT_CODEC)
 
 
@@ -103,8 +103,9 @@ class Action(Generic[SettingsT, DependenciesT]):
             before Stream Dock reports it.
         dependencies: Application-owned services available to callbacks.
         settings_codec: Codec used to decode and encode ``SettingsT`` values.
-            Registration binds a custom codec to the action class. The default
-            codec validates and copies a :class:`JsonObject`.
+            Registration binds a custom codec to an internal subclass used by
+            that registry. The original class retains its default codec, which
+            validates and copies a :class:`JsonObject` unless overridden.
     """
 
     # A descriptor ties both class and instance access to SettingsT without
