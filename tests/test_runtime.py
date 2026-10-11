@@ -5,12 +5,15 @@ from __future__ import annotations
 import json
 import unittest
 from dataclasses import dataclass, replace
+from threading import Event, Thread
+from time import monotonic
 from unittest.mock import Mock, call, patch
 
 from mirabox_sdk import (
     JSON_OBJECT_CODEC,
     Action,
     ActionRegistry,
+    ActionSettingsBusyError,
     CommandFuture,
     Controller,
     Coordinates,
@@ -21,6 +24,9 @@ from mirabox_sdk import (
     JsonCodecEncodeError,
     JsonObject,
     KeyDownEvent,
+    OutboundCommandCancelledError,
+    OutboundCommandDeadlineExceededError,
+    OutboundQueueFullError,
     PluginLaunchArguments,
     RegistrationApplicationInfo,
     RegistrationColors,
@@ -37,12 +43,14 @@ from mirabox_sdk import (
     parse_plugin_cli_arguments,
     run_plugin_cli,
 )
+from mirabox_sdk._internal.messaging.outbound import OutboundCommandQueue
 from mirabox_sdk.json_types import (
     _clone_json_object_source,
     _copy_on_write_json_object,
     _prepare_copy_on_write_json_object,
     clone_json_object,
 )
+from mirabox_sdk.testing import FakeStreamDockSender
 
 ACTION_UUID = "com.example.counter"
 REGISTRATION_INFO_JSON = (
@@ -187,6 +195,137 @@ class CopyOnWriteJsonTests(unittest.TestCase):
 
 
 class ActionTests(unittest.TestCase):
+    def test_async_settings_reentrant_encoding_is_busy_and_releases_slot(self) -> None:
+        queue = OutboundCommandQueue(1)
+        action = RecordingAction(ACTION_UUID, "button", {"count": 1}, ExampleDependencies(queue))
+        codec = FunctionalJsonCodec(
+            decoder=lambda raw: raw,
+            encoder=lambda raw: action.set_settings_async(raw),
+        )
+        with patch.object(RecordingAction, "settings_codec", codec):
+            with self.assertRaises(ActionSettingsBusyError):
+                action.set_settings_async({"count": 2})
+        completion = action.set_settings_async({"count": 3})
+        queue.receive().completion._finish()
+        completion.result(timeout=0)
+        self.assertEqual(action.settings, {"count": 3})
+
+    def test_async_settings_commit_before_observers_and_isolate_input(self) -> None:
+        queue = OutboundCommandQueue(1)
+        action = RecordingAction(ACTION_UUID, "button", {"count": 1}, ExampleDependencies(queue))
+        settings: JsonObject = {"nested": {"items": [2]}}
+        completion = action.set_settings_async(settings)
+        settings["nested"] = {"items": [3]}
+        self.assertEqual(action.settings, {"count": 1})
+        self.assertFalse(completion.done())
+        observations = []
+        completion.add_done_callback(lambda result: observations.append((result, action.settings)))
+        queue.receive().completion._finish()
+        completion.result(timeout=0)
+        self.assertEqual(action.settings, {"nested": {"items": [2]}})
+        self.assertEqual(observations, [(completion, action.settings)])
+
+    def test_async_settings_rollback_and_next_write_after_cancel_or_deadline(self) -> None:
+        for cancel in (False, True):
+            with self.subTest(cancel=cancel):
+                queue = OutboundCommandQueue(1)
+                action = RecordingAction(
+                    ACTION_UUID, "button", {"count": 1}, ExampleDependencies(queue)
+                )
+                completion = action.set_settings_async(
+                    {"count": 2}, deadline=monotonic() + (10 if cancel else 0.03)
+                )
+                observed = []
+                observer_finished = Event()
+
+                def observe(result, observed=observed, action=action, done=observer_finished):
+                    observed.append(action.settings)
+                    done.set()
+
+                completion.add_done_callback(observe)
+                if cancel:
+                    self.assertTrue(completion.cancel())
+                    self.assertTrue(completion.cancelled())
+                with self.assertRaises(
+                    OutboundCommandCancelledError
+                    if cancel
+                    else OutboundCommandDeadlineExceededError
+                ):
+                    completion.result(timeout=1)
+                self.assertTrue(observer_finished.wait(1))
+                self.assertEqual(observed, [{"count": 1}])
+                self.assertEqual(action.settings, {"count": 1})
+                next_write = action.set_settings_async({"count": 3})
+                queue.receive().completion._finish()
+                next_write.result(timeout=0)
+                self.assertEqual(action.settings, {"count": 3})
+                queue.shutdown(timeout=0)
+
+    def test_async_settings_reject_overlap_and_recover_from_acceptance_errors(self) -> None:
+        queue = OutboundCommandQueue(1)
+        action = RecordingAction(ACTION_UUID, "button", {"count": 1}, ExampleDependencies(queue))
+        first = action.set_settings_async({"count": 2})
+        with self.assertRaises(ActionSettingsBusyError):
+            action.set_settings_async({"invalid": object()})  # type: ignore[dict-item]
+        self.assertTrue(first.cancel())
+        blocker = queue.send_async(SetStateCommand("button", 1))
+        with self.assertRaises(OutboundQueueFullError):
+            action.set_settings_async({"count": 3})
+        blocker.cancel()
+        completion = action.set_settings_async({"count": 4})
+        failure = OSError("send failed")
+        queue.receive().completion._finish(error=failure)
+        self.assertIs(completion.exception(timeout=0), failure)
+        self.assertEqual(action.settings, {"count": 1})
+
+    def test_sync_settings_deadline_covers_wait_for_pending_async_write(self) -> None:
+        queue = OutboundCommandQueue(1)
+        action = RecordingAction(ACTION_UUID, "button", {"count": 1}, ExampleDependencies(queue))
+        pending = action.set_settings_async({"count": 2})
+        with self.assertRaises(OutboundCommandDeadlineExceededError):
+            action.set_settings({"count": 3}, deadline=monotonic() + 0.02)
+        self.assertFalse(pending.done())
+        self.assertEqual(action.settings, {"count": 1})
+        pending.cancel()
+        with self.assertRaises(OutboundCommandDeadlineExceededError):
+            action.set_settings({"count": 3}, deadline=monotonic() + 0.02)
+        self.assertEqual(action.settings, {"count": 1})
+        queue.shutdown(timeout=0)
+
+    def test_incoming_settings_replace_after_pending_async_commit(self) -> None:
+        queue = OutboundCommandQueue(1)
+        action = RecordingAction(ACTION_UUID, "button", {"count": 1}, ExampleDependencies(queue))
+        completion = action.set_settings_async({"count": 2})
+        entered = Event()
+        received = Event()
+
+        def receive() -> None:
+            entered.set()
+            action.update_settings_from_wire({"count": 3})
+            received.set()
+
+        thread = Thread(target=receive)
+        thread.start()
+        try:
+            self.assertTrue(entered.wait(1))
+            self.assertFalse(received.wait(0.02))
+            queue.receive().completion._finish()
+            completion.result(timeout=0)
+            self.assertTrue(received.wait(1))
+            self.assertEqual(action.settings, {"count": 3})
+        finally:
+            queue.shutdown(timeout=0)
+            thread.join(1)
+
+    def test_async_settings_immediate_completion_allows_observer_to_write(self) -> None:
+        action = RecordingAction(
+            ACTION_UUID, "button", {"count": 1}, ExampleDependencies(FakeStreamDockSender())
+        )
+        completion = action.set_settings_async({"count": 2})
+        completion.add_done_callback(lambda result: action.set_settings_async({"count": 3}))
+        self.assertTrue(completion.done())
+        self.assertEqual(action.settings, {"count": 3})
+
     def test_async_display_helpers_return_command_futures(self) -> None:
         stream_dock = Mock()
         futures = (CommandFuture(), CommandFuture(), CommandFuture())

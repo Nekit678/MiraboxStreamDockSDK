@@ -16,7 +16,7 @@ transport or event-dispatch diagnostics are required.
 
 __version__ = "0.5.0"
 
-from .action import Action
+from .action import Action, ActionSettingsBusyError
 from .action_registry import (
     ActionClass,
     ActionRegistration,
@@ -54,6 +54,8 @@ from .completion import (
     OutboundCommandBusClosedError,
     OutboundCommandBusError,
     OutboundCommandBusNotReadyError,
+    OutboundCommandCancelledError,
+    OutboundCommandDeadlineExceededError,
     OutboundQueueFullError,
 )
 from .diagnostics import SdkDiagnostic, SourceLocation
@@ -170,6 +172,7 @@ __all__ = [
     "StopSignal",
     "__version__",
     "Action",
+    "ActionSettingsBusyError",
     "ActionClass",
     "ActionContextMetrics",
     "ApplicationContext",
@@ -228,6 +231,8 @@ __all__ = [
     "OutboundCommandBusClosedError",
     "OutboundCommandBusError",
     "OutboundCommandBusNotReadyError",
+    "OutboundCommandCancelledError",
+    "OutboundCommandDeadlineExceededError",
     "OutboundCommandQueueMetrics",
     "OutboundQueueFullError",
     "OwnedJsonPayload",

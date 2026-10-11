@@ -8,6 +8,10 @@ change public APIs between minor versions.
 
 ### Added
 
+- Add accepted-command deadlines across queueing and transport, pre-send
+  cancellation, and `Action.set_settings_async()` with commit/rollback (PERF-04).
+  Settings and async display helpers accept monotonic deadlines; an expired
+  in-flight WebSocket write aborts the connection without retrying the command.
 - Add `mirabox-sdk init-plugin` with version-matched, distributable project
   templates, public harness replay tests and a short test/build/validate/install
   guide (DX-03). Add a buildable background-service example showing readiness,

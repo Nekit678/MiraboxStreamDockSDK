@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 from threading import Event, current_thread
 from threading import enumerate as enumerate_threads
+from time import monotonic
 
 from mirabox_sdk import LogMessageCommand, StreamDockCommand
 from mirabox_sdk._internal.messaging.outbound import OutboundCommandQueue
@@ -26,6 +27,95 @@ class _RecordingEncoder:
 
 
 class CommandWriterTests(unittest.TestCase):
+    def test_cancel_unblocks_raw_backpressure_without_draining_the_first_frame(self) -> None:
+        commands = OutboundCommandQueue(2)
+        entered = Event()
+
+        class BlockingRawQueue(RawOutboundQueue):
+            def submit(self, frame, *, timeout=None):
+                if frame.payload == "cancelled":
+                    entered.set()
+                return super().submit(frame, timeout=timeout)
+
+        raw = BlockingRawQueue(1)
+        writer = CommandWriter(commands, _RecordingEncoder(), raw)
+        writer.start()
+        first = commands.send_async(LogMessageCommand("first"))
+        cancelled = commands.send_async(LogMessageCommand("cancelled"))
+        try:
+            self.assertTrue(entered.wait(1))
+            self.assertTrue(cancelled.cancel())
+            self.assertTrue(writer.stop(timeout=1))
+            self.assertEqual(raw.metrics().current_depth, 1)
+            self.assertFalse(raw.receive(timeout=0).receipt.done())
+            with self.assertRaises(CommandWriterStoppedError):
+                first.result(timeout=0)
+        finally:
+            raw.stop_accepting()
+            writer.stop(timeout=1)
+
+    def test_deadline_during_encoding_completes_without_late_frame(self) -> None:
+        commands = OutboundCommandQueue(1)
+        raw = RawOutboundQueue(1)
+        entered = Event()
+        release = Event()
+
+        class BlockingEncoder:
+            def encode(self, command: StreamDockCommand) -> str:
+                entered.set()
+                if not release.wait(1):
+                    raise AssertionError("encoder was not released")
+                return "late"
+
+        writer = CommandWriter(commands, BlockingEncoder(), raw)
+        writer.start()
+        try:
+            completion = commands.send_async(LogMessageCommand("late"), deadline=monotonic() + 0.1)
+            self.assertTrue(entered.wait(1))
+            with self.assertRaisesRegex(TimeoutError, "deadline"):
+                completion.result(timeout=1)
+            self.assertFalse(release.is_set())
+        finally:
+            release.set()
+            self.assertTrue(writer.stop(timeout=1))
+        self.assertEqual(raw.metrics().enqueued, 0)
+
+    def test_raw_backpressure_uses_remaining_deadline_and_clears_pending(self) -> None:
+        commands = OutboundCommandQueue(2)
+        raw = RawOutboundQueue(1)
+        writer = CommandWriter(commands, _RecordingEncoder(), raw)
+        writer.start()
+        first = commands.send_async(LogMessageCommand("first"))
+        second = commands.send_async(LogMessageCommand("expired"), deadline=monotonic() + 0.05)
+        try:
+            with self.assertRaisesRegex(TimeoutError, "deadline"):
+                second.result(timeout=1)
+            frame = raw.receive(timeout=1)
+            self.assertEqual(frame.payload, "first")
+            frame.receipt._finish()
+            first.result(timeout=1)
+            self.assertTrue(writer.drain(timeout=1))
+            # A frame admitted concurrently with expiry is guarded against send.
+            if raw.metrics().current_depth:
+                expired = raw.receive(timeout=0)
+                self.assertFalse(expired.begin_send(lambda: None))
+        finally:
+            self.assertTrue(writer.stop(timeout=1))
+
+    def test_cancel_after_serialization_prevents_transport_send(self) -> None:
+        commands = OutboundCommandQueue(1)
+        raw = RawOutboundQueue(1)
+        writer = CommandWriter(commands, _RecordingEncoder(), raw)
+        writer.start()
+        completion = commands.send_async(LogMessageCommand("cancelled"))
+        try:
+            frame = raw.receive(timeout=1)
+            self.assertTrue(completion.cancel())
+            self.assertFalse(frame.begin_send(lambda: None))
+            self.assertTrue(writer.drain(timeout=1))
+        finally:
+            self.assertTrue(writer.stop(timeout=1))
+
     def test_serializes_off_caller_thread_preserves_fifo_and_bridges_receipts(
         self,
     ) -> None:

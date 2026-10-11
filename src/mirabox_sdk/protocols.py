@@ -13,7 +13,7 @@ class StreamDockSender(Protocol):
     """Minimal thread-safe outbound command channel required by helpers."""
 
     @abstractmethod
-    def send(self, command: StreamDockCommand) -> None:
+    def send(self, command: StreamDockCommand, *, deadline: float | None = None) -> None:
         """Submit one command to the connection's outbound writer.
 
         Calls from application threads may overlap. The relative FIFO order of
@@ -24,12 +24,16 @@ class StreamDockSender(Protocol):
 
         Args:
             command: Typed command to transmit.
+            deadline: Absolute ``time.monotonic()`` deadline covering queueing
+                and transport I/O. ``None`` leaves completion unbounded.
         """
 
         ...
 
     @abstractmethod
-    def send_async(self, command: StreamDockCommand) -> CommandFuture:
+    def send_async(
+        self, command: StreamDockCommand, *, deadline: float | None = None
+    ) -> CommandFuture:
         """Submit one command without waiting for serialization or transport.
 
         Queue-capacity, lifecycle, and shutdown rejections are raised before
@@ -39,6 +43,7 @@ class StreamDockSender(Protocol):
 
         Args:
             command: Typed command to transmit.
+            deadline: Absolute ``time.monotonic()`` deadline for the command.
 
         Returns:
             Completion handle for the accepted command.

@@ -956,8 +956,12 @@ started the command writer, both `send()` and `send_async()` raise
 `OutboundCommandBusNotReadyError` and do not enqueue a command. For
 high-frequency display rendering, `Action.set_image_async()`,
 `set_title_async()`, and `set_state_async()` avoid holding an inbound callback
-while the writer is slow. Global settings also offer async persistence with
-commit/rollback as described above; `Action.set_settings()` remains synchronous.
+while the writer is slow. `Action.set_settings_async()` and global settings
+offer async persistence with commit/rollback. An action's local settings change
+only after successful sending, before its persistence future completes.
+Overlapping async action writes raise `ActionSettingsBusyError` before encoding;
+synchronous writes and incoming settings wait for the pending write to finish.
+`Action.set_settings()` remains synchronous and accepts a deadline.
 Run slow external I/O in an application service and give dependency clients
 finite operation deadlines. A command-future wait timeout does not impose a
 transport deadline.
@@ -966,6 +970,38 @@ transport deadline.
 a transport `TimeoutError`. Only an expired wait raises
 `TimeoutError("Outbound command did not complete before the timeout")`; it does
 not cancel the command, and a later call can retrieve its terminal result.
+
+Set `deadline=time.monotonic() + seconds` on `send()` or `send_async()` to bound
+an accepted command across the typed queue, serialization, raw-queue backpressure,
+connection wait and WebSocket send. Async display helpers, both action settings
+helpers, and all global settings write methods accept the same keyword.
+`None` preserves unbounded completion. Invalid timestamps are rejected immediately.
+Expiry completes the future with `OutboundCommandDeadlineExceededError`, a
+`TimeoutError` subclass. Queued commands are removed and their capacity released;
+they cannot be sent later. A shared deadline worker handles accepted commands,
+including when the writer is blocked. Python encoding work may continue after
+expiry, but its output is discarded. Caller-side codecs and mutation callbacks
+must finish before an async persistence helper returns and cannot be interrupted.
+Synchronous settings deadlines also cover waiting for an earlier transaction.
+
+```python
+from time import monotonic
+
+completion = action.set_settings_async(next_settings, deadline=monotonic() + 0.5)
+completion.add_done_callback(observe_command)
+```
+
+`future.cancel()` returns `True` only if it cancels the command before transport
+send starts. Cancellation completes it with `OutboundCommandCancelledError`,
+sets `cancelled()` and rolls back pending local settings. Once sending starts,
+explicit cancellation returns `False`. Deadline expiry during a send aborts the
+socket and ends the session, since a partial WebSocket write cannot be safely
+reused. Delivery to the host is uncertain at this point; local settings remain
+unchanged and the SDK does not retry. Other pending commands fail on disconnect.
+Persistence futures delegate cancellation to their accepted command.
+Commands with deadlines are not coalesced, keeping their budgets independent.
+Cancelling any handle of a coalesced command without a deadline cancels the
+shared physical command and completes every associated handle with cancellation.
 
 The outbound queue holds 1,024 waiting commands by default. It never silently
 drops a command when full: `send()` and `send_async()` raise

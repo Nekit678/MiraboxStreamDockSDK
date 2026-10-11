@@ -6,9 +6,10 @@ import logging
 from collections.abc import Callable
 from concurrent.futures import InvalidStateError
 from math import isfinite
-from threading import Condition, Thread, current_thread
+from threading import TIMEOUT_MAX, Condition, Thread, current_thread
 from time import monotonic
 
+from ...completion import OutboundCommandCancelledError, OutboundCommandDeadlineExceededError
 from ..lifecycle import RuntimeWorkerError
 from ..protocol.ports import StreamDockCommandEncoder
 from ..transport.frames import OutboundFrame, TransportReceipt
@@ -217,6 +218,9 @@ class CommandWriter(CommandWriterWorker):
                 self._condition.notify_all()
 
     def _process(self, submission: CommandSubmission) -> None:
+        completion = submission.completion
+        if completion.done():
+            return
         try:
             payload = self._encoder.encode(submission.command)
         except Exception as exc:
@@ -232,17 +236,35 @@ class CommandWriter(CommandWriterWorker):
 
         with self._condition:
             self._serialized += 1
+        if completion.done():
+            return
 
         receipt = TransportReceipt()
-        completion = submission.completion
         with self._condition:
             self._pending[receipt] = completion
         receipt._add_done_callback(lambda error: self._complete_receipt(receipt, error))
-        frame = OutboundFrame(payload, receipt)
+        frame = OutboundFrame(payload, receipt, begin_send=completion._start_send)
+        completion.add_done_callback(lambda result: self._terminate_receipt(receipt, result))
+        if receipt.done():
+            return
 
         try:
-            accepted = self._sink.submit(frame)
+            deadline = completion._control.deadline
+            if deadline is None:
+                accepted = self._sink.submit(frame)
+            else:
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    completion._expire()
+                    self._finish_receipt(receipt, error=completion.exception(timeout=0))
+                    return
+                accepted = self._sink.submit(frame, timeout=min(remaining, TIMEOUT_MAX))
         except Exception as exc:
+            if completion.done() and isinstance(
+                completion.exception(timeout=0),
+                (OutboundCommandCancelledError, OutboundCommandDeadlineExceededError),
+            ):
+                return
             logger.error(
                 "Raw outbound sink failed for %s (%s)",
                 type(submission.command).__name__,
@@ -264,6 +286,11 @@ class CommandWriter(CommandWriterWorker):
                 receipt,
                 error=RawOutboundRejectedError("Raw outbound queue rejected serialized frame"),
             )
+
+    def _terminate_receipt(self, receipt: TransportReceipt, completion: CommandFuture) -> None:
+        error = completion.exception(timeout=0)
+        if isinstance(error, (OutboundCommandCancelledError, OutboundCommandDeadlineExceededError)):
+            self._finish_receipt(receipt, error=error)
 
     def _complete_receipt(
         self,
@@ -298,7 +325,7 @@ class CommandWriter(CommandWriterWorker):
     def _finish_receipt(
         receipt: TransportReceipt,
         *,
-        error: Exception,
+        error: Exception | None,
     ) -> None:
         try:
             receipt._finish(error=error)

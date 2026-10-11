@@ -84,6 +84,16 @@ def check_contract(
 ) -> None:
     sender: StreamDockSender = FakeStreamDockSender()
     assert_type(sender.send_async(LogMessageCommand("typed command")), CommandFuture)
+    command = sender.send_async(LogMessageCommand("bounded command"), deadline=1.0)
+    assert_type(command, CommandFuture)
+    assert_type(command.cancel(), bool)
+    assert_type(command.cancelled(), bool)
+    assert_type(sender.send(LogMessageCommand("bounded sync command"), deadline=1.0), None)
+    assert_type(action.set_settings_async({"count": 1}, deadline=1.0), CommandFuture)
+    assert_type(action.set_settings({"count": 1}, deadline=1.0), None)
+    assert_type(action.set_state_async(1, deadline=1.0), CommandFuture)
+    assert_type(action.set_title_async("title", deadline=1.0), CommandFuture)
+    assert_type(action.set_image_async("image", deadline=1.0), CommandFuture)
     assert_type(context.stream_dock.send_async(LogMessageCommand("shared sender")), CommandFuture)
     assert_type(context.global_settings.loaded, bool)
     assert_type(context.global_settings.snapshot(), JsonObject)
@@ -91,6 +101,17 @@ def check_contract(
     assert_type(persistence, CommandFuture)
     assert_type(persistence.add_done_callback(observe_completion), None)
     assert_type(context.global_settings.set_async({"count": 1}), CommandFuture)
+    assert_type(context.global_settings.set_async({"count": 1}, deadline=1.0), CommandFuture)
+    assert_type(
+        context.global_settings.update_async(lambda draft: draft.update(count=1), deadline=1.0),
+        CommandFuture,
+    )
+    assert_type(
+        context.global_settings.set_typed_async(
+            CustomSettings(1), CUSTOM_SETTINGS_CODEC, deadline=1.0
+        ),
+        CommandFuture,
+    )
     assert_type(
         context.global_settings.set_typed_async(CustomSettings(1), CUSTOM_SETTINGS_CODEC),
         CommandFuture,

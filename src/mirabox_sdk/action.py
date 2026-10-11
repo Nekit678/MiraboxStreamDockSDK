@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from threading import TIMEOUT_MAX, Condition, get_ident
+from time import monotonic
 from typing import Generic, TypeVar, cast
 
 from .codecs import JSON_OBJECT_CODEC, JsonCodec, _decode_owned_with_codec, decode_with_codec
@@ -18,7 +20,7 @@ from .commands import (
     ShowOkCommand,
     StreamDockCommand,
 )
-from .completion import CommandFuture
+from .completion import CommandFuture, OutboundCommandDeadlineExceededError, _validate_deadline
 from .events import (
     ApplicationDidLaunchEvent,
     ApplicationDidTerminateEvent,
@@ -48,6 +50,10 @@ from .protocols import StreamDockActionDependencies
 SettingsT = TypeVar("SettingsT")
 PayloadT = TypeVar("PayloadT")
 DependenciesT = TypeVar("DependenciesT", bound=StreamDockActionDependencies)
+
+
+class ActionSettingsBusyError(RuntimeError):
+    """Reject async persistence while this action has a settings write pending."""
 
 
 class _DefaultSettingsCodec:
@@ -127,12 +133,22 @@ class Action(Generic[SettingsT, DependenciesT]):
         self.title_parameters: TitleParameters | None = None
         self.dependencies = dependencies
         self._stream_dock = dependencies.stream_dock
+        self._settings_lock = Condition()
+        self._settings_pending: CommandFuture | None = None
+        self._settings_submitting_thread: int | None = None
 
-    def _send(self, command: StreamDockCommand) -> None:
-        self._stream_dock.send(command)
+    def _send(self, command: StreamDockCommand, *, deadline: float | None = None) -> None:
+        if deadline is None:
+            self._stream_dock.send(command)
+        else:
+            self._stream_dock.send(command, deadline=deadline)
 
-    def _send_async(self, command: StreamDockCommand) -> CommandFuture:
-        return self._stream_dock.send_async(command)
+    def _send_async(
+        self, command: StreamDockCommand, *, deadline: float | None = None
+    ) -> CommandFuture:
+        if deadline is None:
+            return self._stream_dock.send_async(command)
+        return self._stream_dock.send_async(command, deadline=deadline)
 
     def send_to_property_inspector(self, payload: JsonObject) -> None:
         """Send a JSON object to this action's Property Inspector.
@@ -185,7 +201,7 @@ class Action(Generic[SettingsT, DependenciesT]):
 
         self._send(SetStateCommand(self.context, state))
 
-    def set_state_async(self, state: int) -> CommandFuture:
+    def set_state_async(self, state: int, *, deadline: float | None = None) -> CommandFuture:
         """Queue a displayed-state update without waiting for transport I/O.
 
         Args:
@@ -196,7 +212,7 @@ class Action(Generic[SettingsT, DependenciesT]):
             the eventual writer-side outcome is required.
         """
 
-        return self._send_async(SetStateCommand(self.context, state))
+        return self._send_async(SetStateCommand(self.context, state), deadline=deadline)
 
     def set_title(
         self,
@@ -223,6 +239,7 @@ class Action(Generic[SettingsT, DependenciesT]):
         *,
         target: int = 0,
         state: int | None = None,
+        deadline: float | None = None,
     ) -> CommandFuture:
         """Queue a title update without waiting for transport I/O.
 
@@ -236,7 +253,9 @@ class Action(Generic[SettingsT, DependenciesT]):
             the eventual writer-side outcome is required.
         """
 
-        return self._send_async(SetTitleCommand(self.context, title, target, state))
+        return self._send_async(
+            SetTitleCommand(self.context, title, target, state), deadline=deadline
+        )
 
     @classmethod
     def get_settings_codec(cls) -> JsonCodec[SettingsT]:
@@ -274,9 +293,12 @@ class Action(Generic[SettingsT, DependenciesT]):
             JsonCodecDecodeError: If :attr:`settings_codec` rejects the value.
         """
 
-        self.settings = self.decode_settings(settings)
+        next_settings = self.decode_settings(settings)
+        with self._settings_lock:
+            self._wait_for_settings_write(None)
+            self.settings = next_settings
 
-    def set_settings(self, settings: SettingsT) -> None:
+    def set_settings(self, settings: SettingsT, *, deadline: float | None = None) -> None:
         """Persist settings for this context and update local state.
 
         The local :attr:`settings` value changes only after encoding and sending
@@ -285,6 +307,8 @@ class Action(Generic[SettingsT, DependenciesT]):
 
         Args:
             settings: New settings in the action's declared ``SettingsT`` type.
+            deadline: Absolute ``time.monotonic()`` deadline for waiting and
+                sending. Encoding on the caller cannot be interrupted.
 
         Raises:
             JsonCodecEncodeError: If :attr:`settings_codec` cannot encode the
@@ -293,15 +317,77 @@ class Action(Generic[SettingsT, DependenciesT]):
                 isolated local settings.
         """
 
+        deadline = _validate_deadline(deadline)
+        with self._settings_lock:
+            self._wait_for_settings_write(deadline)
+            self._settings_pending = CommandFuture()
+            self._settings_submitting_thread = get_ident()
+        try:
+            command, next_settings = self._prepare_settings(settings)
+            self._send(command, deadline=deadline)
+            with self._settings_lock:
+                self.settings = next_settings
+        finally:
+            with self._settings_lock:
+                self._settings_pending = None
+                self._settings_submitting_thread = None
+                self._settings_lock.notify_all()
+
+    def set_settings_async(
+        self, settings: SettingsT, *, deadline: float | None = None
+    ) -> CommandFuture:
+        """Encode here, then persist without waiting for transport I/O.
+
+        The future completes after local commit or rollback. An overlapping
+        async write raises ActionSettingsBusyError before encoding. A deadline
+        is an absolute time.monotonic() timestamp covering command completion.
+        """
+
+        deadline = _validate_deadline(deadline)
+        with self._settings_lock:
+            if self._settings_pending is not None:
+                raise ActionSettingsBusyError("An action settings write is already in progress")
+            completion = CommandFuture()
+            self._settings_pending = completion
+            self._settings_submitting_thread = get_ident()
+        try:
+            command, next_settings = self._prepare_settings(settings)
+            sent = self._send_async(command, deadline=deadline)
+        except BaseException:
+            with self._settings_lock:
+                self._settings_pending = None
+                self._settings_lock.notify_all()
+            raise
+        finally:
+            with self._settings_lock:
+                self._settings_submitting_thread = None
+        completion._delegate_cancel(sent)
+
+        def finished(result: CommandFuture) -> None:
+            error = result.exception(timeout=0)
+            with self._settings_lock:
+                if error is None:
+                    self.settings = next_settings
+                self._settings_pending = None
+                self._settings_lock.notify_all()
+            completion._finish(error=error)
+
+        sent.add_done_callback(finished)
+        return completion
+
+    def _prepare_settings(self, settings: SettingsT) -> tuple[SetSettingsCommand, SettingsT]:
         codec = self.settings_codec
-        command = SetSettingsCommand.from_settings(
-            context=self.context,
-            settings=settings,
-            codec=codec,
-        )
-        next_settings = _decode_owned_with_codec(command.settings, codec)
-        self._send(command)
-        self.settings = next_settings
+        command = SetSettingsCommand.from_settings(self.context, settings, codec)
+        return command, _decode_owned_with_codec(command.settings, codec)
+
+    def _wait_for_settings_write(self, deadline: float | None) -> None:
+        if self._settings_pending is not None and self._settings_submitting_thread == get_ident():
+            raise ActionSettingsBusyError("An action settings write is already in progress")
+        while self._settings_pending is not None:
+            remaining = None if deadline is None else deadline - monotonic()
+            if remaining is not None and remaining <= 0:
+                raise OutboundCommandDeadlineExceededError("Action settings deadline exceeded")
+            self._settings_lock.wait(None if remaining is None else min(remaining, TIMEOUT_MAX))
 
     def get_settings(self) -> None:
         """Request the latest persisted settings for this action context.
@@ -339,6 +425,7 @@ class Action(Generic[SettingsT, DependenciesT]):
         *,
         target: int = 0,
         state: int | None = None,
+        deadline: float | None = None,
     ) -> CommandFuture:
         """Queue an image update without waiting for transport I/O.
 
@@ -352,7 +439,9 @@ class Action(Generic[SettingsT, DependenciesT]):
             the eventual writer-side outcome is required.
         """
 
-        return self._send_async(SetImageCommand(self.context, image, target, state))
+        return self._send_async(
+            SetImageCommand(self.context, image, target, state), deadline=deadline
+        )
 
     def show_ok(self) -> None:
         """Show Stream Dock's temporary success indicator on this action."""

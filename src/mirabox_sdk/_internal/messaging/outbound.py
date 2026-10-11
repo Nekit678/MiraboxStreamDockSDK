@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from collections import deque
+from concurrent.futures import InvalidStateError
 from dataclasses import dataclass
 from enum import Enum
 from math import isfinite
-from threading import Condition, Lock
+from threading import TIMEOUT_MAX, Condition, Lock, Thread
 from time import monotonic
 
 from ...commands import (
@@ -22,6 +23,7 @@ from ...completion import (
     OutboundCommandBusError,
     OutboundCommandBusNotReadyError,
     OutboundQueueFullError,
+    _validate_deadline,
 )
 from ..transport.buffer_limits import DEFAULT_QUEUE_BYTE_LIMIT, retained_size, validate_byte_limit
 from .metrics import OutboundCommandQueueMetrics
@@ -50,12 +52,14 @@ class WriterReadyOutboundCommandSink(OutboundCommandSink):
         self._lock = Lock()
         self._state = _CommandSinkLifecycleState.CREATED
 
-    def send(self, command: StreamDockCommand) -> None:
+    def send(self, command: StreamDockCommand, *, deadline: float | None = None) -> None:
         """Submit a command and wait for its terminal result when writer-ready."""
 
-        self.send_async(command).result()
+        self.send_async(command, deadline=deadline).result()
 
-    def send_async(self, command: StreamDockCommand) -> CommandFuture:
+    def send_async(
+        self, command: StreamDockCommand, *, deadline: float | None = None
+    ) -> CommandFuture:
         """Submit a command only after the boundary starts its command writer."""
 
         if not isinstance(command, StreamDockCommand):
@@ -74,8 +78,13 @@ class WriterReadyOutboundCommandSink(OutboundCommandSink):
             _CommandSinkLifecycleState.STOPPING,
             _CommandSinkLifecycleState.CLOSED,
         ):
+            return self._submit(command, deadline)
+        return self._submit(command, deadline)
+
+    def _submit(self, command: StreamDockCommand, deadline: float | None) -> CommandFuture:
+        if deadline is None:
             return self._sink.send_async(command)
-        return self._sink.send_async(command)
+        return self._sink.send_async(command, deadline=deadline)
 
     def begin_starting(self) -> None:
         """Mark the boundary startup phase before workers are started."""
@@ -105,11 +114,12 @@ class WriterReadyOutboundCommandSink(OutboundCommandSink):
             self._state = _CommandSinkLifecycleState.CLOSED
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, eq=False)
 class _QueuedCommand:
     command: StreamDockCommand
     completion: CommandFuture
     size: int
+    deadline: float | None
 
 
 class OutboundCommandQueue(
@@ -136,6 +146,9 @@ class OutboundCommandQueue(
         self._byte_limit = byte_limit
         self._condition = Condition()
         self._queue: deque[_QueuedCommand] = deque()
+        self._queued: dict[CommandFuture, _QueuedCommand] = {}
+        self._deadlines: dict[CommandFuture, float] = {}
+        self._deadline_thread: Thread | None = None
         self._accepting = True
 
         self._peak_depth = 0
@@ -150,16 +163,19 @@ class OutboundCommandQueue(
         self._peak_bytes = 0
         self._rejected_oversized = 0
 
-    def send(self, command: StreamDockCommand) -> None:
+    def send(self, command: StreamDockCommand, *, deadline: float | None = None) -> None:
         """Submit a command and wait for writer-side terminal completion."""
 
-        self.send_async(command).result()
+        self.send_async(command, deadline=deadline).result()
 
-    def send_async(self, command: StreamDockCommand) -> CommandFuture:
+    def send_async(
+        self, command: StreamDockCommand, *, deadline: float | None = None
+    ) -> CommandFuture:
         """Accept a typed command or synchronously report queue rejection."""
 
         if not isinstance(command, StreamDockCommand):
             raise TypeError("command must be StreamDockCommand")
+        deadline = _validate_deadline(deadline)
 
         with self._condition:
             self._submitted += 1
@@ -174,7 +190,7 @@ class OutboundCommandQueue(
                 raise OutboundQueueFullError(
                     f"Outbound command exceeds byte limit (byte_limit={self._byte_limit})"
                 )
-            completion = self._coalesce(command, size)
+            completion = self._coalesce(command, size) if deadline is None else None
             if completion is not None:
                 self._coalesced += 1
                 self._condition.notify_all()
@@ -189,8 +205,27 @@ class OutboundCommandQueue(
                     f"(limit={self._queue_limit}, byte_limit={self._byte_limit})"
                 )
 
-            completion = CommandFuture()
-            self._queue.append(_QueuedCommand(command, completion, size))
+            completion = CommandFuture(deadline=deadline)
+            queued = _QueuedCommand(command, completion, size, deadline)
+            self._queue.append(queued)
+            self._queued[completion] = queued
+            completion.add_done_callback(self._command_finished)
+            if deadline is not None:
+                self._deadlines[completion] = deadline
+                if self._deadline_thread is None:
+                    self._deadline_thread = Thread(
+                        target=self._watch_deadlines,
+                        name="mirabox-command-deadlines",
+                        daemon=True,
+                    )
+                    try:
+                        self._deadline_thread.start()
+                    except BaseException:
+                        self._deadline_thread = None
+                        self._deadlines.pop(completion, None)
+                        self._queued.pop(completion, None)
+                        self._queue.remove(queued)
+                        raise
             self._current_bytes += size
             self._peak_bytes = max(self._peak_bytes, self._current_bytes)
             self._enqueued += 1
@@ -214,11 +249,36 @@ class OutboundCommandQueue(
                 self._condition.wait(remaining)
 
             queued = self._queue.popleft()
+            self._queued.pop(queued.completion, None)
             self._current_bytes -= queued.size
             self._dequeued += 1
             self._condition.notify_all()
 
-        return CommandSubmission(queued.command, queued.completion)
+            return CommandSubmission(queued.command, queued.completion)
+
+    def _command_finished(self, completion: CommandFuture) -> None:
+        with self._condition:
+            queued = self._queued.pop(completion, None)
+            if queued is not None:
+                self._queue.remove(queued)
+                self._current_bytes -= queued.size
+            self._deadlines.pop(completion, None)
+            self._condition.notify_all()
+
+    def _watch_deadlines(self) -> None:
+        while True:
+            with self._condition:
+                if not self._deadlines:
+                    self._deadline_thread = None
+                    return
+                completion, deadline = min(self._deadlines.items(), key=lambda item: item[1])
+                remaining = deadline - monotonic()
+                if remaining > 0:
+                    self._condition.wait(min(remaining, TIMEOUT_MAX))
+                    continue
+                self._deadlines.pop(completion, None)
+            # Completion callbacks may submit commands; never run under the queue lock.
+            completion._expire()
 
     def stop_accepting(self) -> None:
         """Reject new commands while allowing accepted commands to drain."""
@@ -257,13 +317,17 @@ class OutboundCommandQueue(
             completions = []
             while self._queue:
                 queued = self._queue.popleft()
+                self._queued.pop(queued.completion, None)
                 completions.append(queued.completion)
             discarded = tuple(completions)
             self._current_bytes = 0
             self._condition.notify_all()
 
         for completion in discarded:
-            completion._finish(error=error)
+            try:
+                completion._finish(error=error)
+            except InvalidStateError:
+                pass
         return False
 
     def metrics(self) -> OutboundCommandQueueMetrics:
@@ -292,17 +356,22 @@ class OutboundCommandQueue(
             return None
 
         queued = self._queue[-1]
+        if queued.deadline is not None:
+            return None
         key = self._coalescing_key(command)
         if key is None or key != self._coalescing_key(queued.command):
             return None
         replacement_bytes = self._current_bytes - queued.size + size
         if replacement_bytes > self._byte_limit:
             return None
-        queued.command = command
-        queued.size = size
-        self._current_bytes = replacement_bytes
-        self._peak_bytes = max(self._peak_bytes, self._current_bytes)
-        return queued.completion._share()
+        with queued.completion._control.lock:
+            if queued.completion._control.terminal:
+                return None
+            queued.command = command
+            queued.size = size
+            self._current_bytes = replacement_bytes
+            self._peak_bytes = max(self._peak_bytes, self._current_bytes)
+            return queued.completion._share()
 
     @staticmethod
     def _coalescing_key(command: StreamDockCommand) -> tuple[object, ...] | None:

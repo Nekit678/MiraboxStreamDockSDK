@@ -2,8 +2,16 @@ from __future__ import annotations
 
 import unittest
 from threading import Event, Lock, Thread
+from time import monotonic
+from unittest.mock import patch
 
-from mirabox_sdk import LogMessageCommand, SetImageCommand, SetStateCommand, SetTitleCommand
+from mirabox_sdk import (
+    LogMessageCommand,
+    OutboundCommandCancelledError,
+    SetImageCommand,
+    SetStateCommand,
+    SetTitleCommand,
+)
 from mirabox_sdk._internal.messaging.outbound import (
     OutboundCommandQueue,
     OutboundCommandQueueClosedError,
@@ -14,6 +22,99 @@ from mirabox_sdk._internal.transport.buffer_limits import retained_size
 
 
 class OutboundCommandQueueTests(unittest.TestCase):
+    def test_invalid_deadlines_are_rejected_before_acceptance(self) -> None:
+        queue = OutboundCommandQueue(1)
+        for deadline in (True, "1", float("inf"), float("nan")):
+            with self.subTest(deadline=deadline), self.assertRaisesRegex(ValueError, "deadline"):
+                queue.send_async(LogMessageCommand("invalid"), deadline=deadline)  # type: ignore[arg-type]
+        self.assertEqual(queue.metrics().submitted, 0)
+        self.assertEqual(queue.metrics().current_depth, 0)
+
+    def test_cancelling_a_coalesced_handle_cancels_the_shared_command(self) -> None:
+        queue = OutboundCommandQueue(1, coalesce_commands=True)
+        old = queue.send_async(SetStateCommand("button", 1))
+        new = queue.send_async(SetStateCommand("button", 2))
+        self.assertTrue(new.cancel())
+        for completion in (old, new):
+            self.assertTrue(completion.cancelled())
+            with self.assertRaises(OutboundCommandCancelledError):
+                completion.result(timeout=0)
+        self.assertEqual(queue.metrics().current_depth, 0)
+        self.assertEqual(queue.metrics().current_bytes, 0)
+
+    def test_submission_during_cancellation_does_not_join_terminal_completion(self) -> None:
+        queue = OutboundCommandQueue(2, coalesce_commands=True)
+        cancelled = queue.send_async(SetStateCommand("button", 1))
+        finishing = Event()
+        release = Event()
+        set_exception = cancelled._future.set_exception
+
+        def delay_completion(error) -> None:
+            finishing.set()
+            if not release.wait(1):
+                raise AssertionError("cancellation was not released")
+            set_exception(error)
+
+        with patch.object(cancelled._future, "set_exception", side_effect=delay_completion):
+            thread = Thread(target=cancelled.cancel)
+            thread.start()
+            try:
+                self.assertTrue(finishing.wait(1))
+                accepted = queue.send_async(SetStateCommand("button", 2))
+            finally:
+                release.set()
+                thread.join(1)
+        self.assertFalse(accepted.done())
+        queue.receive().completion._finish()
+        accepted.result(timeout=0)
+        queue.shutdown(timeout=0)
+
+    def test_large_finite_deadline_can_be_cancelled_without_overflow(self) -> None:
+        queue = OutboundCommandQueue(1)
+        completion = queue.send_async(LogMessageCommand("far future"), deadline=1e100)
+        self.assertTrue(completion.cancel())
+        self.assertTrue(queue.shutdown(timeout=0))
+
+    def test_deadline_expires_without_a_writer_and_releases_capacity(self) -> None:
+        queue = OutboundCommandQueue(1)
+        completion = queue.send_async(LogMessageCommand("expired"), deadline=monotonic() + 0.03)
+        self.assertTrue(completion.wait(1))
+        with self.assertRaisesRegex(TimeoutError, "deadline"):
+            completion.result(timeout=0)
+        self.assertTrue(queue.drain(timeout=1))
+        self.assertEqual(queue.metrics().current_bytes, 0)
+        accepted = queue.send_async(LogMessageCommand("next"))
+        queue.receive().completion._finish()
+        accepted.result(timeout=0)
+        queue.shutdown(timeout=0)
+
+    def test_cancel_removes_queued_command_and_runs_observers_once(self) -> None:
+        queue = OutboundCommandQueue(1)
+        completion = queue.send_async(LogMessageCommand("cancelled"))
+        observed = []
+        completion.add_done_callback(lambda result: observed.append(result))
+        self.assertTrue(completion.cancel())
+        self.assertFalse(completion.cancel())
+        self.assertTrue(completion.cancelled())
+        self.assertEqual(observed, [completion])
+        self.assertEqual(queue.metrics().current_depth, 0)
+        self.assertEqual(queue.metrics().current_bytes, 0)
+        queue.shutdown(timeout=0)
+
+    def test_commands_with_deadlines_do_not_share_coalesced_completion(self) -> None:
+        queue = OutboundCommandQueue(3, coalesce_commands=True)
+        old = queue.send_async(SetStateCommand("button", 1))
+        expiring = queue.send_async(SetStateCommand("button", 2), deadline=monotonic() + 10)
+        new = queue.send_async(SetStateCommand("button", 3))
+        self.assertTrue(expiring.cancel())
+        self.assertFalse(old.done())
+        self.assertFalse(new.done())
+        self.assertEqual(queue.receive().command, SetStateCommand("button", 1))
+        self.assertEqual(queue.receive().command, SetStateCommand("button", 3))
+        old._finish()
+        new._finish()
+        queue.shutdown(timeout=0)
+
     def test_byte_budget_rejects_large_images_before_item_limit_and_releases(self) -> None:
         image = SetImageCommand("button", "data:image/png;base64," + "x" * 4096)
         size = retained_size(image, 100_000)

@@ -51,7 +51,13 @@ class WebSocketConnectorClosedError(WebSocketConnectorError):
     """Report an outbound frame discarded during bounded shutdown."""
 
 
+class _AbortableWebSocket(Protocol):
+    def abort(self) -> None: ...
+
+
 class _WebSocketApp(Protocol):
+    @property
+    def sock(self) -> _AbortableWebSocket | None: ...
     def run_forever(self) -> object: ...
 
     def send(self, data: str) -> object: ...
@@ -295,6 +301,13 @@ class WebSocketClientConnector(WebSocketConnector):
             self._clear_in_flight(frame)
             return True
 
+        if frame.receipt.done() or (
+            frame.begin_send is not None
+            and not frame.begin_send(lambda: self._abort_deadline_send(frame))
+        ):
+            self._clear_in_flight(frame)
+            return True
+
         try:
             self._ws.send(frame.payload)
         except Exception as exc:
@@ -313,6 +326,22 @@ class WebSocketClientConnector(WebSocketConnector):
                 self._outbound_frames_sent += 1
         self._clear_in_flight(frame)
         return True
+
+    def _abort_deadline_send(self, frame: OutboundFrame) -> None:
+        with self._condition:
+            if self._in_flight is not frame:
+                return
+            self._connected = False
+            self._stop_requested = True
+            self._condition.notify_all()
+            socket = self._ws.sock
+        # close() performs a WebSocket handshake and can wait on the send lock.
+        # abort() shuts down the socket directly, interrupting the blocked write.
+        if socket is not None:
+            try:
+                socket.abort()
+            except Exception as exc:
+                self._publish_transport_error(exc)
 
     def _on_open(self, _ws: object) -> None:
         with self._condition:

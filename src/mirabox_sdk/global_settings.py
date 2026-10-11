@@ -25,6 +25,9 @@ class GlobalSettings(Protocol):
     Every consumer in one application must receive the same instance. Incoming
     ``didReceiveGlobalSettings`` events update that instance before callbacks;
     local writes update it only after their outbound command succeeds.
+    Write methods accept an absolute ``time.monotonic()`` deadline; synchronous
+    methods also apply it while waiting for an earlier settings transaction.
+    Codec and mutation callbacks execute on the caller and cannot be interrupted.
     """
 
     @property
@@ -41,13 +44,15 @@ class GlobalSettings(Protocol):
         ...
 
     @abstractmethod
-    def update(self, update: Callable[[JsonObject], None]) -> None:
+    def update(
+        self, update: Callable[[JsonObject], None], *, deadline: float | None = None
+    ) -> None:
         """Persist one rollback-safe mutation of an isolated settings draft."""
 
         ...
 
     @abstractmethod
-    def set(self, settings: JsonObject) -> None:
+    def set(self, settings: JsonObject, *, deadline: float | None = None) -> None:
         """Persist raw settings and commit them after command success."""
 
         ...
@@ -57,13 +62,17 @@ class GlobalSettings(Protocol):
         self,
         settings: GlobalSettingsT,
         codec: JsonCodec[GlobalSettingsT],
+        *,
+        deadline: float | None = None,
     ) -> None:
         """Encode, persist, and commit plugin-owned typed settings."""
 
         ...
 
     @abstractmethod
-    def update_async(self, update: Callable[[JsonObject], None]) -> CommandFuture:
+    def update_async(
+        self, update: Callable[[JsonObject], None], *, deadline: float | None = None
+    ) -> CommandFuture:
         """Mutate and validate on this thread, then persist without waiting.
 
         Only one transaction may be in progress. Raises
@@ -75,7 +84,7 @@ class GlobalSettings(Protocol):
         ...
 
     @abstractmethod
-    def set_async(self, settings: JsonObject) -> CommandFuture:
+    def set_async(self, settings: JsonObject, *, deadline: float | None = None) -> CommandFuture:
         """Validate and submit a replacement, committing only after success.
 
         Raises :class:`GlobalSettingsBusyError` if a transaction is in progress.
@@ -89,6 +98,8 @@ class GlobalSettings(Protocol):
         self,
         settings: GlobalSettingsT,
         codec: JsonCodec[GlobalSettingsT],
+        *,
+        deadline: float | None = None,
     ) -> CommandFuture:
         """Encode on this thread and persist with the same async guarantees."""
 

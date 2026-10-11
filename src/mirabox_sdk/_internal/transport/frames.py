@@ -138,3 +138,6 @@ class OutboundFrame:
 
     payload: TextFrame
     receipt: TransportReceipt
+    # The writer supplies a guard that atomically claims sending and installs
+    # the connector's abort hook, without coupling transport to command types.
+    begin_send: Callable[[Callable[[], None]], bool] | None = None

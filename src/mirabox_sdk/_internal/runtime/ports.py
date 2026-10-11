@@ -190,13 +190,15 @@ class StreamDockSender(Protocol):
     """Narrow typed command port supplied to runtime collaborators."""
 
     @abstractmethod
-    def send(self, command: StreamDockCommand) -> None:
+    def send(self, command: StreamDockCommand, *, deadline: float | None = None) -> None:
         """Submit a command and wait for its terminal result."""
 
         ...
 
     @abstractmethod
-    def send_async(self, command: StreamDockCommand) -> CommandFuture:
+    def send_async(
+        self, command: StreamDockCommand, *, deadline: float | None = None
+    ) -> CommandFuture:
         """Submit a command and return its boundary completion handle."""
 
         ...

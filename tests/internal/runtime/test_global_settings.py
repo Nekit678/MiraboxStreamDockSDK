@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 from threading import Event, Thread
+from time import monotonic
 from unittest.mock import Mock, patch
 
 import mirabox_sdk.json_types as json_types
@@ -13,6 +14,8 @@ from mirabox_sdk import (
     LogMessageCommand,
     OutboundCommandBusClosedError,
     OutboundCommandBusNotReadyError,
+    OutboundCommandCancelledError,
+    OutboundCommandDeadlineExceededError,
     OutboundQueueFullError,
     SetGlobalSettingsCommand,
 )
@@ -30,6 +33,70 @@ from .fakes import RecordingCommandSink
 
 
 class DefaultGlobalSettingsStateTests(unittest.TestCase):
+    def test_async_deadline_and_cancel_rollback_before_public_completion(self) -> None:
+        codec = FunctionalJsonCodec[int](
+            decoder=lambda raw: int(raw["count"]), encoder=lambda count: {"count": count}
+        )
+        for method in ("set_async", "update_async", "set_typed_async"):
+            for cancel in (False, True):
+                with self.subTest(method=method, cancel=cancel):
+                    queue = OutboundCommandQueue(1)
+                    state = DefaultGlobalSettingsState("plugin", queue)
+                    state.receive({"count": 1})
+                    facade = GlobalSettingsCoordinator(state)
+                    deadline = monotonic() + (10 if cancel else 0.03)
+                    if method == "set_async":
+                        completion = facade.set_async({"count": 2}, deadline=deadline)
+                    elif method == "update_async":
+                        completion = facade.update_async(
+                            lambda draft: draft.update(count=2), deadline=deadline
+                        )
+                    else:
+                        completion = facade.set_typed_async(2, codec, deadline=deadline)
+                    observations = []
+                    observer_finished = Event()
+
+                    def observe(
+                        result, observations=observations, facade=facade, done=observer_finished
+                    ):
+                        observations.append(facade.snapshot())
+                        done.set()
+
+                    completion.add_done_callback(observe)
+                    if cancel:
+                        self.assertTrue(completion.cancel())
+                        self.assertTrue(completion.cancelled())
+                    with self.assertRaises(
+                        OutboundCommandCancelledError
+                        if cancel
+                        else OutboundCommandDeadlineExceededError
+                    ):
+                        completion.result(timeout=1)
+                    self.assertTrue(observer_finished.wait(1))
+                    self.assertEqual(observations, [{"count": 1}])
+                    next_write = facade.set_async({"count": 3})
+                    queue.receive().completion._finish()
+                    next_write.result(timeout=0)
+                    self.assertEqual(facade.snapshot(), {"count": 3})
+                    queue.shutdown(timeout=0)
+
+    def test_sync_settings_deadline_does_not_cancel_an_existing_transaction(self) -> None:
+        queue = OutboundCommandQueue(1)
+        state = DefaultGlobalSettingsState("plugin", queue)
+        state.receive({"count": 1})
+        facade = GlobalSettingsCoordinator(state)
+        pending = facade.set_async({"count": 2})
+        mutation = Mock()
+        with self.assertRaises(OutboundCommandDeadlineExceededError):
+            facade.update(mutation, deadline=monotonic() + 0.02)
+        mutation.assert_not_called()
+        self.assertFalse(pending.done())
+        pending.cancel()
+        with self.assertRaises(OutboundCommandDeadlineExceededError):
+            facade.set({"count": 3}, deadline=monotonic() + 0.02)
+        self.assertEqual(facade.snapshot(), {"count": 1})
+        queue.shutdown(timeout=0)
+
     def test_snapshot_and_replay_clone_each_container_once(self) -> None:
         state = DefaultGlobalSettingsState("plugin", RecordingCommandSink())
         source = state.receive({"nested": {"items": [1, 2]}})

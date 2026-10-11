@@ -966,8 +966,12 @@ errors с исходной причиной в `__cause__`; owned event при �
 `OutboundCommandBusNotReadyError` и не ставят команду в очередь. Для частого
 обновления отображения `Action.set_image_async()`, `set_title_async()` и
 `set_state_async()` не удерживают inbound callback при медленном writer-е.
-Global settings также поддерживают async persistence с commit/rollback,
-описанным выше; `Action.set_settings()` остаётся синхронным. Длительный внешний
+`Action.set_settings_async()` и global settings поддерживают async persistence
+с commit/rollback. Локальные настройки action меняются только после успешной
+отправки, до завершения persistence future. Параллельная async-запись настроек
+одного action вызывает `ActionSettingsBusyError` до кодирования; синхронные
+записи и входящие настройки ждут завершения текущей записи.
+`Action.set_settings()` остаётся синхронным и принимает deadline. Длительный внешний
 I/O выполняйте в application service, задавая клиентам зависимостей конечные
 deadlines операций. Timeout ожидания future не задаёт deadline transport.
 
@@ -975,6 +979,39 @@ deadlines операций. Timeout ожидания future не задаёт de
 числе транспортный `TimeoutError`. Только истечение ожидания вызывает
 `TimeoutError("Outbound command did not complete before the timeout")`; команда
 при этом не отменяется, и её итоговый результат можно получить следующим вызовом.
+
+Передайте `deadline=time.monotonic() + seconds` в `send()` или `send_async()`,
+чтобы ограничить принятую команду одним бюджетом на typed queue, сериализацию,
+backpressure raw queue, ожидание подключения и WebSocket send. Async helpers
+отображения, оба helpers настроек action и все методы записи global settings
+принимают тот же keyword. `None` сохраняет неограниченное ожидание завершения.
+Некорректные timestamps отклоняются сразу. Истечение deadline завершает future
+ошибкой `OutboundCommandDeadlineExceededError`, подклассом `TimeoutError`.
+Ожидающая команда удаляется из очереди с освобождением ёмкости и не отправляется
+позже. Один общий worker deadline-ов обслуживает принятые команды, даже когда
+writer заблокирован. Python-код сериализации может продолжиться после истечения
+deadline, но его результат отбрасывается. Кодеки и mutation callbacks в вызывающем
+потоке выполняются до возврата async persistence helper и не прерываются.
+Deadline синхронных настроек также ограничивает ожидание предыдущей транзакции.
+
+```python
+from time import monotonic
+
+completion = action.set_settings_async(next_settings, deadline=monotonic() + 0.5)
+completion.add_done_callback(observe_command)
+```
+
+`future.cancel()` возвращает `True`, только если отменяет команду до начала
+transport send. Отмена завершает future с `OutboundCommandCancelledError`,
+устанавливает `cancelled()` и сохраняет прежние локальные настройки. После начала
+отправки явная отмена возвращает `False`. Истечение deadline во время записи
+прерывает сокет и завершает сессию: после частичной WebSocket-записи соединение
+нельзя безопасно использовать дальше. Доставка host-у в этот момент неизвестна;
+локальные настройки сохраняются, SDK не повторяет команду. Остальные ожидающие
+команды получают ошибку отключения. Persistence futures передают отмену принятой
+команде. Команды с deadline не объединяются, сохраняя независимые бюджеты.
+Отмена любого handle объединённой команды без deadline отменяет общую физическую
+команду и завершает отменой все связанные handles.
 
 По умолчанию исходящая очередь вмещает 1024 ожидающие команды. При переполнении
 команды не теряются молча: `send()` и `send_async()` выбрасывают

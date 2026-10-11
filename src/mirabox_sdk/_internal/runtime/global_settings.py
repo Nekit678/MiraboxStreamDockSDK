@@ -5,12 +5,13 @@ from __future__ import annotations
 from abc import abstractmethod
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from threading import Condition, RLock
+from threading import TIMEOUT_MAX, Condition, RLock
+from time import monotonic
 from typing import Protocol, TypeVar, runtime_checkable
 
 from ...codecs import JsonCodec
 from ...commands import SetGlobalSettingsCommand
-from ...completion import CommandFuture
+from ...completion import CommandFuture, OutboundCommandDeadlineExceededError, _validate_deadline
 from ...events import DidReceiveGlobalSettingsEvent
 from ...global_settings import GlobalSettings, GlobalSettingsBusyError
 from ...json_types import JsonObject, ValidatedJsonObject
@@ -53,29 +54,39 @@ class GlobalSettingsState(Protocol):
     ) -> DidReceiveGlobalSettingsEvent: ...
 
     @abstractmethod
-    def update(self, update: Callable[[JsonObject], None]) -> None: ...
+    def update(
+        self, update: Callable[[JsonObject], None], *, deadline: float | None = None
+    ) -> None: ...
 
     @abstractmethod
-    def set(self, settings: JsonObject) -> None: ...
+    def set(self, settings: JsonObject, *, deadline: float | None = None) -> None: ...
 
     @abstractmethod
     def set_typed(
         self,
         settings: GlobalSettingsT,
         codec: JsonCodec[GlobalSettingsT],
+        *,
+        deadline: float | None = None,
     ) -> None: ...
 
     @abstractmethod
-    def update_async(self, update: Callable[[JsonObject], None]) -> CommandFuture: ...
+    def update_async(
+        self, update: Callable[[JsonObject], None], *, deadline: float | None = None
+    ) -> CommandFuture: ...
 
     @abstractmethod
-    def set_async(self, settings: JsonObject) -> CommandFuture: ...
+    def set_async(
+        self, settings: JsonObject, *, deadline: float | None = None
+    ) -> CommandFuture: ...
 
     @abstractmethod
     def set_typed_async(
         self,
         settings: GlobalSettingsT,
         codec: JsonCodec[GlobalSettingsT],
+        *,
+        deadline: float | None = None,
     ) -> CommandFuture: ...
 
 
@@ -139,26 +150,39 @@ class GlobalSettingsCoordinator(GlobalSettings):
         self._increment_metric("global_settings_replays")
         return event
 
-    def update(self, update: Callable[[JsonObject], None]) -> None:
+    def update(
+        self, update: Callable[[JsonObject], None], *, deadline: float | None = None
+    ) -> None:
         """Persist and commit one rollback-safe raw settings transaction."""
 
-        self._state.update(update)
+        if deadline is None:
+            self._state.update(update)
+        else:
+            self._state.update(update, deadline=deadline)
         self._increment_metric("global_settings_updates")
 
-    def set(self, settings: JsonObject) -> None:
+    def set(self, settings: JsonObject, *, deadline: float | None = None) -> None:
         """Persist raw settings and commit them only after send succeeds."""
 
-        self._state.set(settings)
+        if deadline is None:
+            self._state.set(settings)
+        else:
+            self._state.set(settings, deadline=deadline)
         self._increment_metric("global_settings_updates")
 
     def set_typed(
         self,
         settings: GlobalSettingsT,
         codec: JsonCodec[GlobalSettingsT],
+        *,
+        deadline: float | None = None,
     ) -> None:
         """Persist typed settings and commit their encoded representation."""
 
-        self._state.set_typed(settings, codec)
+        if deadline is None:
+            self._state.set_typed(settings, codec)
+        else:
+            self._state.set_typed(settings, codec, deadline=deadline)
         self._increment_metric("global_settings_updates")
 
     def metrics(self) -> ActionContextMetrics:
@@ -168,21 +192,34 @@ class GlobalSettingsCoordinator(GlobalSettings):
             return ActionContextMetrics()
         return self._metrics.snapshot()
 
-    def update_async(self, update: Callable[[JsonObject], None]) -> CommandFuture:
-        return self._track_async_update(self._state.update_async(update))
+    def update_async(
+        self, update: Callable[[JsonObject], None], *, deadline: float | None = None
+    ) -> CommandFuture:
+        if deadline is None:
+            return self._track_async_update(self._state.update_async(update))
+        return self._track_async_update(self._state.update_async(update, deadline=deadline))
 
-    def set_async(self, settings: JsonObject) -> CommandFuture:
-        return self._track_async_update(self._state.set_async(settings))
+    def set_async(self, settings: JsonObject, *, deadline: float | None = None) -> CommandFuture:
+        if deadline is None:
+            return self._track_async_update(self._state.set_async(settings))
+        return self._track_async_update(self._state.set_async(settings, deadline=deadline))
 
     def set_typed_async(
         self,
         settings: GlobalSettingsT,
         codec: JsonCodec[GlobalSettingsT],
+        *,
+        deadline: float | None = None,
     ) -> CommandFuture:
-        return self._track_async_update(self._state.set_typed_async(settings, codec))
+        if deadline is None:
+            return self._track_async_update(self._state.set_typed_async(settings, codec))
+        return self._track_async_update(
+            self._state.set_typed_async(settings, codec, deadline=deadline)
+        )
 
     def _track_async_update(self, persistence: CommandFuture) -> CommandFuture:
         completion = CommandFuture()
+        completion._delegate_cancel(persistence)
 
         def finished(result: CommandFuture) -> None:
             error = result.exception(timeout=0)
@@ -244,43 +281,66 @@ class DefaultGlobalSettingsState(GlobalSettingsState):
             resolved_source = source if source is not None else self._settings
             return DidReceiveGlobalSettingsEvent(settings=resolved_source.isolated_copy())
 
-    def update(self, update: Callable[[JsonObject], None]) -> None:
+    def update(
+        self, update: Callable[[JsonObject], None], *, deadline: float | None = None
+    ) -> None:
         if not callable(update):
             raise TypeError("update must be callable")
-        with self._write_transaction():
+        with self._write_transaction(deadline=deadline):
             draft = self.settings
             update(draft)
-            self._send_and_replace(SetGlobalSettingsCommand(self._context, draft))
+            self._send_and_replace(
+                SetGlobalSettingsCommand(self._context, draft), deadline=deadline
+            )
 
-    def set(self, settings: JsonObject) -> None:
-        with self._write_transaction():
-            self._send_and_replace(SetGlobalSettingsCommand(self._context, settings))
+    def set(self, settings: JsonObject, *, deadline: float | None = None) -> None:
+        with self._write_transaction(deadline=deadline):
+            self._send_and_replace(
+                SetGlobalSettingsCommand(self._context, settings), deadline=deadline
+            )
 
     def set_typed(
         self,
         settings: GlobalSettingsT,
         codec: JsonCodec[GlobalSettingsT],
+        *,
+        deadline: float | None = None,
     ) -> None:
-        with self._write_transaction():
+        with self._write_transaction(deadline=deadline):
             command = SetGlobalSettingsCommand.from_settings(self._context, settings, codec)
-            self._send_and_replace(command)
+            self._send_and_replace(command, deadline=deadline)
 
-    def _wait_for_pending(self) -> None:
+    def _wait_for_pending(self, deadline: float | None) -> None:
         with self._lock:
             # A reentrant send hook must not wait on its own async submission.
             if self._write_depth and self._pending is not None:
                 raise GlobalSettingsBusyError(
                     "A global settings transaction is already in progress"
                 )
-            self._lock.wait_for(lambda: self._pending is None)
+            while self._pending is not None:
+                remaining = None if deadline is None else deadline - monotonic()
+                if remaining is not None and remaining <= 0:
+                    raise OutboundCommandDeadlineExceededError("Global settings deadline exceeded")
+                self._lock.wait(None if remaining is None else min(remaining, TIMEOUT_MAX))
 
     @contextmanager
-    def _write_transaction(self, *, blocking: bool = True) -> Iterator[None]:
-        if not self._write_lock.acquire(blocking=blocking):
+    def _write_transaction(
+        self, *, blocking: bool = True, deadline: float | None = None
+    ) -> Iterator[None]:
+        deadline = _validate_deadline(deadline)
+        if blocking and deadline is not None:
+            acquired = self._write_lock.acquire(
+                timeout=min(TIMEOUT_MAX, max(0, deadline - monotonic()))
+            )
+            if not acquired:
+                raise OutboundCommandDeadlineExceededError("Global settings deadline exceeded")
+        else:
+            acquired = self._write_lock.acquire(blocking=blocking)
+        if not acquired:
             raise GlobalSettingsBusyError("A global settings transaction is already in progress")
         try:
             if blocking:
-                self._wait_for_pending()
+                self._wait_for_pending(deadline)
             else:
                 with self._lock:
                     self._require_idle_locked()
@@ -292,12 +352,19 @@ class DefaultGlobalSettingsState(GlobalSettingsState):
         finally:
             self._write_lock.release()
 
-    def _send_and_replace(self, command: SetGlobalSettingsCommand) -> None:
-        self._sender.send(command)
+    def _send_and_replace(
+        self, command: SetGlobalSettingsCommand, *, deadline: float | None = None
+    ) -> None:
+        if deadline is None:
+            self._sender.send(command)
+        else:
+            self._sender.send(command, deadline=deadline)
         with self._lock:
             self._replace_locked(ValidatedJsonObject(command.settings))
 
-    def update_async(self, update: Callable[[JsonObject], None]) -> CommandFuture:
+    def update_async(
+        self, update: Callable[[JsonObject], None], *, deadline: float | None = None
+    ) -> CommandFuture:
         if not callable(update):
             raise TypeError("update must be callable")
 
@@ -306,34 +373,45 @@ class DefaultGlobalSettingsState(GlobalSettingsState):
             update(draft)
             return SetGlobalSettingsCommand(self._context, draft)
 
-        return self._persist_async(prepare)
+        return self._persist_async(prepare, deadline=deadline)
 
-    def set_async(self, settings: JsonObject) -> CommandFuture:
-        return self._persist_async(lambda: SetGlobalSettingsCommand(self._context, settings))
+    def set_async(self, settings: JsonObject, *, deadline: float | None = None) -> CommandFuture:
+        return self._persist_async(
+            lambda: SetGlobalSettingsCommand(self._context, settings), deadline=deadline
+        )
 
     def set_typed_async(
         self,
         settings: GlobalSettingsT,
         codec: JsonCodec[GlobalSettingsT],
+        *,
+        deadline: float | None = None,
     ) -> CommandFuture:
         return self._persist_async(
-            lambda: SetGlobalSettingsCommand.from_settings(self._context, settings, codec)
+            lambda: SetGlobalSettingsCommand.from_settings(self._context, settings, codec),
+            deadline=deadline,
         )
 
-    def _persist_async(self, prepare: Callable[[], SetGlobalSettingsCommand]) -> CommandFuture:
-        with self._write_transaction(blocking=False):
+    def _persist_async(
+        self, prepare: Callable[[], SetGlobalSettingsCommand], *, deadline: float | None = None
+    ) -> CommandFuture:
+        with self._write_transaction(blocking=False, deadline=deadline):
             command = prepare()
             source = ValidatedJsonObject(command.settings)
             completion = CommandFuture()
             with self._lock:
                 self._pending = completion
             try:
-                sent = self._sender.send_async(command)
+                if deadline is None:
+                    sent = self._sender.send_async(command)
+                else:
+                    sent = self._sender.send_async(command, deadline=deadline)
             except BaseException:
                 with self._lock:
                     self._pending = None
                     self._lock.notify_all()
                 raise
+            completion._delegate_cancel(sent)
             sent.add_done_callback(lambda result: self._complete_async(result, source, completion))
             return completion
 

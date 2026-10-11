@@ -1,12 +1,21 @@
 from __future__ import annotations
 
 import ast
+import json
+import socket
 import unittest
 from pathlib import Path
 from threading import Event, Lock, Thread, current_thread
 from threading import enumerate as enumerate_threads
+from time import monotonic
 from typing import Any
 
+import websocket
+
+from mirabox_sdk import LogMessageCommand, OutboundCommandDeadlineExceededError
+from mirabox_sdk._internal.messaging.outbound import OutboundCommandQueue
+from mirabox_sdk._internal.messaging.writer import CommandWriter
+from mirabox_sdk._internal.protocol.encoder import JsonStreamDockCommandEncoder
 from mirabox_sdk._internal.transport.frames import OutboundFrame, TransportReceipt
 from mirabox_sdk._internal.transport.ports import WebSocketConnector
 from mirabox_sdk._internal.transport.queues import (
@@ -57,6 +66,7 @@ class _FakeWebSocketApp:
         self._remote_disconnected = False
         self.close_calls = 0
         self.sent: list[tuple[str, str]] = []
+        self.sock = self
         if not block_open:
             self.release_open.set()
         if not block_sends:
@@ -85,6 +95,11 @@ class _FakeWebSocketApp:
     def close(self) -> None:
         with self._lock:
             self.close_calls += 1
+        self.release_sends.set()
+        self.loop_finished.set()
+
+    def abort(self) -> None:
+        self._remote_disconnected = True
         self.release_sends.set()
         self.loop_finished.set()
 
@@ -189,6 +204,70 @@ class _ConnectorHarness:
 
 
 class WebSocketClientConnectorTests(unittest.TestCase):
+    def test_accepted_command_deadline_aborts_a_real_blocked_socket_write(self) -> None:
+        harness = _ConnectorHarness()
+        sender_socket, peer_socket = socket.socketpair()
+        self.addCleanup(sender_socket.close)
+        self.addCleanup(peer_socket.close)
+        sender_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
+        ws = websocket.WebSocket(enable_multithread=True)
+        ws.sock = sender_socket
+        ws.connected = True
+        harness.app.sock = ws
+
+        def send(data: str) -> None:
+            harness.app.send_started.set()
+            ws.send(data)
+
+        harness.app.send = send
+        commands = OutboundCommandQueue(2)
+        writer = CommandWriter(commands, JsonStreamDockCommandEncoder(), harness.raw_outbound)
+        harness.start()
+        writer.start()
+        try:
+            completion = commands.send_async(
+                LogMessageCommand("x" * 256_000), deadline=monotonic() + 0.2
+            )
+            self.assertTrue(harness.app.send_started.wait(1))
+            self.assertFalse(completion.cancel())
+            with self.assertRaises(OutboundCommandDeadlineExceededError):
+                completion.result(timeout=1)
+            self.assertTrue(writer.drain(timeout=1))
+            harness.thread.join(1)
+            self.assertFalse(harness.thread.is_alive())
+            self.assertEqual(harness.connector.metrics().outbound_frames_sent, 0)
+        finally:
+            harness.connector.close()
+            self.assertTrue(writer.stop(timeout=1))
+            harness.thread.join(1)
+
+    def test_expired_command_waiting_for_connection_is_never_sent(self) -> None:
+        harness = _ConnectorHarness(block_open=True)
+        commands = OutboundCommandQueue(1)
+        writer = CommandWriter(commands, JsonStreamDockCommandEncoder(), harness.raw_outbound)
+        harness.thread.start()
+        self.assertTrue(harness.app.run_started.wait(1))
+        writer.start()
+        try:
+            completion = commands.send_async(
+                LogMessageCommand("expired"), deadline=monotonic() + 0.05
+            )
+            with self.assertRaises(OutboundCommandDeadlineExceededError):
+                completion.result(timeout=1)
+            harness.app.release_open.set()
+            self.assertIsInstance(harness.session_events.receive(timeout=1), Connected)
+            live = commands.send_async(LogMessageCommand("live"))
+            live.result(timeout=1)
+            self.assertEqual(
+                [json.loads(payload) for payload, _ in harness.app.sent],
+                [{"event": "logMessage", "payload": {"message": "live"}}],
+            )
+        finally:
+            harness.app.release_open.set()
+            harness.connector.close()
+            self.assertTrue(writer.stop(timeout=1))
+            harness.thread.join(1)
+
     def test_transport_module_is_api_independent_and_explicitly_inherits_port(
         self,
     ) -> None:

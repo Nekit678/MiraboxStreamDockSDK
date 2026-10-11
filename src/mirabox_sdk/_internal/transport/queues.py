@@ -96,7 +96,13 @@ class _BoundedTransportQueue(Generic[ItemT]):
         self._peak_bytes = 0
         self._rejected_oversized = 0
 
-    def submit(self, item: ItemT, *, timeout: float | None = None) -> bool:
+    def submit(
+        self,
+        item: ItemT,
+        *,
+        timeout: float | None = None,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> bool:
         """Submit an item, waiting for bounded capacity when necessary."""
 
         if not isinstance(item, self._item_type):
@@ -129,6 +135,8 @@ class _BoundedTransportQueue(Generic[ItemT]):
             while len(self._queue) >= self._queue_limit or (
                 self._byte_limit and self._current_bytes + size > self._byte_limit
             ):
+                if cancelled is not None and cancelled():
+                    return False
                 remaining = None if deadline is None else deadline - monotonic()
                 if remaining is not None and remaining <= 0:
                     self._rejected_full += 1
@@ -152,6 +160,8 @@ class _BoundedTransportQueue(Generic[ItemT]):
                     )
                     return False
 
+            if cancelled is not None and cancelled():
+                return False
             self._queue.append((item, size))
             self._current_bytes += size
             self._peak_bytes = max(self._peak_bytes, self._current_bytes)
@@ -186,6 +196,21 @@ class _BoundedTransportQueue(Generic[ItemT]):
 
         with self._condition:
             self._accepting = False
+            self._condition.notify_all()
+
+    def discard(self, item: ItemT) -> None:
+        """Release an item that reached terminal completion while queued."""
+
+        with self._condition:
+            for entry in self._queue:
+                if entry[0] is item:
+                    self._queue.remove(entry)
+                    self._current_bytes -= entry[1]
+                    self._condition.notify_all()
+                    return
+
+    def wake_producers(self) -> None:
+        with self._condition:
             self._condition.notify_all()
 
     def drain(self, *, timeout: float | None = None) -> bool:
@@ -339,7 +364,15 @@ class RawOutboundQueue(RawOutboundSource, RawOutboundSink, TransportQueueControl
             raise TypeError("frame must be OutboundFrame")
         timeout = _validate_timeout(timeout)
         frame.receipt._claim()
-        return self._queue.submit(frame, timeout=timeout)
+        frame.receipt._add_done_callback(
+            lambda error: self._queue.wake_producers() if error is not None else None
+        )
+        accepted = self._queue.submit(frame, timeout=timeout, cancelled=frame.receipt.done)
+        if accepted:
+            frame.receipt._add_done_callback(
+                lambda error: self._queue.discard(frame) if error is not None else None
+            )
+        return accepted
 
     def receive(self, *, timeout: float | None = None) -> OutboundFrame:
         """Return the next serialized frame in FIFO order."""

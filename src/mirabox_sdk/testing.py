@@ -64,13 +64,17 @@ class FakeStreamDockSender:
         with self._lock:
             return tuple(clone_json_object(message) for message in self._messages)
 
-    def send(self, command: StreamDockCommand) -> None:
-        self.send_async(command).result()
+    def send(self, command: StreamDockCommand, *, deadline: float | None = None) -> None:
+        self.send_async(command, deadline=deadline).result()
 
-    def send_async(self, command: StreamDockCommand) -> CommandFuture:
-        completion = CommandFuture()
+    def send_async(
+        self, command: StreamDockCommand, *, deadline: float | None = None
+    ) -> CommandFuture:
+        completion = CommandFuture(deadline=deadline)
         try:
             message = json.loads(self._encoder.encode(command))
+            if not completion._start_send(lambda: None):
+                return completion
             with self._lock:
                 self._messages.append(message)
         except Exception as exc:
@@ -386,6 +390,10 @@ class _MemoryConnector:
                     continue
                 except TransportQueueClosedError:
                     self._stop.wait(0.01)
+                    continue
+                if frame.receipt.done() or (
+                    frame.begin_send is not None and not frame.begin_send(self.close)
+                ):
                     continue
                 with self.lock:
                     self.frames.append(frame.payload)
